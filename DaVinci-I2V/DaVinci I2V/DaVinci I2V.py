@@ -1416,24 +1416,51 @@ def on_runway_pick_last(ev):
 win.On["RunwayPickLastBtn"].Clicked = on_runway_pick_last
 
 def on_runway_swap(ev):
-    fp = PREVIEW_PATHS.get("RunwayFirstPreview")
-    lp = PREVIEW_PATHS.get("RunwayLastPreview")
-    PREVIEW_PATHS["RunwayFirstPreview"], PREVIEW_PATHS["RunwayLastPreview"] = lp, fp
-    if PREVIEW_PATHS.get("RunwayFirstPreview"):
-        items["RunwayFirstPreview"].Icon = ui.Icon({"File": PREVIEW_PATHS["RunwayFirstPreview"]})
-    else:
-        items["RunwayFirstPreview"].Icon = ui.Icon({})
     mdl = items["RunwayModelCombo"].CurrentText
     if mdl != "gen4_turbo":
+        fp = PREVIEW_PATHS.get("RunwayFirstPreview")
+        lp = PREVIEW_PATHS.get("RunwayLastPreview")
+        PREVIEW_PATHS["RunwayFirstPreview"], PREVIEW_PATHS["RunwayLastPreview"] = lp, fp
+        if PREVIEW_PATHS.get("RunwayFirstPreview"):
+            items["RunwayFirstPreview"].Icon = ui.Icon({"File": PREVIEW_PATHS["RunwayFirstPreview"]})
+        else:
+            items["RunwayFirstPreview"].Icon = ui.Icon({})
         if PREVIEW_PATHS.get("RunwayLastPreview"):
             items["RunwayLastPreview"].Icon = ui.Icon({"File": PREVIEW_PATHS["RunwayLastPreview"]})
         else:
             items["RunwayLastPreview"].Icon = ui.Icon({})
     else:
         PREVIEW_PATHS["RunwayLastPreview"] = None
-        items["RunwayLastPreview"].Icon = ui.Icon({})
+        show_dynamic_message("This model does not support last frames!","该模型不支持尾帧！")
+        #items["RunwayLastPreview"].Icon = ui.Icon({})
     items["RunwayFirstPreview"].Update(); items["RunwayLastPreview"].Update()
 win.On.RunwaySwapBtn.Clicked = on_runway_swap
+
+def on_minimax_swap(ev):
+    mdl = items["MinimaxModelCombo"].CurrentText
+    res = items["MinimaxResCombo"].CurrentText
+    if _allow_last_frame(mdl, res):
+        fp = PREVIEW_PATHS.get("MinimaxFirstPreview")
+        lp = PREVIEW_PATHS.get("MinimaxLastPreview")
+        PREVIEW_PATHS["MinimaxFirstPreview"], PREVIEW_PATHS["MinimaxLastPreview"] = lp, fp
+        if PREVIEW_PATHS["MinimaxLastPreview"]:
+            items["MinimaxLastPreview"].Icon = ui.Icon({"File": PREVIEW_PATHS["MinimaxLastPreview"]})
+        else:
+            items["MinimaxLastPreview"].Icon = ui.Icon({})
+
+        if PREVIEW_PATHS["MinimaxFirstPreview"]:
+            items["MinimaxFirstPreview"].Icon = ui.Icon({"File": PREVIEW_PATHS["MinimaxFirstPreview"]})
+        else:
+            items["MinimaxFirstPreview"].Icon = ui.Icon({})
+    else:
+        show_dynamic_message("This model does not support last frames!","该模型不支持尾帧！")
+        PREVIEW_PATHS["MinimaxLastPreview"] = None
+        #items["MinimaxLastPreview"].Icon = ui.Icon({})
+
+    items["MinimaxFirstPreview"].Update()
+    items["MinimaxLastPreview"].Update()
+win.On.MinimaxSwapBtn.Clicked = on_minimax_swap
+
 # 初始模型/分辨率
 set_combo_items(items["MinimaxModelCombo"], MINIMAX_MODEL_LIST, default_index=0)
 set_combo_items(items["RunwayModelCombo"], RUNWAY_MODEL_LIST, default_index=0)
@@ -1733,30 +1760,7 @@ def save_file():
     except OSError as e:
         print(f"Error saving settings to {settings_file}: {e.strerror}")
 
-def on_minimax_swap(ev):
-    fp = PREVIEW_PATHS.get("MinimaxFirstPreview")
-    lp = PREVIEW_PATHS.get("MinimaxLastPreview")
-    PREVIEW_PATHS["MinimaxFirstPreview"], PREVIEW_PATHS["MinimaxLastPreview"] = lp, fp
 
-    if PREVIEW_PATHS["MinimaxFirstPreview"]:
-        items["MinimaxFirstPreview"].Icon = ui.Icon({"File": PREVIEW_PATHS["MinimaxFirstPreview"]})
-    else:
-        items["MinimaxFirstPreview"].Icon = ui.Icon({})
-
-    mdl = items["MinimaxModelCombo"].CurrentText
-    res = items["MinimaxResCombo"].CurrentText
-    if _allow_last_frame(mdl, res):
-        if PREVIEW_PATHS["MinimaxLastPreview"]:
-            items["MinimaxLastPreview"].Icon = ui.Icon({"File": PREVIEW_PATHS["MinimaxLastPreview"]})
-        else:
-            items["MinimaxLastPreview"].Icon = ui.Icon({})
-    else:
-        PREVIEW_PATHS["MinimaxLastPreview"] = None
-        items["MinimaxLastPreview"].Icon = ui.Icon({})
-
-    items["MinimaxFirstPreview"].Update()
-    items["MinimaxLastPreview"].Update()
-win.On.MinimaxSwapBtn.Clicked = on_minimax_swap
 
 def on_open_link_button_clicked(ev):
     if items["LangEnCheckBox"].Checked :

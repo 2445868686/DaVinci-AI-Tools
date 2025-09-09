@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DaVinci I2V – 安装与使用指南 / EN</title>
+
+  <!-- 公共样式（复用 Whisper 指南风格） -->
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: #f0f2f5;
+      color: #555;
+    }
+    .sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 250px;
+      height: 100%;
+      background: #fff;
+      border-right: 1px solid #e0e0e0;
+      padding: 20px;
+      overflow-y: auto;
+      box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
+    }
+    .sidebar h2 {
+      font-size: 1.8em;
+      margin: 0 0 20px;
+      color: #333;
+      text-align: center;
+      border-bottom: 1px solid #e0e0e0;
+      padding-bottom: 10px;
+    }
+    .sidebar ul { list-style: none; padding: 0; }
+    .sidebar li { margin: 10px 0; font-size: 0.95em; }
+    .sidebar li ul { margin-top: 5px; margin-left: 15px; }
+    .sidebar a { text-decoration: none; color: #007bff; transition: color 0.3s; }
+    .sidebar a:hover { color: #0056b3; }
+
+    .content { margin-left: 270px; padding: 40px; }
+
+    .container {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      padding: 30px;
+      margin-bottom: 40px;
+    }
+    header { text-align: center; padding-bottom: 20px; border-bottom: 1px solid #e0e0e0; margin-bottom: 30px; }
+    header h1 { margin: 0; font-size: 2em; color: #333; }
+    h2 { color: #007bff; margin-top: 30px; border-left: 4px solid #007bff; padding-left: 10px; }
+    h3 { color: #333; margin-top: 20px; }
+    p, ul { line-height: 1.8; margin: 15px 0; }
+    ul { padding-left: 20px; }
+    code { background: #f9f9f9; padding: 4px 8px; border-radius: 4px; font-family: Consolas, Monaco, "Courier New", monospace; }
+    pre { background: #f9f9f9; padding: 15px; border-left: 5px solid #007bff; border-radius: 4px; overflow-x: auto; font-family: Consolas, Monaco, "Courier New", monospace; }
+    a { color: #007bff; }
+    footer { text-align: center; font-size: 0.9em; color: #888; margin-top: 40px; border-top: 1px solid #e0e0e0; padding-top: 20px; }
+
+    @media (max-width: 768px) {
+      .sidebar { position: relative; width: 100%; height: auto; box-shadow: none; border-right: none; border-bottom: 1px solid #e0e0e0; }
+      .content { margin-left: 0; padding: 20px; }
+    }
+
+    .lang { display: none; }
+    .lang.active { display: block; }
+
+    .lang-switcher { position: fixed; top: 15px; right: 20px; z-index: 1000; }
+    .lang-switcher button {
+      cursor: pointer; border: 1px solid #007bff; background: #fff; color: #007bff;
+      font-size: 0.9em; padding: 6px 12px; border-radius: 20px; transition: all 0.3s; margin-left: 6px;
+    }
+    .lang-switcher button.active, .lang-switcher button:hover { background: #007bff; color: #fff; }
+
+    .collapsible {
+      background-color: #f1f1f1; color: #444; cursor: pointer; padding: 18px; width: 100%; border: none;
+      text-align: left; outline: none; font-size: 1.1em; transition: background-color 0.4s; border-radius: 5px; margin-top: 10px; font-weight: bold;
+    }
+    .collapsible:hover { background-color: #ddd; }
+    .collapsible.active { background-color: #ccc; }
+    .collapsible:after { content: "\002B"; font-size: 1.2em; color: #777; float: right; margin-left: 5px; }
+    .collapsible.active:after { content: "\2212"; }
+    .collapsible-content { padding: 0 18px; max-height: 0; overflow: hidden; transition: max-height 0.2s ease-out; background-color: #f9f9f9; border-radius: 0 0 5px 5px; border: 1px solid #f1f1f1; border-top: none; }
+  </style>
+</head>
+
+<body>
+  <!-- 语言切换按钮 -->
+  <div class="lang-switcher">
+    <button id="btn-zh" class="active">中文</button>
+    <button id="btn-en">English</button>
+  </div>
+
+  <!-- ========== 中文 ========== -->
+  <div id="lang-zh" class="lang active">
+    <nav class="sidebar">
+      <h2>目录</h2>
+      <ul>
+        <li>
+          <strong>安装指南</strong>
+          <ul>
+            <li><a href="#zh-step-1">步骤 1：检查 Python</a></li>
+            <li><a href="#zh-step-2">步骤 2：移动插件</a></li>
+            <li><a href="#zh-step-3">步骤 3：安装依赖</a></li>
+            <li><a href="#zh-step-4">步骤 4：配置 API</a></li>
+          </ul>
+        </li>
+        <li>
+          <strong>使用指南</strong>
+          <ul>
+            <li><a href="#zh-ui">一、主界面功能</a>
+              <ul>
+                <li><a href="#zh-ui-providers">1. 提供商与模式</a></li>
+                <li><a href="#zh-ui-frames">2. 首/尾帧与交换</a></li>
+                <li><a href="#zh-ui-prompt">3. 提示词（Prompt）</a></li>
+                <li><a href="#zh-ui-params">4. 模型/时长/分辨率</a></li>
+                <li><a href="#zh-ui-task">5. 任务ID与下载</a></li>
+                <li><a href="#zh-ui-config">6. 配置页与保存路径</a></li>
+                <li><a href="#zh-ui-lang">7. 中英切换</a></li>
+              </ul>
+            </li>
+            <li><a href="#zh-quick">二、快速上手</a></li>
+            <li><a href="#zh-notes">三、注意事项</a></li>
+          </ul>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="content">
+      <!-- 安装 -->
+      <div class="container" id="install-zh">
+        <header><h1>DaVinci I2V 安装指南</h1></header>
+
+        <section id="zh-step-1">
+          <h2>步骤 1：检查 DaVinci Resolve 中是否已安装 Python</h2>
+          <p>在达芬奇中点击：<code>工作区</code> → <code>控制台</code> → <code>Py3</code>。
+            若已安装，将直接打开 Python 控制台（进入<a href="#zh-step-2">步骤 2</a>）。
+            若弹出 “Python was not found”，请按提示安装后继续。</p>
+          <p><strong>Windows 用户</strong>：安装 Python 时请勾选 <span style="color:red">Add Python to PATH</span>。</p>
+        </section>
+
+        <section id="zh-step-2">
+          <h2>步骤 2：移动 DaVinci I2V 插件</h2>
+          <p>将 <code>DaVinci I2V</code> 文件夹移动到如下目录：</p>
+          <pre><code>Mac:
+/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility
+
+Windows:
+C:\\ProgramData\\Blackmagic Design\\DaVinci Resolve\\Fusion\\Scripts\\Utility</code></pre>
+          <p>完成后，可在达芬奇 <code>工作区</code> → <code>脚本</code> 菜单看到并启动该插件。</p>
+        </section>
+
+        <section id="zh-step-3">
+          <h2>步骤 3：安装依赖</h2>
+          <h3>Mac 用户：</h3>
+          <p>双击 <code>Mac_Install.command</code>，脚本会自动下载并离线安装依赖（默认安装到 <code>HB/DaVinci I2V/Lib</code>）。</p>
+          <h3>Windows 用户：</h3>
+          <p>双击 <code>Windows_Install.bat</code>，按提示完成离线安装。</p>
+        </section>
+
+        <section id="zh-step-4">
+          <h2>步骤 4：配置 API</h2>
+          <p>打开插件后，进入“配置”页，分别点击 <strong>Minimax</strong> 与 <strong>Runway</strong> 右侧的“配置”按钮，填写 <strong>Base URL</strong> 与 <strong>API Key</strong>。</p>
+          <ul>
+            <li><strong>Minimax</strong>：默认 Base URL 为 <code>https://api.minimaxi.com</code>，如无特殊代理可直接使用。</li>
+            <li><strong>Runway</strong>：默认 Base URL 为 <code>https://api.dev.runwayml.com</code>。</li>
+            <li>如需注册账号，可在配置弹窗中点击“注册”快速跳转：
+              <a href="https://platform.minimaxi.com/login" target="_blank">MiniMax</a> /
+              <a href="https://dev.runwayml.com/" target="_blank">Runway</a>。</li>
+          </ul>
+        </section>
+      </div>
+
+      <!-- 使用 -->
+      <div class="container" id="usage-zh">
+        <header><h1>DaVinci I2V 使用指南</h1></header>
+        <p>DaVinci I2V 是一个“图生视频”插件：给出首帧（可选尾帧）与提示词，由在线模型生成短视频，并自动导入到达芬奇媒体池与时间线中。</p>
+
+        <section id="zh-ui">
+          <h2>一、 主界面功能（点击展开）</h2>
+
+          <button type="button" class="collapsible" id="zh-ui-providers">1. 提供商与模式</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>页签</strong>：<code>海螺视频（MiniMax）</code>、<code>Runway</code> 与 <code>配置</code>。</li>
+              <li><strong>生成模式</strong>：顶部会显示“当前模式”；当模型支持“首尾帧”时，标题会自动切换为“首尾帧”模式。</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="zh-ui-frames">2. 首/尾帧与交换</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>选择首帧</strong>：点击“选择首帧”从本地挑选 PNG/JPG（≤10MB，建议≥300px）。</li>
+              <li><strong>选择尾帧</strong>：当模型支持时可用；某些模型或分辨率下会自动禁用。</li>
+              <li><strong>交换按钮</strong>：点击“⇆”可将首帧与尾帧图片互换。</li>
+              <li><strong>支持性</strong>：
+                <ul>
+                  <li>MiniMax：<code>MiniMax-Hailuo-02</code> 在 <code>768P</code>/<code>1080P</code> 支持尾帧；其它 I2V-01 系列不支持尾帧。</li>
+                  <li>Runway：<code>gen3a_turbo</code> 支持尾帧，<code>gen4_turbo</code> 仅首帧。</li>
+                </ul>
+              </li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="zh-ui-prompt">3. 提示词（Prompt）</button>
+          <div class="collapsible-content">
+            <ul>
+              <li>在文本框中输入生成提示词，影响画面风格与内容。可留空。</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="zh-ui-params">4. 模型 / 时长 / 分辨率</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>MiniMax 模型</strong>：<code>MiniMax-Hailuo-02</code>、<code>I2V-01</code>、<code>I2V-01-live</code>、<code>I2V-01-Director</code>。
+                <ul>
+                  <li><strong>时长</strong>：<code>MiniMax-Hailuo-02</code> 支持 <code>6s/10s</code>；其余固定 <code>6s</code>。</li>
+                  <li><strong>分辨率</strong>：<code>MiniMax-Hailuo-02</code> 在 <code>6s</code> 时 <code>512P/768P/1080P</code>，<code>10s</code> 时 <code>512P/768P</code>；其他模型 <code>720P</code>。</li>
+                </ul>
+              </li>
+              <li><strong>Runway 模型</strong>：<code>gen4_turbo</code>、<code>gen3a_turbo</code>。
+                <ul>
+                  <li><strong>分辨率层级</strong>：<code>gen4_turbo</code> 为 <code>720P</code>，<code>gen3a_turbo</code> 为 <code>768P</code>；横竖屏比例将依据首帧图片自动决定。</li>
+                  <li><strong>时长</strong>：<code>5s/10s</code> 可选。</li>
+                </ul>
+              </li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="zh-ui-task">5. 任务 ID 与下载</button>
+          <div class="collapsible-content">
+            <ul>
+              <li>点击“生成”会提交任务并自动轮询进度；完成后自动下载并导入时间线。</li>
+              <li>如已获得 <strong>任务ID</strong>，可粘贴到“任务ID”输入框，点击“下载”仅进行结果查询与下载。</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="zh-ui-config">6. 配置页与保存路径</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>保存路径</strong>：在“配置”页点“浏览”选择目录，插件会自动创建 <code>项目名_I2V</code> 子文件夹并写入文件。</li>
+              <li><strong>API 设置</strong>：点击 Minimax/Runway 的“配置”按钮填写 <code>Base URL</code> 与 <code>API Key</code>。</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="zh-ui-lang">7. 中英切换</button>
+          <div class="collapsible-content">
+            <ul>
+              <li>界面右下提供 <code>EN</code>/<code>简体中文</code> 复选框；也可使用本页面右上角语言切换查看文档。</li>
+            </ul>
+          </div>
+        </section>
+
+        <section id="zh-quick">
+          <h2>二、 快速上手</h2>
+          <ol>
+            <li>在“配置”页选择 <strong>保存路径</strong>，并设置 <strong>API Key</strong>。</li>
+            <li>切换到 <strong>海螺视频（MiniMax）</strong> 或 <strong>Runway</strong> 页。</li>
+            <li>点击 <strong>选择首帧</strong>（必要），若模型支持可再选 <strong>尾帧</strong>。</li>
+            <li>（可选）输入 <strong>提示词</strong>，并根据需要选择 <strong>模型/时长/分辨率</strong>。</li>
+            <li>确认时间线处于目标位置，点击 <strong>生成</strong>，等待完成自动入库并添加到时间线空轨道。</li>
+          </ol>
+        </section>
+
+        <section id="zh-notes">
+          <h2>三、 注意事项</h2>
+          <ul>
+            <li>本插件调用在线服务，需确保 <strong>网络可用</strong> 且账号 <strong>余额充足</strong>。</li>
+            <li>不同模型对 <strong>尾帧</strong> 支持不同；当不支持时按钮会自动禁用。</li>
+            <li>下载完成后，视频会导入媒体池并添加到 <strong>第一个空的视频轨道</strong>，从 <strong>当前指针</strong> 到时间线末尾。</li>
+            <li>若遇到 <code>API Key</code>、限频、余额不足等错误，插件会在弹窗中给出提示。</li>
+          </ul>
+        </section>
+      </div>
+
+      <footer>© 2025 HB. All Rights Reserved.</footer>
+    </div>
+  </div>
+
+  <!-- ========== English ========== -->
+  <div id="lang-en" class="lang">
+    <nav class="sidebar">
+      <h2>Contents</h2>
+      <ul>
+        <li>
+          <strong>Installation</strong>
+          <ul>
+            <li><a href="#en-step-1">Step 1: Check Python</a></li>
+            <li><a href="#en-step-2">Step 2: Move Plugin</a></li>
+            <li><a href="#en-step-3">Step 3: Install Deps</a></li>
+            <li><a href="#en-step-4">Step 4: Configure API</a></li>
+          </ul>
+        </li>
+        <li>
+          <strong>Usage</strong>
+          <ul>
+            <li><a href="#en-ui">I. UI Overview</a>
+              <ul>
+                <li><a href="#en-ui-providers">1. Providers & Modes</a></li>
+                <li><a href="#en-ui-frames">2. First/Last Frame & Swap</a></li>
+                <li><a href="#en-ui-prompt">3. Prompt</a></li>
+                <li><a href="#en-ui-params">4. Model/Duration/Resolution</a></li>
+                <li><a href="#en-ui-task">5. Task ID & Download</a></li>
+                <li><a href="#en-ui-config">6. Config & Save Path</a></li>
+                <li><a href="#en-ui-lang">7. Language</a></li>
+              </ul>
+            </li>
+            <li><a href="#en-quick">II. Quick Start</a></li>
+            <li><a href="#en-notes">III. Notes</a></li>
+          </ul>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="content">
+      <div class="container">
+        <header><h1>DaVinci I2V – Installation Guide</h1></header>
+        <section id="en-step-1">
+          <h2>Step 1: Check Python in DaVinci Resolve</h2>
+          <p>In Resolve, click <code>Workspace</code> → <code>Console</code> → <code>Py3</code>. If a Python console opens, continue to <a href="#en-step-2">Step 2</a>.
+            If you see “Python was not found”, install Python first.</p>
+          <p><strong>Windows</strong>: make sure to check <span style="color:red">Add Python to PATH</span> during installation.</p>
+        </section>
+
+        <section id="en-step-2">
+          <h2>Step 2: Move the DaVinci I2V Plugin</h2>
+          <p>Move the <code>DaVinci I2V</code> folder to:</p>
+          <pre><code>macOS:
+/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility
+
+Windows:
+C:\\ProgramData\\Blackmagic Design\\DaVinci Resolve\\Fusion\\Scripts\\Utility</code></pre>
+          <p>Then open it under <code>Workspace</code> → <code>Scripts</code> in Resolve.</p>
+        </section>
+
+        <section id="en-step-3">
+          <h2>Step 3: Install Dependencies</h2>
+          <h3>macOS:</h3>
+          <p>Double‑click <code>Mac_Install.command</code>. It downloads and installs dependencies offline to <code>HB/DaVinci I2V/Lib</code>.</p>
+          <h3>Windows:</h3>
+          <p>Double‑click <code>Windows_Install.bat</code> and follow the prompts.</p>
+        </section>
+
+        <section id="en-step-4">
+          <h2>Step 4: Configure API</h2>
+          <p>Open the plugin, go to <strong>Configuration</strong>, click “Config” beside <strong>Minimax</strong> and <strong>Runway</strong>, and fill <strong>Base URL</strong> and <strong>API Key</strong>.</p>
+          <ul>
+            <li><strong>Minimax</strong>: default Base URL <code>https://api.minimaxi.com</code>.</li>
+            <li><strong>Runway</strong>: default Base URL <code>https://api.dev.runwayml.com</code>.</li>
+            <li>Need accounts? Click “Register” in dialogs to visit:
+              <a href="https://platform.minimaxi.com/login" target="_blank">MiniMax</a> /
+              <a href="https://dev.runwayml.com/" target="_blank">Runway</a>.</li>
+          </ul>
+        </section>
+      </div>
+
+      <div class="container">
+        <header><h1>DaVinci I2V – Usage Guide</h1></header>
+        <p>DaVinci I2V generates video from images using online models. Provide a first frame (and optionally a last frame) plus a prompt, then the clip is generated, downloaded and inserted onto your timeline automatically.</p>
+
+        <section id="en-ui">
+          <h2>I. UI Overview (click to expand)</h2>
+
+          <button type="button" class="collapsible" id="en-ui-providers">1. Providers & Modes</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>Tabs</strong>: <code>Hailuo (MiniMax)</code>, <code>Runway</code>, and <code>Configuration</code>.</li>
+              <li><strong>Mode</strong>: When a model supports first & last frames, the banner shows “First & Last Frame”. Otherwise it’s “Image to Video”.</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="en-ui-frames">2. First/Last Frame & Swap</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>First Frame</strong>: choose a local PNG/JPG (≤10MB, ≥300px recommended).</li>
+              <li><strong>Last Frame</strong>: available only when the chosen model/resolution supports it.</li>
+              <li><strong>Swap</strong>: click “⇆” to swap the two images.</li>
+              <li><strong>Support</strong>:
+                <ul>
+                  <li>MiniMax: <code>MiniMax-Hailuo-02</code> supports last frame at <code>768P</code>/<code>1080P</code>; I2V‑01 series do not.</li>
+                  <li>Runway: <code>gen3a_turbo</code> supports last frame; <code>gen4_turbo</code> requires first frame only.</li>
+                </ul>
+              </li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="en-ui-prompt">3. Prompt</button>
+          <div class="collapsible-content">
+            <ul>
+              <li>Enter a text prompt to guide content and style. Optional.</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="en-ui-params">4. Model / Duration / Resolution</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>MiniMax Models</strong>: <code>MiniMax-Hailuo-02</code>, <code>I2V-01</code>, <code>I2V-01-live</code>, <code>I2V-01-Director</code>.
+                <ul>
+                  <li><strong>Duration</strong>: <code>MiniMax-Hailuo-02</code> offers <code>6s/10s</code>; others fixed <code>6s</code>.</li>
+                  <li><strong>Resolution</strong>: For <code>MiniMax-Hailuo-02</code> → <code>512P/768P/1080P</code> at <code>6s</code>, and <code>512P/768P</code> at <code>10s</code>; other models use <code>720P</code>.</li>
+                </ul>
+              </li>
+              <li><strong>Runway Models</strong>: <code>gen4_turbo</code>, <code>gen3a_turbo</code>.
+                <ul>
+                  <li><strong>Resolution tier</strong>: <code>gen4_turbo</code> uses <code>720P</code>, <code>gen3a_turbo</code> uses <code>768P</code>. The aspect ratio is chosen automatically from your first image (landscape/portrait).</li>
+                  <li><strong>Duration</strong>: <code>5s/10s</code>.</li>
+                </ul>
+              </li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="en-ui-task">5. Task ID & Download</button>
+          <div class="collapsible-content">
+            <ul>
+              <li>“Create” submits a task and polls its status. When finished, the video is downloaded and placed onto the timeline.</li>
+              <li>If you already have a <strong>Task ID</strong>, paste it and click “Download” to fetch the result directly.</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="en-ui-config">6. Config & Save Path</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>Save Path</strong>: choose a folder in “Configuration.” The plugin creates a <code>&lt;ProjectName&gt;_I2V</code> subfolder there.</li>
+              <li><strong>API</strong>: click “Config” next to Minimax/Runway to set <code>Base URL</code> and <code>API Key</code>.</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="en-ui-lang">7. Language</button>
+          <div class="collapsible-content">
+            <ul>
+              <li>Use the in‑plugin EN/中文 toggles, or the buttons on this page to read the docs.</li>
+            </ul>
+          </div>
+        </section>
+
+        <section id="en-quick">
+          <h2>II. Quick Start</h2>
+          <ol>
+            <li>Set <strong>Save Path</strong> and <strong>API Keys</strong> in Configuration.</li>
+            <li>Switch to <strong>Hailuo (MiniMax)</strong> or <strong>Runway</strong>.</li>
+            <li>Pick a <strong>First Frame</strong> (required). If supported, also pick a <strong>Last Frame</strong>.</li>
+            <li>Optionally enter a <strong>Prompt</strong> and set <strong>Model/Duration/Resolution</strong>.</li>
+            <li>Position the playhead and click <strong>Create</strong>. The clip is inserted on the first empty video track from the playhead to the end.</li>
+          </ol>
+        </section>
+
+        <section id="en-notes">
+          <h2>III. Notes</h2>
+          <ul>
+            <li>Online services are required. Ensure <strong>network access</strong> and <strong>sufficient balance</strong>.</li>
+            <li>Last‑frame support depends on model/resolution; the control is disabled when unsupported.</li>
+            <li>After download, the clip is imported and placed on the <strong>first empty video track</strong> from the <strong>current playhead</strong>.</li>
+            <li>API errors (key/limits/balance) are shown via in‑plugin messages.</li>
+          </ul>
+        </section>
+      </div>
+
+      <footer>© 2025 HB. All Rights Reserved.</footer>
+    </div>
+  </div>
+
+  <!-- 脚本：语言切换与折叠面板 -->
+  <script>
+    const btnZh = document.getElementById('btn-zh');
+    const btnEn = document.getElementById('btn-en');
+    const langZh = document.getElementById('lang-zh');
+    const langEn = document.getElementById('lang-en');
+
+    btnZh.addEventListener('click', () => {
+      btnZh.classList.add('active');
+      btnEn.classList.remove('active');
+      langZh.classList.add('active');
+      langEn.classList.remove('active');
+      document.documentElement.lang = 'zh-CN';
+    });
+    btnEn.addEventListener('click', () => {
+      btnEn.classList.add('active');
+      btnZh.classList.remove('active');
+      langEn.classList.add('active');
+      langZh.classList.remove('active');
+      document.documentElement.lang = 'en';
+    });
+
+    const collapsibles = document.getElementsByClassName('collapsible');
+    for (let i = 0; i < collapsibles.length; i++) {
+      collapsibles[i].addEventListener('click', function () {
+        this.classList.toggle('active');
+        const content = this.nextElementSibling;
+        if (content.style.maxHeight) {
+          content.style.maxHeight = null;
+        } else {
+          content.style.maxHeight = content.scrollHeight + 'px';
+        }
+      });
+    }
+  </script>
+</body>
+</html>
+
