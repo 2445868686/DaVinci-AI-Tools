@@ -12,15 +12,15 @@ DaVinci-I2V/DaVinci I2V/config/i2v_settings.json
 # === End DaVinci-I2V/.gitignore ===
 
 # === Begin DaVinci-Resolve-TTS/.gitignore ===
-DaVinci-Resolve-TTS/**/.DS_Store
-DaVinci-Resolve-TTS/DaVinci Resolve TTS/config/TTS_settings.json
+DaVinci-TTS/**/.DS_Store
+DaVinci-TTS/DaVinci TTS/config/TTS_settings.json
 # === End DaVinci-Resolve-TTS/.gitignore ===
 
 # === Begin DaVinci-Resolve-Whisper/.gitignore ===
-DaVinci-Resolve-Whisper/Whisper/config/settings.json
-DaVinci-Resolve-Whisper/Whisper/model/**/model.bin
-DaVinci-Resolve-Whisper/.DS_Store
-DaVinci-Resolve-Whisper/Whisper/WhisperX.py
+DaVinci-Whisper/Whisper/config/settings.json
+DaVinci-Whisper/Whisper/model/**/model.bin
+DaVinci-Whisper/.DS_Store
+DaVinci-Whisper/Whisper/WhisperX.py
 # === End DaVinci-Resolve-Whisper/.gitignore ===
 
 # === Begin DaVinci-Sub-Translator/.gitignore ===

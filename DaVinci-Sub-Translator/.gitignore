@@ -1,5 +1,0 @@
-# macOS specific
-.DS_Store
-
-# Local settings
-Sub AI Translator/config/translator_settings.json
