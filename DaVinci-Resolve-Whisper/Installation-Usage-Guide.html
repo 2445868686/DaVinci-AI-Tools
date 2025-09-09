@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DaVinci Resolve Whisper – 中 / EN</title>
+
+  <!-- ===== 公共样式（两版一致，只保留一份） ===== -->
+  <style>
+    /* 全局字体与背景 */
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: #f0f2f5;
+      color: #555;
+    }
+
+    /* 固定左侧目录 */
+    .sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 250px;
+      height: 100%;
+      background: #fff;
+      border-right: 1px solid #e0e0e0;
+      padding: 20px;
+      overflow-y: auto;
+      box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
+    }
+    .sidebar h2 {
+      font-size: 1.8em;
+      margin: 0 0 20px;
+      color: #333;
+      text-align: center;
+      border-bottom: 1px solid #e0e0e0;
+      padding-bottom: 10px;
+    }
+    .sidebar ul {
+      list-style: none;
+      padding: 0;
+    }
+    .sidebar li {
+      margin: 10px 0;
+      font-size: 0.95em;
+    }
+    .sidebar li ul {
+      margin-top: 5px;
+      margin-left: 15px;
+    }
+    .sidebar a {
+      text-decoration: none;
+      color: #007bff;
+      transition: color 0.3s;
+    }
+    .sidebar a:hover {
+      color: #0056b3;
+    }
+
+    /* 主内容区 */
+    .content {
+      margin-left: 270px; /* 250 + 20 */
+      padding: 40px;
+    }
+
+    /* 卡片式容器 */
+    .container {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      padding: 30px;
+      margin-bottom: 40px;
+    }
+    header {
+      text-align: center;
+      padding-bottom: 20px;
+      border-bottom: 1px solid #e0e0e0;
+      margin-bottom: 30px;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 2em;
+      color: #333;
+    }
+    h2 {
+      color: #007bff;
+      margin-top: 30px;
+      border-left: 4px solid #007bff;
+      padding-left: 10px;
+    }
+    h3 {
+      color: #333;
+      margin-top: 20px;
+    }
+    p,
+ul {
+      line-height: 1.8;
+      margin: 15px 0;
+    }
+    ul {
+      padding-left: 20px;
+    }
+    code {
+      background: #f9f9f9;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: Consolas, Monaco, "Courier New", monospace;
+    }
+    pre {
+      background: #f9f9f9;
+      padding: 15px;
+      border-left: 5px solid #007bff;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-family: Consolas, Monaco, "Courier New", monospace;
+    }
+    a {
+      color: #007bff;
+    }
+    footer {
+      text-align: center;
+      font-size: 0.9em;
+      color: #888;
+      margin-top: 40px;
+      border-top: 1px solid #e0e0e0;
+      padding-top: 20px;
+    }
+
+    /* 移动端适配 */
+    @media (max-width: 768px) {
+      .sidebar {
+        position: relative;
+        width: 100%;
+        height: auto;
+        box-shadow: none;
+        border-right: none;
+        border-bottom: 1px solid #e0e0e0;
+      }
+      .content {
+        margin-left: 0;
+        padding: 20px;
+      }
+    }
+
+    /* ===== 语言切换相关 ===== */
+    .lang {
+      display: none;
+    }
+    .lang.active {
+      display: block;
+    }
+
+    /* 切换按钮 */
+    .lang-switcher {
+      position: fixed;
+      top: 15px;
+      right: 20px;
+      z-index: 1000;
+    }
+    .lang-switcher button {
+      cursor: pointer;
+      border: 1px solid #007bff;
+      background: #fff;
+      color: #007bff;
+      font-size: 0.9em;
+      padding: 6px 12px;
+      border-radius: 20px;
+      transition: all 0.3s;
+      margin-left: 6px;
+    }
+    .lang-switcher button.active,
+    .lang-switcher button:hover {
+      background: #007bff;
+      color: #fff;
+    }
+
+    /* ===== 新增：手风琴/折叠样式 ===== */
+    .collapsible {
+      background-color: #f1f1f1;
+      color: #444;
+      cursor: pointer;
+      padding: 18px;
+      width: 100%;
+      border: none;
+      text-align: left;
+      outline: none;
+      font-size: 1.1em;
+      transition: background-color 0.4s;
+      border-radius: 5px;
+      margin-top: 10px;
+      font-weight: bold;
+    }
+    .collapsible:hover {
+      background-color: #ddd;
+    }
+    .collapsible.active {
+      background-color: #ccc;
+    }
+    .collapsible:after {
+      content: '\002B'; /* Unicode character for "plus" sign (+) */
+      font-size: 1.2em;
+      color: #777;
+      float: right;
+      margin-left: 5px;
+    }
+    .collapsible.active:after {
+      content: "\2212"; /* Unicode character for "minus" sign (-) */
+    }
+    .collapsible-content {
+      padding: 0 18px;
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.2s ease-out;
+      background-color: #f9f9f9;
+      border-radius: 0 0 5px 5px;
+      border: 1px solid #f1f1f1;
+      border-top: none;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- ===== 语言切换按钮 ===== -->
+  <div class="lang-switcher">
+    <button id="btn-zh" class="active">中文</button>
+    <button id="btn-en">English</button>
+  </div>
+
+  <!-- ========== 中文版本（默认显示） ========== -->
+  <div id="lang-zh" class="lang active">
+    <!-- 固定左侧目录 -->
+    <nav class="sidebar">
+      <h2>目录</h2>
+      <ul>
+        <li>
+          <strong>安装指南</strong>
+          <ul>
+            <li><a href="#step-1">步骤 1：检查 Python</a></li>
+            <li><a href="#step-2">步骤 2：移动插件</a></li>
+            <li><a href="#step-3">步骤 3：安装依赖</a></li>
+            <li><a href="#step-4">步骤 4：下载模型</a></li>
+          </ul>
+        </li>
+        <li>
+          <strong>使用指南</strong>
+          <ul>
+            <li><a href="#ui-features-zh">一、插件主界面功能详解</a>
+              <ul>
+                <li><a href="#ui-zh-1">1. 模型</a></li>
+                <li><a href="#ui-zh-2">2. 模型下载</a></li>
+                <li><a href="#ui-zh-3">3. 使用 OpenAI API</a></li>
+                <li><a href="#ui-zh-4">4. 文稿匹配</a></li>
+                <li><a href="#ui-zh-5">5. AI 字幕优化</a></li>
+                <li><a href="#ui-zh-6">6. 语言</a></li>
+                <li><a href="#ui-zh-7">7. 每行最大字符</a></li>
+                <li><a href="#ui-zh-8">8. 字幕间无空隙</a></li>
+                <li><a href="#ui-zh-9">9. 删除句尾标点</a></li>
+                <li><a href="#ui-zh-10">10. 短语列表 / 提示</a></li>
+                <li><a href="#ui-zh-11">11. 创建字幕</a></li>
+                <li><a href="#ui-zh-12">12. 更新字幕</a></li>
+              </ul>
+            </li>
+            <li><a href="#api-config-zh">二、OpenAI API 配置</a></li>
+            <li><a href="#workflow-zh">三、快速上手工作流</a></li>
+          </ul>
+        </li>
+      </ul>
+    </nav>
+
+    <!-- 主内容 -->
+    <div class="content">
+      <!-- 安装指南 -->
+      <div class="container" id="install-guide">
+        <header>
+          <h1>DaVinci Resolve Whisper 安装指南</h1>
+        </header>
+        <section id="step-1">
+          <h2>步骤 1：检查 DaVinci Resolve 中是否已安装 Python</h2>
+          <p>
+            点击：<code>工作区</code> ——&gt; <code>控制台</code> ——&gt; <code>Py3</code>。如果已安装，则不会弹出窗口（直接进入
+            <a href="#step-2">步骤 2</a>）。
+          </p>
+          <p>
+            若未安装，则会弹出 "<strong>Python was not found</strong>"
+            消息，请根据提示下载并安装，安装完成后进入<a href="#step-2">步骤 2</a>！
+          </p>
+          <p>
+            <strong>Windows 用户：</strong>安装 Python 时请务必勾选 "<span
+              style="color: red"
+              >Add Python to PATH</span
+            >" 选项，否则可能需要重新安装或手动设置环境变量。
+          </p>
+        </section>
+        <section id="step-2">
+          <h2>步骤 2：移动 Whisper 插件</h2>
+          <p>将 <code>Whisper</code> 文件夹移动到以下位置：</p>
+          <pre><code>Mac: 
+/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility 
+
+Win: 
+C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></pre>
+        </section>
+        <section id="step-3">
+          <h2>步骤 3：安装依赖</h2>
+          
+          <h3>Mac 用户：</h3>
+          <p>
+            双击 <code>Mac_Install.command</code> 进行安装，等待安装完成。
+          </p>
+          <h3>Win 用户：</h3>
+          <p>
+            双击 <code>Windows_Install.bat</code> 进行安装，等待安装完成。
+          </p>
+          <p>
+            安装完成后，可通过 <code>工作台</code> ——&gt; <code>脚本</code> 菜单打开插件进行使用。
+          </p>
+        </section>
+        <section id="step-4">
+          <h2>步骤 4：下载并替换模型</h2>
+          <p>你可以在<a href="https://pan.baidu.com/s/1kthNbHJAggTUT2cv9nKaUg?pwd=8888" target="_blank">下载页面</a>选择需要的模型文件夹进行下载：</p>
+          <p>下载完成后，将相应模型文件夹复制到 <code>Whisper/model</code> 目录下，替换同名文件夹即可。</p>
+        </section>
+      </div>
+
+      <!-- DaVinci Resolve Whisper 使用指南 -->
+      <div class="container" id="usage-guide">
+        <header>
+          <h1>DaVinci Resolve Whisper 使用指南</h1>
+        </header>
+        <p>本插件利用强大的 Whisper 模型，直接在达芬奇中为您的视频时间线一键生成精准的 SRT 字幕文件，并自动导入到项目中，极大提升您的工作效率。</p>
+        
+        <section id="ui-features-zh">
+          <h2>一、 插件主界面功能详解</h2>
+          <p>打开插件后，您会看到一个简洁的设置窗口。以下是每个控件的功能说明（点击展开）：</p>
+          
+          <button type="button" class="collapsible" id="ui-zh-1">1. 模型</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>功能</strong>：选择用于语音识别的 Whisper 模型。</li>
+              <li><strong>选项</strong>：
+                <ul>
+                  <li><strong>本地模型</strong>：包含 <code>tiny</code>, <code>small</code>, <code>base</code>, <code>medium</code>, <code>large-v3</code>。模型越大，识别越精准，但处理速度越慢。这些模型在您的本地计算机上运行。</li>
+                  <li><strong>OpenAI API 模型</strong>：当您勾选“使用 OpenAI API”后，这里会变为 <code>whisper-1</code> 等线上模型。</li>
+                </ul>
+              </li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-zh-2">2. 模型下载</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>功能</strong>：点击此按钮会打开浏览器，引导您到百度网盘下载本地模型文件。</li>
+              <li><strong>注意</strong>：此按钮仅在未使用 OpenAI API 时可用。下载后的模型文件替换插件目录下的 <code>Whisper/model/</code> 对应模型文件夹（例如 <code>small</code> 文件夹）。</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-zh-3">3. 使用 OpenAI API</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>功能</strong>：勾选此项后，插件将不再使用本地模型，而是通过网络调用 OpenAI 的官方 API 进行转录。</li>
+              <li><strong>优点</strong>：通常速度更快，且无需下载和配置本地模型。</li>
+              <li><strong>要求</strong>：需要您拥有 OpenAI 的 API 密钥。勾选后会弹出 API 配置窗口。</li>
+            </ul>
+          </div>
+
+          <!-- Moved up: 文稿匹配 now No.4 -->
+          <button type="button" class="collapsible" id="ui-zh-4">4. 文稿匹配</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>功能</strong>：将转录结果与您提供的完整“文稿/台本”进行匹配与对齐，优先使用文稿文本，同时沿用 Whisper 的精确时间轴生成字幕。</li>
+              <li><strong>使用方法</strong>：勾选“文稿匹配”后，会弹出窗口；将全文粘贴进去并点击“确定”，然后点击“创建”生成字幕。</li>
+              <li><strong>适用场景</strong>：有正式稿件/提词文案/会议纪要等，需要字幕与文稿严格一致的场景。</li>
+              <li><strong>兼容性</strong>：与“AI 字幕优化”互斥（二者不可同时启用）；推荐在本地模型模式下使用。</li>
+              <li><strong>注意</strong>：请尽量使用与音频相同语言的全文，并去除多余排版符号；若对齐失败，插件会自动回退为本地识别结果。</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-zh-5">5. AI 字幕优化</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>功能</strong>：一个高级的混合模式，仅在<strong>不使用</strong>“OpenAI API”时可用。</li>
+              <li><strong>工作原理</strong>：它首先使用<strong>本地模型</strong>生成带有精确时间戳的草稿，然后调用 OpenAI API 获取更准确的文本内容，最后将两者智能地结合，生成时间精准且内容更优化的字幕。</li>
+              <li><strong>要求</strong>：同样需要配置 OpenAI API 密钥。</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-zh-6">6. 语言</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>功能</strong>：指定视频中的主要语言。</li>
+              <li><strong>选项</strong>：
+                <ul>
+                  <li><code>Auto</code>：自动检测语言，推荐在不确定语言时使用。</li>
+                  <li><code>中文（普通话）</code>、<code>English</code> 等：明确指定语言可以提高识别的准确率。</li>
+                </ul>
+              </li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-zh-7">7. 每行最大字符</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>功能</strong>：设置每条字幕显示的最大字符数。默认值为 42。插件会根据这个限制自动将长句切分为多行。</li>
+              <li><strong>注意</strong>：对于中日韩等东亚语言，由于字符宽度的原因，实际每行的字数会大约是设定值的一半。</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-zh-8">8. 字幕间无空隙</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>功能</strong>：勾选后，插件会自动调整字幕的时间码，使上一条字幕的结束时间与下一条字幕的开始时间无缝衔接，实现字幕的连续显示。</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-zh-9">9. 删除句尾标点</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>功能</strong>：勾选后，会自动移除每条字幕末尾的逗号、句号、问号等标点符号。</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-zh-10">10. 短语列表 / 提示</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>功能</strong>：这是一个非常实用的功能。您可以在此文本框中输入一些视频中频繁出现的专有名词、人名、品牌或特定术语（用逗号或空格隔开）。</li>
+              <li><strong>作用</strong>：这会给 Whisper 模型一个“提示”，显著提高这些特定词汇的识别准确度。</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-zh-11">11. 创建字幕</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>功能</strong>：这是启动所有操作的核心按钮。</li>
+              <li><strong>工作流程</strong>：
+                <ol>
+                  <li>插件会自动将您当前激活的时间线渲染出一条临时的 MP3 音频文件。</li>
+                  <li>根据您的设置（本地模型或 API），开始进行语音转录。</li>
+                  <li>转录完成后，生成 <code>.srt</code> 格式的字幕文件。</li>
+                  <li>最后，自动将这个 SRT 文件导入到达芬奇的媒体池，并放置在时间线的第一个可用的字幕轨道上。</li>
+                </ol>
+              </li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-zh-12">12. 更新字幕</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>功能</strong>：无需重新转录，直接将右侧编辑器中你已修改的字幕内容导出为新的 SRT，并自动导入时间线（用于快速修订/纠错）。</li>
+              <li><strong>使用方法</strong>：
+                <ol>
+                  <li>在右侧字幕列表中选中一条字幕，底部文本框会显示其内容。</li>
+                  <li>在文本框中修改内容；可逐条选择并修改多处。</li>
+                  <li>点击【更新字幕】，插件会根据当前字幕列表与修改结果生成新的 SRT 并导入。</li>
+                </ol>
+            </ul>
+          </div>
+
+          <!-- (original 文稿匹配 block moved above) -->
+        </section>
+
+        <section id="api-config-zh">
+          <h2>二、 OpenAI API 配置窗口</h2>
+          <p>当您勾选 “使用 OpenAI API” 或 “AI 字幕优化” 时，会弹出此窗口。</p>
+          <ul>
+            <li><strong>Base URL</strong>：API 的服务器地址。如果您使用官方 OpenAI，通常留空或填写 <code>https://api.openai.com</code>。如果您有特殊的代理或第三方服务，请填写对应的地址。</li>
+            <li><strong>API Key</strong>：您的 OpenAI 密钥。</li>
+          </ul>
+        </section>
+
+        <section id="workflow-zh">
+          <h2>三、 快速上手工作流</h2>
+          <ol>
+            <li><strong>准备工作</strong>：
+              <ul>
+                <li><strong>本地模式</strong>：点击【模型下载】，下载您需要的模型（推荐 <code>medium</code> 或 <code>small</code>），并正确放置到插件的 `model` 文件夹中。</li>
+                <li><strong>API 模式（可选）</strong>：准备好您的 OpenAI API 密钥。</li>
+              </ul>
+            </li>
+            <li><strong>打开插件</strong>：在达芬奇的【工作区】->【脚本】中找到并运行 <code>Whisper</code> 。</li>
+            <li><strong>选择模式</strong>：
+              <ul>
+                <li><strong>追求便捷</strong>：勾选【使用 OpenAI API】，在弹出窗口填入您的 Key。</li>
+                <li><strong>无网络或保护隐私</strong>：保持不勾选，使用本地模型。</li>
+              </ul>
+            </li>
+            <li><strong>进行设置</strong>：
+              <ul>
+                <li>从【模型】下拉菜单中选择一个模型。</li>
+                <li>在【语言】中选择视频的语言（或保持 <code>Auto</code>）。</li>
+                <li>根据需要调整【每行最大字符】等选项。</li>
+                <li>如果视频中有专有名词，务必在【短语列表】中填写。</li>
+              </ul>
+            </li>
+            <li><strong>生成字幕</strong>：
+              <ul>
+                <li>确保您想要添加字幕的时间线是当前激活的。</li>
+                <li>点击【创建】按钮。</li>
+              </ul>
+            </li>
+            <li><strong>等待处理</strong>：
+              <ul>
+                <li>插件会显示处理进度，如“音频处理中...”、“转录中... 95%”。请耐心等待。</li>
+                <li>处理完成后，字幕会自动出现在您的时间线上。</li>
+              </ul>
+            </li>
+          </ol>
+        </section>
+      </div>
+
+        <footer>&copy; 2025 HB. All Rights Reserved.</footer>
+    </div>
+  </div>
+  <!-- ===== 中文版本结束 ===== -->
+
+  <!-- ========== English Version ========== -->
+  <div id="lang-en" class="lang">
+    <nav class="sidebar">
+      <h2>Contents</h2>
+      <ul>
+        <li>
+          <strong>Installation Guide</strong>
+          <ul>
+            <li><a href="#step-1-en">Step 1: Check Python</a></li>
+            <li><a href="#step-2-en">Step 2: Move Plugin</a></li>
+            <li><a href="#step-3-en">Step 3: Install Requirement</a></li>
+            <li><a href="#step-4-en">Step 4: Download Model</a></li>
+          </ul>
+        </li>
+        <li>
+          <strong>Usage Guide</strong>
+          <ul>
+            <li><a href="#ui-features-en">I. Main Plugin Interface</a>
+              <ul>
+                <li><a href="#ui-en-1">1. Model</a></li>
+                <li><a href="#ui-en-2">2. Download Model</a></li>
+                <li><a href="#ui-en-3">3. Use OpenAI API</a></li>
+                <li><a href="#ui-en-4">4. Match Text</a></li>
+                <li><a href="#ui-en-5">5. AI Correct (beta)</a></li>
+                <li><a href="#ui-en-6">6. Language</a></li>
+                <li><a href="#ui-en-7">7. Max Chars</a></li>
+                <li><a href="#ui-en-8">8. No Gaps</a></li>
+                <li><a href="#ui-en-9">9. No End Punct.</a></li>
+                <li><a href="#ui-en-10">10. Phrases / Prompt</a></li>
+                <li><a href="#ui-en-11">11. Create</a></li>
+                <li><a href="#ui-en-12">12. Update SRT</a></li>
+              </ul>
+            </li>
+            <li><a href="#api-config-en">II. OpenAI API Config</a></li>
+            <li><a href="#workflow-en">III. Quick Workflow</a></li>
+          </ul>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="content">
+      <!-- Installation Guide -->
+      <div class="container" id="install-guide-en">
+        <header>
+          <h1>DaVinci Resolve Whisper Installation Guide</h1>
+        </header>
+        <section id="step-1-en">
+          <h2>Step 1: Check if Python is Installed in DaVinci Resolve</h2>
+          <p>
+            Click: <code>Workspace</code> ——&gt; <code>Console</code> ——&gt;
+            <code>Py3</code>. If it is already installed, no window will pop up
+            (proceed directly to <a href="#step-2-en">Step 2</a>).
+          </p>
+          <p>
+            If it is not installed, a "<strong>Python was not found</strong>"
+            message will pop up. Follow the pop-up instructions to download and
+            install it. After installation, proceed to
+            <a href="#step-2-en">Step 2</a>!
+          </p>
+          <p>
+            <strong>Important for Windows users:</strong> During Python
+            installation, make sure to check the
+            "<span style="color: red">Add Python to PATH</span>" option. If you
+            forget this step, you may need to reinstall Python or manually add
+            it to the system's environment variables.
+          </p>
+        </section>
+        <section id="step-2-en">
+          <h2>Step 2: Move the Whisper Plugin</h2>
+          <p>Move the <code>Whisper</code> folder to the following location:</p>
+          <pre><code>Mac: 
+/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility 
+
+Win: 
+C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></pre>
+        </section>
+        <section id="step-3-en">
+          <h2>Step 3: Install Requirement</h2>
+          
+          <h3>For Mac Users:</h3>
+          <p>
+            Double-click the <code>Mac_Install.command</code>,Install it and wait for it to complete..
+          </p>
+          <h3>For Windows Users:</h3>
+          <p>
+            Double-click the <code>Windows_Install.bat</code>,Install it and wait for it to complete..
+          </p>
+          <p>
+            After installation, open the plugin in DaVinci Resolve by navigating to <code>Workspace</code> ——&gt; <code>Scripts</code>.
+          </p>
+        </section>
+        <section id="step-4-en">
+          <h2>Step 4: Download & Replace Model</h2>
+          <p>You can choose the model folder to download from <a href="https://drive.google.com/drive/folders/16FLicjnstLhrl3yKgCHOvle5-3_mLii5?usp=sharing" target="_blank">the page.</a></p>
+
+          <p>After downloading, copy the downloaded model folder into the <code>Whisper/model</code> directory, replacing the existing folder with the same name.</p>
+        </section>
+      </div>
+
+      <!-- DaVinci Resolve Whisper Usage Guide -->
+      <div class="container" id="usage-guide-en">
+        <header>
+          <h1>DaVinci Resolve Whisper Usage Guide</h1>
+        </header>
+        <p>This plugin leverages the powerful Whisper model to generate accurate SRT subtitle files for your video timeline directly within DaVinci Resolve, automatically importing them into your project to significantly boost your workflow efficiency.</p>
+        
+        <section id="ui-features-en">
+          <h2>I. Main Plugin Interface Explained</h2>
+          <p>After opening the plugin, you will see a clean settings window. Here is an explanation of each control (click to expand):</p>
+          
+          <button type="button" class="collapsible" id="ui-en-1">1. Model</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>Function</strong>: Select the Whisper model for speech recognition.</li>
+              <li><strong>Options</strong>:
+                <ul>
+                  <li><strong>Local Models</strong>: Includes <code>tiny</code>, <code>small</code>, <code>base</code>, <code>medium</code>, <code>large-v3</code>. Larger models are more accurate but slower. These models run on your local machine.</li>
+                  <li><strong>OpenAI API Models</strong>: When you check "Use OpenAI API," this will change to online models like <code>whisper-1</code>.</li>
+                </ul>
+              </li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-en-2">2. Download Model</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>Function</strong>: Clicking this button opens a browser to download local model files from Baidu Netdisk or Google Drive.</li>
+              <li><strong>Note</strong>: This button is only available when not using the OpenAI API. The downloaded model files need to be unzipped and placed in the corresponding model folder under <code>Whisper/model/</code> (e.g., the <code>small</code> folder).</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-en-3">3. Use OpenAI API</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>Function</strong>: When checked, the plugin will use OpenAI's official API for transcription instead of local models.</li>
+              <li><strong>Advantages</strong>: Generally faster and requires no download or configuration of local models.</li>
+              <li><strong>Requirement</strong>: You need an OpenAI API key. An API configuration window will pop up when checked.</li>
+            </ul>
+          </div>
+
+          <!-- Moved up: Match Text now No.4 -->
+          <button type="button" class="collapsible" id="ui-en-4">4. Match Text</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>Function</strong>: Aligns the transcription with a full script you provide, using your script text for subtitles while preserving Whisper’s precise timing.</li>
+              <li><strong>How to use</strong>: Check “Match Text”, paste the complete script in the popup and click “Confirm”, then click “Create”.</li>
+              <li><strong>Best for</strong>: Voice-overs, speeches, meetings, or any case where subtitles should strictly follow a prepared script.</li>
+              <li><strong>Compatibility</strong>: Mutually exclusive with “AI Correct (beta)” and recommended with local models.</li>
+              <li><strong>Notes</strong>: Use the full script in the same language as the audio and remove extra formatting; if alignment fails, it falls back to the local recognition result.</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-en-5">5. AI Correct (beta)</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>Function</strong>: An advanced hybrid mode, available only when <strong>not</strong> using the "Use OpenAI API" option.</li>
+              <li><strong>How it works</strong>: It first uses a <strong>local model</strong> to generate a draft with precise timestamps, then calls the OpenAI API to get more accurate text content, and finally intelligently combines both to produce subtitles that are both time-accurate and content-optimized.</li>
+              <li><strong>Requirement</strong>: Also requires an OpenAI API key.</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-en-6">6. Language</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>Function</strong>: Specify the primary language in the video.</li>
+              <li><strong>Options</strong>:
+                <ul>
+                  <li><code>Auto</code>: Automatically detects the language, recommended when unsure.</li>
+                  <li><code>Chinese (Mandarin)</code>, <code>English</code>, etc.: Specifying the language can improve recognition accuracy.</li>
+                </ul>
+              </li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-en-7">7. Max Chars</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>Function</strong>: Sets the maximum number of characters per subtitle line. The default is 42. The plugin automatically splits long sentences based on this limit.</li>
+              <li><strong>Note</strong>: For East Asian languages like Chinese, Japanese, and Korean, the actual number of characters per line will be about half of the set value due to character width.</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-en-8">8. No Gaps</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>Function</strong>: When checked, the plugin adjusts subtitle timecodes to eliminate gaps, making the end time of one subtitle seamless with the start time of the next for continuous display.</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-en-9">9. No End Punct. </button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>Function</strong>: When checked, it automatically removes trailing punctuation like commas, periods, and question marks from the end of each subtitle line.</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-en-10">10. Phrases / Prompt</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>Function</strong>: A very useful feature. You can enter frequently occurring proper nouns, names, brands, or specific terms (separated by commas or spaces) in this text box.</li>
+              <li><strong>Effect</strong>: This provides a "hint" to the Whisper model, significantly improving the recognition accuracy of these specific words.</li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-en-11">11. Create</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>Function</strong>: The core button that initiates all operations.</li>
+              <li><strong>Workflow</strong>:
+                <ol>
+                  <li>The plugin automatically renders a temporary MP3 audio file from your currently active timeline.</li>
+                  <li>It begins transcription based on your settings (local model or API).</li>
+                  <li>After transcription, it generates an <code>.srt</code> subtitle file.</li>
+                  <li>Finally, it automatically imports this SRT file into the DaVinci Resolve media pool and places it on the first available subtitle track of the timeline.</li>
+                </ol>
+              </li>
+            </ul>
+          </div>
+
+          <button type="button" class="collapsible" id="ui-en-12">12. Update SRT</button>
+          <div class="collapsible-content">
+            <ul>
+              <li><strong>Function</strong>: Export a new SRT from the edited subtitle text on the right, without re-transcribing audio, and auto-import it to the timeline (ideal for quick fixes).</li>
+              <li><strong>How to use</strong>:
+                <ol>
+                  <li>Select a subtitle row in the right list; the text will appear in the editor.</li>
+                  <li>Edit the text; repeat for any lines you want to correct.</li>
+                  <li>Click <strong>Update SRT</strong>; the plugin generates a new SRT from the current list and imports it.</li>
+                </ol>
+              </li>
+              
+            </ul>
+          </div>
+
+          <!-- (original Match Text block moved above) -->
+        </section>
+
+        <section id="api-config-en">
+          <h2>II. OpenAI API Configuration Window</h2>
+          <p>This window appears when you check "Use OpenAI API" or "AI Correct."</p>
+          <ul>
+            <li><strong>Base URL</strong>: The server address for the API. If you are using the official OpenAI, leave it blank or enter <code>https://api.openai.com</code>. If you use a proxy or third-party service, enter the corresponding address.</li>
+            <li><strong>API Key</strong>: Your OpenAI secret key.</li>
+          </ul>
+        </section>
+
+        <section id="workflow-en">
+          <h2>III. Quick Start Workflow</h2>
+          <ol>
+            <li><strong>Preparation</strong>:
+              <ul>
+                <li><strong>Local Mode</strong>: Click "Download Model," download your desired model (<code>medium</code> or <code>small</code> recommended), and place it correctly in the plugin's `model` folder.</li>
+                <li><strong>API Mode(Options)</strong>: Have your OpenAI API key ready.</li>
+              </ul>
+            </li>
+            <li><strong>Open the Plugin</strong>: In DaVinci Resolve, navigate to "Workspace" -> "Scripts" and run <code>Whisper</code>.</li>
+            <li><strong>Select Mode</strong>:
+              <ul>
+                <li><strong>For convenience</strong>: Check "Use OpenAI API" and enter your key in the pop-up window.</li>
+                <li><strong>For offline use or privacy</strong>: Leave it unchecked to use local models.</li>
+              </ul>
+            </li>
+            <li><strong>Configure Settings</strong>:
+              <ul>
+                <li>Select a model from the "Model" dropdown.</li>
+                <li>Choose the video's language in "Language" (or keep <code>Auto</code>).</li>
+                <li>Adjust "Max Chars" and other options as needed.</li>
+                <li>If there are proper nouns in the video, be sure to fill them in the "Phrases / Prompt" box.</li>
+              </ul>
+            </li>
+            <li><strong>Generate Subtitles</strong>:
+              <ul>
+                <li>Ensure the timeline you want to add subtitles to is active.</li>
+                <li>Click the "Create" button.</li>
+              </ul>
+            </li>
+            <li><strong>Wait for Processing</strong>:
+              <ul>
+                <li>The plugin will show progress updates like "Rendering audio..." and "Transcribing... 95%". Please be patient.</li>
+                <li>Once complete, the subtitles will automatically appear on your timeline.</li>
+              </ul>
+            </li>
+          </ol>
+        </section>
+      </div>
+
+        <footer>&copy; 2025 HB. All Rights Reserved.</footer>
+    </div>
+  </div>
+  <!-- ===== English Version 结束 ===== -->
+
+  <!-- ===== 脚本 ===== -->
+  <script>
+    // --- 语言切换 ---
+    const btnZh = document.getElementById("btn-zh");
+    const btnEn = document.getElementById("btn-en");
+    const langZh = document.getElementById("lang-zh");
+    const langEn = document.getElementById("lang-en");
+
+    btnZh.addEventListener("click", () => {
+      btnZh.classList.add("active");
+      btnEn.classList.remove("active");
+      langZh.classList.add("active");
+      langEn.classList.remove("active");
+      document.documentElement.lang = "zh-CN";
+    });
+
+    btnEn.addEventListener("click", () => {
+      btnEn.classList.add("active");
+      btnZh.classList.remove("active");
+      langEn.classList.add("active");
+      langZh.classList.remove("active");
+      document.documentElement.lang = "en";
+    });
+
+    // --- 手风琴/折叠 ---
+    const collapsibles = document.getElementsByClassName("collapsible");
+    for (let i = 0; i < collapsibles.length; i++) {
+      collapsibles[i].addEventListener("click", function() {
+        this.classList.toggle("active");
+        const content = this.nextElementSibling;
+        if (content.style.maxHeight){
+          content.style.maxHeight = null;
+        } else {
+          content.style.maxHeight = content.scrollHeight + "px";
+        } 
+      });
+    }
+  </script>
+</body>
+</html>

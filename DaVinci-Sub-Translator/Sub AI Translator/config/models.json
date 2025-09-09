@@ -1,0 +1,35 @@
+{
+    "models": {
+        "gpt-5": {
+            "model": "gpt-5"
+        },
+        "gpt-5-mini": {
+            "model": "gpt-5-mini"
+        },
+        "gpt-5-nano": {
+            "model": "gpt-5-nano"
+        },
+        "gpt-4o": {
+            "model": "gpt-4o"
+        },
+        "gpt-4.1-nano": {
+            "model": "gpt-4.1-nano"
+        },
+        "gpt-4.1-mini": {
+            "model": "gpt-4.1-mini"
+        },
+        "gpt-4.1": {
+            "model": "gpt-4.1"
+        },
+        "gemini-2.5-flash-lite": {
+            "model": "gemini-2.5-flash-lite-preview-06-17"
+        },
+        "gemini-2.5-flash": {
+            "model": "gemini-2.5-flash"
+        },
+        "deepseek-chat": {
+            "model": "deepseek-chat"
+        }
+    },
+    "custom_models": {}
+}

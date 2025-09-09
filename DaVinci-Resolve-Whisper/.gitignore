@@ -1,0 +1,10 @@
+# Ignore settings file
+Whisper/config/settings.json
+
+# Ignore model files
+Whisper/model/**/model.bin
+
+# Ignore system files
+.DS_Store
+
+Whisper/WhisperX.py

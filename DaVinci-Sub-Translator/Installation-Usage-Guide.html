@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DaVinci Resolve Sub Translator – 中 / EN</title>
+
+  <!-- ===== 公共样式（两版一致，只保留一份） ===== -->
+  <style>
+    /* 全局字体与背景 */
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: #f0f2f5;
+      color: #555;
+    }
+
+    /* 固定左侧目录 */
+    .sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 250px;
+      height: 100%;
+      background: #fff;
+      border-right: 1px solid #e0e0e0;
+      padding: 20px;
+      overflow-y: auto;
+      box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
+    }
+    .sidebar h2 {
+      font-size: 1.8em;
+      margin: 0 0 20px;
+      color: #333;
+      text-align: center;
+      border-bottom: 1px solid #e0e0e0;
+      padding-bottom: 10px;
+    }
+    .sidebar ul {
+      list-style: none;
+      padding: 0;
+    }
+    .sidebar li {
+      margin: 10px 0;
+      font-size: 0.95em;
+    }
+    .sidebar li ul {
+      margin-top: 5px;
+      margin-left: 15px;
+    }
+    .sidebar a {
+      text-decoration: none;
+      color: #007bff;
+      transition: color 0.3s;
+    }
+    .sidebar a:hover {
+      color: #0056b3;
+    }
+
+    /* 主内容区 */
+    .content {
+      margin-left: 270px; /* 250 + 20 */
+      padding: 40px;
+    }
+
+    /* 卡片式容器 */
+    .container {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      padding: 30px;
+      margin-bottom: 40px;
+    }
+    header {
+      text-align: center;
+      padding-bottom: 20px;
+      border-bottom: 1px solid #e0e0e0;
+      margin-bottom: 30px;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 2em;
+      color: #333;
+    }
+    h2 {
+      color: #007bff;
+      margin-top: 30px;
+      border-left: 4px solid #007bff;
+      padding-left: 10px;
+    }
+    h3 {
+      color: #333;
+      margin-top: 20px;
+    }
+    p,
+    ul {
+      line-height: 1.8;
+      margin: 15px 0;
+    }
+    ul {
+      padding-left: 20px;
+    }
+    code {
+      background: #f9f9f9;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: Consolas, Monaco, "Courier New", monospace;
+    }
+    pre {
+      background: #f9f9f9;
+      padding: 15px;
+      border-left: 5px solid #007bff;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-family: Consolas, Monaco, "Courier New", monospace;
+    }
+    a {
+      color: #007bff;
+    }
+    footer {
+      text-align: center;
+      font-size: 0.9em;
+      color: #888;
+      margin-top: 40px;
+      border-top: 1px solid #e0e0e0;
+      padding-top: 20px;
+    }
+
+    /* 移动端适配 */
+    @media (max-width: 768px) {
+      .sidebar {
+        position: relative;
+        width: 100%;
+        height: auto;
+        box-shadow: none;
+        border-right: none;
+        border-bottom: 1px solid #e0e0e0;
+      }
+      .content {
+        margin-left: 0;
+        padding: 20px;
+      }
+    }
+
+    /* ===== 语言切换相关 ===== */
+    .lang {
+      display: none;
+    }
+    .lang.active {
+      display: block;
+    }
+
+    /* 切换按钮 */
+    .lang-switcher {
+      position: fixed;
+      top: 15px;
+      right: 20px;
+      z-index: 1000;
+    }
+    .lang-switcher button {
+      cursor: pointer;
+      border: 1px solid #007bff;
+      background: #fff;
+      color: #007bff;
+      font-size: 0.9em;
+      padding: 6px 12px;
+      border-radius: 20px;
+      transition: all 0.3s;
+      margin-left: 6px;
+    }
+    .lang-switcher button.active,
+    .lang-switcher button:hover {
+      background: #007bff;
+      color: #fff;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- ===== 语言切换按钮 ===== -->
+  <div class="lang-switcher">
+    <button id="btn-zh" class="active">中文</button>
+    <button id="btn-en">English</button>
+  </div>
+
+  <!-- ========== 中文版本（默认显示） ========== -->
+  <div id="lang-zh" class="lang active">
+    <!-- *** 以下整块内容来自您提供的中文HTML，未做任何修改 *** -->
+    <!-- 固定左侧目录 -->
+    <nav class="sidebar">
+      <h2>目录</h2>
+      <ul>
+        <li>
+          <strong>安装指南</strong>
+          <ul>
+            <li><a href="#step-1">步骤 1：检查 Python</a></li>
+            <li><a href="#step-2">步骤 2：移动插件</a></li>
+            <li><a href="#step-3">步骤 3：安装依赖</a></li>
+          </ul>
+        </li>
+        <li>
+          <strong>使用指南</strong>
+          <ul>
+            <li><a href="#intro">简介</a></li>
+            <li><a href="#features">功能区</a></li>
+            <li><a href="#batch-translation">1. 批量翻译</a></li>
+            <li><a href="#single-translation">2. 单句翻译</a></li>
+            <li><a href="#configuration">3. 配置</a></li>
+            <li><a href="#openai-config">4. OpenAI Format API 配置</a></li>
+          </ul>
+        </li>
+      </ul>
+    </nav>
+
+    <!-- 主内容 -->
+    <div class="content">
+      <!-- 安装指南 -->
+      <div class="container" id="install-guide">
+        <header>
+          <h1>DaVinci Resolve Sub Translator 安装指南</h1>
+        </header>
+        <section id="step-1">
+          <h2>步骤 1：检查 DaVinci Resolve 中是否已安装 Python</h2>
+          <p>
+            点击：<code>工作区</code> ——&gt; <code>控制台</code> ——&gt; <code>Py3</code>。如果已安装，则不会弹出窗口（直接进入
+            <a href="#step-2">步骤 2</a>）。
+          </p>
+          <p>
+            若未安装，则会弹出 "<strong>Python was not found</strong>"
+            消息，请根据提示下载并安装，安装完成后进入<a href="#step-2">步骤 2</a>！
+          </p>
+          <p>
+            <strong>Windows 用户：</strong>安装 Python 时请务必勾选 "<span
+              style="color: red"
+              >Add Python to PATH</span
+            >" 选项，否则可能需要重新安装或手动设置环境变量。
+          </p>
+        </section>
+        <section id="step-2">
+          <h2>步骤 2：移动 Sub AI Translator 插件</h2>
+          <p>将 <code>Sub AI Translator</code> 文件夹移动到以下位置：</p>
+          <pre><code>Mac: 
+/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility 
+
+Win: 
+C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></pre>
+        </section>
+        <section id="step-3">
+          <h2>步骤 3：安装依赖</h2>
+          
+          <h3>Mac 用户：</h3>
+          <p>
+            双击 <code>Mac_Install.command</code>进行安装，等待安装完成。
+          </p>
+          <h3>Win 用户：</h3>
+          <p> 
+            双击 <code>Windows_Install.bat</code>进行安装，等待安装完成。
+          </p>
+          <p>
+            安装完成后，可通过 <code>工作台</code> ——&gt; <code>脚本</code> 菜单打开插件进行使用。
+          </p>
+        </section>
+      </div>
+      <!-- 使用指南 -->
+      <div class="container" id="usage-guide">
+        <header>
+          <h1>DaVinci Resolve Sub Translator 使用指南</h1>
+        </header>
+        <section id="intro">
+          <h2>简介</h2>
+          <p>本脚本工具旨在为 DaVinci Resolve 用户提供强大、易用的AI翻译功能。它支持多种主流AI翻译服务商，能够实现对时间线上字幕的批量翻译和单个句子的快速翻译。</p>
+        </section>
+        <section id="features">
+          <h2>功能区</h2>
+          <p>脚本界面主要分为三个标签页：<strong>批量翻译</strong>、<strong>单句翻译</strong> 和 <strong>配置</strong>。</p>
+        </section>
+        <section id="batch-translation">
+          <h2>1. 批量翻译 (Batch)</h2>
+          <p>此页面用于翻译当前时间线上启用的字幕轨道中的所有字幕。</p>
+          <h3>1.1 服务商 (Provider)</h3>
+          <ul>
+            <li><strong>功能</strong>: 选择用于翻译的AI服务。</li>
+            <li><strong>选项</strong>:
+              <ul>
+                <li><code>Google</code>: 免费，无需配置，适合快速、常规的翻译。</li>
+                <li><code>Microsoft (API Key)</code>: 微软翻译，需要配置API Key和区域。</li>
+                <li><code>DeepL (API Key)</code>: DeepL翻译，质量较高，需要配置API Key。</li>
+                <li><code>Open AI Format (API Key)</code>: 兼容OpenAI格式的各类模型，如GPT系列、Groq、Kimi、Deepseek等，需要进行详细配置。</li>
+                <li><code>Free AI (GLM-4-Flash)</code>: 免费的AI模型，无需配置，由服务器提供支持。</li>
+              </ul>
+            </li>
+          </ul>
+          <h3>1.2 目标语言 (Target Language)</h3>
+          <p><strong>功能</strong>: 选择您希望将字幕翻译成的目标语言。</p>
+          <h3>1.3 开始翻译 (Translate)</h3>
+          <p><strong>功能</strong>: 点击此按钮后，脚本将获取当前时间线上所有已启用字幕轨道中的字幕内容，并开始进行批量翻译。翻译完成后，会自动生成一个新的SRT文件并导入到媒体池和时间线的第一条空字幕轨道上。</p>
+        </section>
+        <section id="single-translation">
+          <h2>2. 单句翻译 (Single)</h2>
+          <p>此页面提供了一个简单的翻译工具，方便您测试翻译效果或快速翻译少量文本。</p>
+          <h3>2.1 原文输入框</h3>
+          <p><strong>功能</strong>: 将您需要翻译的文本粘贴到此处。</p>
+          <h3>2.2 翻译按钮</h3>
+          <p><strong>功能</strong>: 点击后，将使用在“批量翻译”页面选定的服务商和目标语言，对上方输入框中的文本进行翻译。</p>
+          <h3>2.3 译文显示框</h3>
+          <p><strong>功能</strong>: 显示翻译后的结果。</p>
+        </section>
+        <section id="configuration">
+          <h2>3. 配置 (Configuration)</h2>
+          <p>此页面用于配置API密钥、调整脚本参数以及切换界面语言。</p>
+          <h3>3.1 API服务配置</h3>
+          <ul>
+            <li><strong><code>Microsoft</code></strong>: 点击 <strong><code>配置</code></strong> 按钮，会弹出Microsoft Azure的配置窗口，需要填入您的API密钥和区域信息。</li>
+            <li><strong><code>DeepL</code></strong>: 点击 <strong><code>配置</code></strong> 按钮，会弹出DeepL的配置窗口，需要填入您的API密钥。</li>
+            <li><strong><code>OpenAI Format</code></strong>: 点击 <strong><code>配置</code></strong> 按钮，会弹出兼容OpenAI格式的API配置窗口，这是功能最丰富的配置项（详见下文）。</li>
+          </ul>
+          <h3>3.2 并发数 (Concurrency)</h3>
+          <ul>
+            <li><strong>功能</strong>: 设置在批量翻译时同时发送的API请求数量。</li>
+            <li><strong>建议</strong>:
+              <ul>
+                <li>如果您的网络状况良好且API服务商允许高并发，可以适当调高此数值（如<code>10-20</code>）以加快翻译速度。</li>
+                <li>如果频繁遇到API错误或网络超时，请降低此数值（如<code>3-5</code>）。</li>
+              </ul>
+            </li>
+          </ul>
+        </section>
+        <section id="openai-config">
+          <h2>4. OpenAI Format API 配置窗口</h2>
+          <p>这是最核心和灵活的配置部分，适用于所有兼容OpenAI API格式的服务。</p>
+          <h3>4.1 模型 (Model)</h3>
+          <p><strong>功能</strong>: 选择一个用于翻译的AI模型。您可以点击 <strong><code>新增模型</code></strong> 来添加自定义模型。</p>
+          <h3>4.2 Base URL</h3>
+          <p><strong>功能</strong>: 填写API服务商提供的接口地址。</p>
+          <p><strong>示例</strong>:</p>
+          <ul>
+            <li><strong>OpenAI官方</strong>: <code>https://api.openai.com</code></li>
+          </ul>
+          <h3>4.3 API Key</h3>
+          <p><strong>功能</strong>: 填写您的API密钥。</p>
+          <h3>4.4 Temperature</h3>
+          <ul>
+            <li><strong>功能</strong>: 控制模型输出的随机性。数值越低，翻译结果越稳定、精确；数值越高，结果越具创造性。</li>
+            <li><strong>建议</strong>: 对于翻译任务，建议使用较低值，如 <code>0.2</code> - <code>0.5</code>。</li>
+          </ul>
+          <h3>4.5 系统提示词 (System Prompt)</h3>
+          <ul>
+            <li><strong>功能</strong>: 这是指导AI如何执行翻译任务的核心指令。您可以在此详细定义翻译的风格、规则和要求。</li>
+            <li><strong>示例</strong>: <code>你是一个专业的简体中文翻译引擎，请将字幕翻译成流畅、自然、易于理解的简体中文。保持专有名词不变。</code></li>
+          </ul>
+          <h3>4.6 验证/新增/删除模型</h3>
+          <ul>
+            <li><strong><code>验证</code></strong>: 点击后会发送一条测试请求，以检验您的<code>Base URL</code>、<code>API Key</code>和<code>模型</code>配置是否正确。</li>
+            <li><strong><code>新增模型</code></strong>: 弹出一个窗口，让您添加自定义模型。您需要提供一个<strong>显示名称</strong>（在下拉列表中显示）和一个<strong>模型名称</strong>（API实际调用的名称）。</li>
+            <li><strong><code>删除模型</code></strong>: 从下拉列表中删除当前选中的自定义模型。</li>
+          </ul>
+        </section>
+      </div>
+      <footer>&copy; 2025 HB. All Rights Reserved.</footer>
+    </div>
+  </div>
+  <!-- ===== 中文版本结束 ===== -->
+
+  <!-- ========== English Version ========== -->
+  <div id="lang-en" class="lang">
+    <!-- *** 以下整块内容来自您提供的英文HTML，未做任何修改 *** -->
+    <nav class="sidebar">
+      <h2>Contents</h2>
+      <ul>
+        <li>
+          <strong>Installation Guide</strong>
+          <ul>
+            <li><a href="#step-1-en">Step 1: Check Python</a></li>
+            <li><a href="#step-2-en">Step 2: Move Plugin</a></li>
+            <li><a href="#step-3-en">Step 3: Install Requirement</a></li>
+          </ul>
+        </li>
+        <li>
+          <strong>Usage Guide</strong>
+          <ul>
+            <li><a href="#intro-en">Introduction</a></li>
+            <li><a href="#features-en">Features</a></li>
+            <li><a href="#batch-translation-en">1. Batch Translation</a></li>
+            <li><a href="#single-translation-en">2. Single Translation</a></li>
+            <li><a href="#configuration-en">3. Configuration</a></li>
+            <li><a href="#openai-config-en">4. OpenAI Format API Config</a></li>
+          </ul>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="content">
+      <!-- Installation Guide -->
+      <div class="container" id="install-guide-en">
+        <header>
+          <h1>DaVinci Resolve Sub Translator Installation Guide</h1>
+        </header>
+        <section id="step-1-en">
+          <h2>Step 1: Check if Python is Installed in DaVinci Resolve</h2>
+          <p>
+            Click: <code>Workspace</code> ——&gt; <code>Console</code> ——&gt;
+            <code>Py3</code>. If it is already installed, no window will pop up
+            (proceed directly to <a href="#step-2-en">Step 2</a>).
+          </p>
+          <p>
+            If it is not installed, a "<strong>Python was not found</strong>"
+            message will pop up. Follow the pop-up instructions to download and
+            install it. After installation, proceed to
+            <a href="#step-2-en">Step 2</a>!
+          </p>
+          <p>
+            <strong>Important for Windows users:</strong> During Python
+            installation, make sure to check the
+            "<span style="color: red">Add Python to PATH</span>" option. If you
+            forget this step, you may need to reinstall Python or manually add
+            it to the system's environment variables.
+          </p>
+        </section>
+        <section id="step-2-en">
+          <h2>Step 2: Move the Sub AI Translator Plugin</h2>
+          <p>Move the <code>Sub AI Translator</code> folder to the following location:</p>
+          <pre><code>Mac: 
+/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility 
+
+Win: 
+C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></pre>
+        </section>
+        <section id="step-3-en">
+          <h2>Step 3: Install Requirement</h2>
+          
+          <h3>For Mac Users:</h3>
+          <p>
+            Double-click the <code>Mac_Install.command</code> ,Install it and wait for it to complete..
+          </p>
+          <h3>For Windows Users:</h3>
+          <p>
+            Double-click the <code>Windows_Install.bat</code> ,Install it and wait for it to complete..
+          </p>
+          <p>
+            After installation, open the plugin in DaVinci Resolve by navigating to <code>Workspace</code> ——&gt; <code>Scripts</code>.
+          </p>
+        </section>
+      </div>
+      <!-- Usage Guide -->
+      <div class="container" id="usage-guide-en">
+        <header>
+          <h1>DaVinci Resolve Sub Translator Usage Guide</h1>
+        </header>
+        <section id="intro-en">
+          <h2>Introduction</h2>
+          <p>This script tool is designed to provide DaVinci Resolve users with powerful and easy-to-use AI translation functions. It supports multiple mainstream AI translation service providers and can perform batch translation of subtitles on the timeline and quick translation of single sentences.</p>
+        </section>
+        <section id="features-en">
+          <h2>Features</h2>
+          <p>The script interface is mainly divided into three tabs: <strong>Batch</strong>, <strong>Single</strong>, and <strong>Configuration</strong>.</p>
+        </section>
+        <section id="batch-translation-en">
+          <h2>1. Batch Translation</h2>
+          <p>This page is used to translate all subtitles in the enabled subtitle tracks on the current timeline.</p>
+          <h3>1.1 Provider</h3>
+          <ul>
+            <li><strong>Function</strong>: Select the AI service for translation.</li>
+            <li><strong>Options</strong>:
+              <ul>
+                <li><code>Google</code>: Free, no configuration required, suitable for quick and general translations.</li>
+                <li><code>Microsoft (API Key)</code>: Microsoft Translator, requires API Key and region configuration.</li>
+                <li><code>DeepL (API Key)</code>: DeepL translation, high quality, requires API Key configuration.</li>
+                <li><code>Open AI Format (API Key)</code>: Compatible with various models in OpenAI format, such as GPT series, Groq, Kimi, Deepseek, etc., requiring detailed configuration.</li>
+                <li><code>Free AI (GLM-4-Flash)</code>: A free AI model, no configuration required, supported by the server.</li>
+              </ul>
+            </li>
+          </ul>
+          <h3>1.2 Target Language</h3>
+          <p><strong>Function</strong>: Select the target language you want to translate the subtitles into.</p>
+          <h3>1.3 Translate</h3>
+          <p><strong>Function</strong>: After clicking this button, the script will get the content of all subtitles in the enabled subtitle tracks on the current timeline and start batch translation. After the translation is completed, a new SRT file will be automatically generated and imported into the media pool and the first empty subtitle track on the timeline.</p>
+        </section>
+        <section id="single-translation-en">
+          <h2>2. Single Translation</h2>
+          <p>This page provides a simple translation tool for you to test the translation effect or quickly translate a small amount of text.</p>
+          <h3>2.1 Original Text Input Box</h3>
+          <p><strong>Function</strong>: Paste the text you need to translate here.</p>
+          <h3>2.2 Translate Button</h3>
+          <p><strong>Function</strong>: After clicking, it will use the provider and target language selected on the "Batch" page to translate the text in the input box above.</p>
+          <h3>2.3 Translated Text Display Box</h3>
+          <p><strong>Function</strong>: Displays the translated result.</p>
+        </section>
+        <section id="configuration-en">
+          <h2>3. Configuration</h2>
+          <p>This page is used to configure API keys, adjust script parameters, and switch the interface language.</p>
+          <h3>3.1 API Service Configuration</h3>
+          <ul>
+            <li><strong><code>Microsoft</code></strong>: Click the <strong><code>Configure</code></strong> button to open the Microsoft Azure configuration window, where you need to enter your API key and region information.</li>
+            <li><strong><code>DeepL</code></strong>: Click the <strong><code>Configure</code></strong> button to open the DeepL configuration window, where you need to enter your API key.</li>
+            <li><strong><code>OpenAI Format</code></strong>: Click the <strong><code>Configure</code></strong> button to open the API configuration window compatible with the OpenAI format. This is the most feature-rich configuration item (see below for details).</li>
+          </ul>
+          <h3>3.2 Concurrency</h3>
+          <ul>
+            <li><strong>Function</strong>: Set the number of API requests to be sent simultaneously during batch translation.</li>
+            <li><strong>Suggestion</strong>:
+              <ul>
+                <li>If your network condition is good and the API provider allows high concurrency, you can increase this value appropriately (e.g.,<code>10-20</code>) to speed up the translation.</li>
+                <li>If you frequently encounter API errors or network timeouts, please lower this value (e.g.,<code>3-5</code>).</li>
+              </ul>
+            </li>
+          </ul>
+        </section>
+        <section id="openai-config-en">
+          <h2>4. OpenAI Format API Configuration Window</h2>
+          <p>This is the most core and flexible configuration part, applicable to all services compatible with the OpenAI API format.</p>
+          <h3>4.1 Model</h3>
+          <p><strong>Function</strong>: Select an AI model for translation. You can click <strong><code>Add Model</code></strong> to add a custom model.</p>
+          <h3>4.2 Base URL</h3>
+          <p><strong>Function</strong>: Fill in the interface address provided by the API service provider.</p>
+          <p><strong>Example</strong>:</p>
+          <ul>
+            <li><strong>Official OpenAI</strong>: <code>https://api.openai.com</code></li>
+          </ul>
+          <h3>4.3 API Key</h3>
+          <p><strong>Function</strong>: Fill in your API key.</p>
+          <h3>4.4 Temperature</h3>
+          <ul>
+            <li><strong>Function</strong>: Controls the randomness of the model's output. A lower value makes the translation result more stable and precise; a higher value makes the result more creative.</li>
+            <li><strong>Suggestion</strong>: For translation tasks, it is recommended to use a lower value, such as <code>0.2</code> - <code>0.5</code>.</li>
+          </ul>
+          <h3>4.5 System Prompt</h3>
+          <ul>
+            <li><strong>Function</strong>: This is the core instruction that guides the AI on how to perform the translation task. You can define the style, rules, and requirements of the translation in detail here.</li>
+            <li><strong>Example</strong>: <code>You are a professional English translation engine. Please translate the subtitles into fluent, natural, and easy-to-understand English. Keep proper nouns unchanged.</code></li>
+          </ul>
+          <h3>4.6 Validate/Add/Delete Model</h3>
+          <ul>
+            <li><strong><code>Validate</code></strong>: After clicking, a test request will be sent to verify whether your<code>Base URL</code>,<code>API Key</code>, and<code>Model</code> configurations are correct.</li>
+            <li><strong><code>Add Model</code></strong>: A window will pop up for you to add a custom model. You need to provide a <strong>Display Name</strong> (shown in the dropdown list) and a <strong>Model Name</strong> (the actual name called by the API).</li>
+            <li><strong><code>Delete Model</code></strong>: Deletes the currently selected custom model from the dropdown list.</li>
+          </ul>
+        </section>
+      </div>
+        <footer>&copy; 2025 HB. All Rights Reserved.</footer>
+    </div>
+  </div>
+  <!-- ===== English Version 结束 ===== -->
+
+  <!-- ===== 语言切换脚本 ===== -->
+  <script>
+    const btnZh = document.getElementById("btn-zh");
+    const btnEn = document.getElementById("btn-en");
+    const langZh = document.getElementById("lang-zh");
+    const langEn = document.getElementById("lang-en");
+
+    /* 切换到中文 */
+    btnZh.addEventListener("click", () => {
+      btnZh.classList.add("active");
+      btnEn.classList.remove("active");
+      langZh.classList.add("active");
+      langEn.classList.remove("active");
+      document.documentElement.lang = "zh-CN";
+    });
+
+    /* 切换到英文 */
+    btnEn.addEventListener("click", () => {
+      btnEn.classList.add("active");
+      btnZh.classList.remove("active");
+      langEn.classList.add("active");
+      langZh.classList.remove("active");
+      document.documentElement.lang = "en";
+    });
+  </script>
+</body>
+</html>

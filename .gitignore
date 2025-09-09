@@ -1,0 +1,34 @@
+# Parent-level ignores (effective with submodules)
+.DS_Store
+.env
+.vscode/
+Encrypt.py
+
+# Generated at 2025-09-09 13:34:23
+
+# === Begin DaVinci-I2V/.gitignore ===
+DaVinci-I2V/.DS_Store
+DaVinci-I2V/DaVinci I2V/config/i2v_settings.json
+# === End DaVinci-I2V/.gitignore ===
+
+# === Begin DaVinci-Resolve-TTS/.gitignore ===
+DaVinci-Resolve-TTS/**/.DS_Store
+DaVinci-Resolve-TTS/DaVinci Resolve TTS/config/TTS_settings.json
+# === End DaVinci-Resolve-TTS/.gitignore ===
+
+# === Begin DaVinci-Resolve-Whisper/.gitignore ===
+DaVinci-Resolve-Whisper/Whisper/config/settings.json
+DaVinci-Resolve-Whisper/Whisper/model/**/model.bin
+DaVinci-Resolve-Whisper/.DS_Store
+DaVinci-Resolve-Whisper/Whisper/WhisperX.py
+# === End DaVinci-Resolve-Whisper/.gitignore ===
+
+# === Begin DaVinci-Sub-Translator/.gitignore ===
+DaVinci-Sub-Translator/.DS_Store
+DaVinci-Sub-Translator/Sub AI Translator/config/translator_settings.json
+# === End DaVinci-Sub-Translator/.gitignore ===
+
+# === Begin DaVinci-V2V/.gitignore ===
+DaVinci-V2V/.DS_Store
+DaVinci-V2V/DaVinci V2V/config/settings.json
+# === End DaVinci-V2V/.gitignore ===

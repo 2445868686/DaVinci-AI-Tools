@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DaVinci Resolve V2V – 中 / EN</title>
+
+  <!-- ===== 公共样式（两版一致，只保留一份） ===== -->
+  <style>
+    /* 全局字体与背景 */
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: #f0f2f5;
+      color: #555;
+    }
+
+    /* 固定左侧目录 */
+    .sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 250px;
+      height: 100%;
+      background: #fff;
+      border-right: 1px solid #e0e0e0;
+      padding: 20px;
+      overflow-y: auto;
+      box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
+    }
+    .sidebar h2 {
+      font-size: 1.8em;
+      margin: 0 0 20px;
+      color: #333;
+      text-align: center;
+      border-bottom: 1px solid #e0e0e0;
+      padding-bottom: 10px;
+    }
+    .sidebar ul {
+      list-style: none;
+      padding: 0;
+    }
+    .sidebar li {
+      margin: 10px 0;
+      font-size: 0.95em;
+    }
+    .sidebar li ul {
+      margin-top: 5px;
+      margin-left: 15px;
+    }
+    .sidebar a {
+      text-decoration: none;
+      color: #007bff;
+      transition: color 0.3s;
+    }
+    .sidebar a:hover {
+      color: #0056b3;
+    }
+
+    /* 主内容区 */
+    .content {
+      margin-left: 270px; /* 250 + 20 */
+      padding: 40px;
+    }
+
+    /* 卡片式容器 */
+    .container {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      padding: 30px;
+      margin-bottom: 40px;
+    }
+    header {
+      text-align: center;
+      padding-bottom: 20px;
+      border-bottom: 1px solid #e0e0e0;
+      margin-bottom: 30px;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 2em;
+      color: #333;
+    }
+    h2 {
+      color: #007bff;
+      margin-top: 30px;
+      border-left: 4px solid #007bff;
+      padding-left: 10px;
+    }
+    h3 {
+      color: #333;
+      margin-top: 20px;
+    }
+    p,
+    ul {
+      line-height: 1.8;
+      margin: 15px 0;
+    }
+    ul {
+      padding-left: 20px;
+    }
+    code {
+      background: #f9f9f9;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: Consolas, Monaco, "Courier New", monospace;
+    }
+    pre {
+      background: #f9f9f9;
+      padding: 15px;
+      border-left: 5px solid #007bff;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-family: Consolas, Monaco, "Courier New", monospace;
+    }
+    a {
+      color: #007bff;
+    }
+    footer {
+      text-align: center;
+      font-size: 0.9em;
+      color: #888;
+      margin-top: 40px;
+      border-top: 1px solid #e0e0e0;
+      padding-top: 20px;
+    }
+
+    /* 移动端适配 */
+    @media (max-width: 768px) {
+      .sidebar {
+        position: relative;
+        width: 100%;
+        height: auto;
+        box-shadow: none;
+        border-right: none;
+        border-bottom: 1px solid #e0e0e0;
+      }
+      .content {
+        margin-left: 0;
+        padding: 20px;
+      }
+    }
+
+    /* ===== 语言切换相关 ===== */
+    .lang {
+      display: none;
+    }
+    .lang.active {
+      display: block;
+    }
+
+    /* 切换按钮 */
+    .lang-switcher {
+      position: fixed;
+      top: 15px;
+      right: 20px;
+      z-index: 1000;
+    }
+    .lang-switcher button {
+      cursor: pointer;
+      border: 1px solid #007bff;
+      background: #fff;
+      color: #007bff;
+      font-size: 0.9em;
+      padding: 6px 12px;
+      border-radius: 20px;
+      transition: all 0.3s;
+      margin-left: 6px;
+    }
+    .lang-switcher button.active,
+    .lang-switcher button:hover {
+      background: #007bff;
+      color: #fff;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- ===== 语言切换按钮 ===== -->
+  <div class="lang-switcher">
+    <button id="btn-zh" class="active">中文</button>
+    <button id="btn-en">English</button>
+  </div>
+
+  <!-- ========== 中文版本（默认显示） ========== -->
+  <div id="lang-zh" class="lang active">
+    <!-- 固定左侧目录 -->
+    <nav class="sidebar">
+      <h2>目录</h2>
+      <ul>
+        <li>
+          <strong>安装指南</strong>
+          <ul>
+            <li><a href="#step-1">步骤 1：检查 Python</a></li>
+            <li><a href="#step-2">步骤 2：移动插件</a></li>
+            <li><a href="#step-3">步骤 3：安装依赖</a></li>
+          </ul>
+        </li>
+        <li>
+          <strong>使用指南</strong>
+          <ul>
+            <li><a href="#usage-1">Runway 配置</a></li>
+            <li><a href="#usage-2">生成选项</a></li>
+            <li><a href="#usage-3">任务处理</a></li>
+            <li><a href="#usage-4">其他设置</a></li>
+          </ul>
+        </li>
+      </ul>
+    </nav>
+
+    <!-- 主内容 -->
+    <div class="content">
+      <!-- 安装指南 -->
+      <div class="container" id="install-guide">
+        <header>
+          <h1>DaVinci Resolve V2V 安装指南</h1>
+        </header>
+        <section id="step-1">
+          <h2>步骤 1：检查 DaVinci Resolve 中是否已安装 Python</h2>
+          <p>
+            点击：<code>工作区</code> ——&gt; <code>控制台</code> ——&gt; <code>Py3</code>。如果已安装，则不会弹出窗口（直接进入
+            <a href="#step-2">步骤 2</a>）。
+          </p>
+          <p>
+            若未安装，则会弹出 "<strong>Python was not found</strong>"
+            消息，请根据提示下载并安装，安装完成后进入<a href="#step-2">步骤 2</a>！
+          </p>
+          <p>
+            <strong>Windows 用户：</strong>安装 Python 时请务必勾选 "<span
+              style="color: red"
+              >Add Python to PATH</span
+            >" 选项，否则可能需要重新安装或手动设置环境变量。
+          </p>
+        </section>
+        <section id="step-2">
+          <h2>步骤 2：移动 DaVinci V2V 插件</h2>
+          <p>将 <code>DaVinci V2V</code> 文件夹移动到以下位置：</p>
+          <pre><code>Mac: 
+/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility 
+
+Win: 
+C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></pre>
+        </section>
+        <section id="step-3">
+          <h2>步骤 3：安装依赖</h2>
+          
+          <h3>Mac 用户：</h3>
+          <p>
+            双击 <code>Mac_Install.command</code>进行安装，等待安装完成。
+          </p>
+          <h3>Win 用户：</h3>
+          <p> 
+            双击 <code>Windows_Install.bat</code>进行安装，等待安装完成。
+          </p>
+          <p>
+            安装完成后，可通过 <code>工作台</code> ——&gt; <code>脚本</code> 菜单打开插件进行使用。
+          </p>
+        </section>
+      </div>
+
+      <!-- 使用指南 -->
+      <div class="container" id="usage-guide">
+        <header>
+          <h1>使用指南</h1>
+        </header>
+        <section id="usage-1">
+          <h2>Runway 配置</h2>
+          <ul>
+            <li>
+              <strong>API Key：</strong> 必填，用于服务认证。
+            </li>
+            <li>
+              <strong>Base URL：</strong>
+              选填，用于第三方代理服务。不填则使用官方默认地址。
+            </li>
+          </ul>
+        </section>
+        <section id="usage-2">
+          <h2>生成选项</h2>
+          <ul>
+            <li>
+              <strong>Prompt：</strong> 视频生成的描述词。
+            </li>
+            <li>
+              <strong>模型 (Model)：</strong> 选择生成视频所用的模型。
+            </li>
+            <li>
+              <strong>比例 (Ratio)：</strong> 设置生成视频的宽高比。插件会根据所选比例自动创建渲染预设。
+            </li>
+            <li>
+              <strong>随机种子 (Seed)：</strong> 用于控制生成结果的一致性。可手动输入，或勾选“随机”自动生成。
+            </li>
+            <li>
+              <strong>参考图 (Reference)：</strong> 选择一张图片作为生成视频的风格或内容参考。
+            </li>
+          </ul>
+        </section>
+        <section id="usage-3">
+          <h2>任务处理</h2>
+          <ul>
+            <li>
+              <strong>生成：</strong> 提交一个新的视频生成任务。插件会自动渲染时间线上的标记区域作为输入视频。
+            </li>
+            <li>
+              <strong>下载视频：</strong> 如果已有任务ID，可在此输入并点击下载，无需重新提交。
+            </li>
+          </ul>
+        </section>
+        <section id="usage-4">
+          <h2>其他设置</h2>
+          <ul>
+            <li>
+              <strong>保存路径：</strong>
+              设置一个目录，用于保存生成的视频文件。
+            </li>
+            <li>
+              <strong>语言：</strong>
+              切换插件界面的显示语言（中文/英文）。
+            </li>
+          </ul>
+        </section>
+      </div>
+      <footer>&copy; 2025 HB. All Rights Reserved.</footer>
+    </div>
+  </div>
+  <!-- ===== 中文版本结束 ===== -->
+
+  <!-- ========== English Version ========== -->
+  <div id="lang-en" class="lang">
+    <nav class="sidebar">
+      <h2>Contents</h2>
+      <ul>
+        <li>
+          <strong>Installation Guide</strong>
+          <ul>
+            <li><a href="#step-1-en">Step 1: Check Python</a></li>
+            <li><a href="#step-2-en">Step 2: Move Plugin</a></li>
+            <li><a href="#step-3-en">Step 3: Install Requirement</a></li>
+          </ul>
+        </li>
+        <li>
+          <strong>Usage Guide</strong>
+          <ul>
+            <li><a href="#usage-1-en">Runway Config</a></li>
+            <li><a href="#usage-2-en">Generation Options</a></li>
+            <li><a href="#usage-3-en">Task Handling</a></li>
+            <li><a href="#usage-4-en">Other Settings</a></li>
+          </ul>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="content">
+      <!-- Installation Guide -->
+      <div class="container" id="install-guide-en">
+        <header>
+          <h1>DaVinci Resolve V2V Installation Guide</h1>
+        </header>
+        <section id="step-1-en">
+          <h2>Step 1: Check if Python is Installed in DaVinci Resolve</h2>
+          <p>
+            Click: <code>Workspace</code> ——&gt; <code>Console</code> ——&gt;
+            <code>Py3</code>. If it is already installed, no window will pop up
+            (proceed directly to <a href="#step-2-en">Step 2</a>).
+          </p>
+          <p>
+            If it is not installed, a "<strong>Python was not found</strong>"
+            message will pop up. Follow the pop-up instructions to download and
+            install it. After installation, proceed to
+            <a href="#step-2-en">Step 2</a>!
+          </p>
+          <p>
+            <strong>Important for Windows users:</strong> During Python
+            installation, make sure to check the
+            "<span style="color: red">Add Python to PATH</span>" option. If you
+            forget this step, you may need to reinstall Python or manually add
+            it to the system's environment variables.
+          </p>
+        </section>
+        <section id="step-2-en">
+          <h2>Step 2: Move the DaVinci V2V Plugin</h2>
+          <p>Move the <code>DaVinci V2V</code> folder to the following location:</p>
+          <pre><code>Mac: 
+/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility 
+
+Win: 
+C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></pre>
+        </section>
+        <section id="step-3-en">
+          <h2>Step 3: Install Requirement</h2>
+          
+          <h3>For Mac Users:</h3>
+          <p>
+            Double-click the <code>Mac_Install.command</code> ,Install it and wait for it to complete..
+          </p>
+          <h3>For Windows Users:</h3>
+          <p>
+            Double-click the <code>Windows_Install.bat</code> ,Install it and wait for it to complete..
+          </p>
+          <p>
+            After installation, open the plugin in DaVinci Resolve by navigating to <code>Workspace</code> ——&gt; <code>Scripts</code>.
+          </p>
+        </section>
+      </div>
+
+      <!-- Usage Guide -->
+      <div class="container" id="usage-guide-en">
+        <header>
+          <h1>Usage Guide</h1>
+        </header>
+        <section id="usage-1-en">
+          <h2>Runway Configuration</h2>
+          <ul>
+            <li>
+              <strong>API Key:</strong> Required for service authentication.
+            </li>
+            <li>
+              <strong>Base URL:</strong> Optional, for third-party proxy
+              services. If left blank, the official default address will be used.
+            </li>
+          </ul>
+        </section>
+        <section id="usage-2-en">
+          <h2>Generation Options</h2>
+          <ul>
+            <li>
+              <strong>Prompt:</strong> The descriptive text for video generation.
+            </li>
+            <li>
+              <strong>Model:</strong> Select the model to be used for video generation.
+            </li>
+            <li>
+              <strong>Ratio:</strong> Set the aspect ratio of the generated video. The plugin will automatically create a render preset based on the selected ratio.
+            </li>
+            <li>
+              <strong>Seed:</strong> Used to control the consistency of the generation results. Can be entered manually or generated randomly by checking "Random".
+            </li>
+            <li>
+              <strong>Reference:</strong> Select an image to be used as a style or content reference for the video generation.
+            </li>
+          </ul>
+        </section>
+        <section id="usage-3-en">
+          <h2>Task Handling</h2>
+          <ul>
+            <li>
+              <strong>Generate:</strong> Submit a new video generation task. The plugin will automatically render the marked region on the timeline as the input video.
+            </li>
+            <li>
+              <strong>Download Video:</strong> If you already have a Task ID, you can enter it here and click to download, without resubmitting.
+            </li>
+          </ul>
+        </section>
+        <section id="usage-4-en">
+          <h2>Other Settings</h2>
+          <ul>
+            <li>
+              <strong>Save Path:</strong> Set the directory where the generated videos will be saved.
+            </li>
+            <li>
+              <strong>Language:</strong> Switch the display language of the plugin interface (Chinese/English).
+            </li>
+          </ul>
+        </section>
+      </div>
+        <footer>&copy; 2025 HB. All Rights Reserved.</footer>
+    </div>
+  </div>
+  <!-- ===== English Version 结束 ===== -->
+
+  <!-- ===== 语言切换脚本 ===== -->
+  <script>
+    const btnZh = document.getElementById("btn-zh");
+    const btnEn = document.getElementById("btn-en");
+    const langZh = document.getElementById("lang-zh");
+    const langEn = document.getElementById("lang-en");
+
+    /* 切换到中文 */
+    btnZh.addEventListener("click", () => {
+      btnZh.classList.add("active");
+      btnEn.classList.remove("active");
+      langZh.classList.add("active");
+      langEn.classList.remove("active");
+      document.documentElement.lang = "zh-CN";
+    });
+
+    /* 切换到英文 */
+    btnEn.addEventListener("click", () => {
+      btnEn.classList.add("active");
+      btnZh.classList.remove("active");
+      langEn.classList.add("active");
+      langZh.classList.remove("active");
+      document.documentElement.lang = "en";
+    });
+  </script>
+</body>
+</html>
