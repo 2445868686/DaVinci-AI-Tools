@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# 获取管理员权限
+# Request administrator privileges
 if [ "$EUID" -ne 0 ]; then
-  echo "Enter Password："
+  echo "Requesting administrator privileges. Please enter your password:"
   exec sudo "$0" "$@"
   exit
 fi
-# ———————— 配置变量 ————————
+# ===== Variables =====
 PYTHON=python3
 SCRIPT_NAME="DaVinci V2V"
+
+UTILITY_DIR="/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility"
 
 WHEEL_DIR="/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/HB/$SCRIPT_NAME/wheel"
 TARGET_DIR="/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/HB/$SCRIPT_NAME/Lib"
@@ -16,11 +18,11 @@ PACKAGES=(
   "requests"
 )
 
-# 官方与镜像 PyPI
+# Official and mirror PyPI indexes
 PIP_OFFICIAL="https://pypi.org/simple"
 PIP_MIRROR="https://pypi.tuna.tsinghua.edu.cn/simple"
 
-# ———————— 区域识别（是否为中国大陆） ————————
+# ===== Region detection (prefer mirror in CN) =====
 read_user_default() {
   local key="$1"
   local val=""
@@ -61,8 +63,8 @@ is_china_region() {
   return 1
 }
 
-# ———————— 日志函数 ————————
-# 用法：log LEVEL "message"
+# ===== Logging =====
+# Usage: log LEVEL "message"
 # LEVEL: INFO, WARN, ERROR, SUCCESS
 log() {
   local level="$1"; shift
@@ -72,17 +74,37 @@ log() {
   echo "[$ts][$level] $msg"
 }
 
-log INFO "Starting Python wheel offline download & installation."
+log INFO "Starting offline download and installation of dependencies."
 
-# ———————— 步骤 1：准备 wheel 下载目录 ————————
+# Step 1: Copy local script folder into Resolve Utility
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SOURCE_DIR="$SCRIPT_DIR/$SCRIPT_NAME"
+log INFO "Ensuring Utility scripts directory: $UTILITY_DIR"
+mkdir -p "$UTILITY_DIR"
+if [ -d "$SOURCE_DIR" ]; then
+  if [ -d "$UTILITY_DIR/$SCRIPT_NAME" ]; then
+    log INFO "Target exists: $UTILITY_DIR/$SCRIPT_NAME. Overwriting..."
+    rm -rf "$UTILITY_DIR/$SCRIPT_NAME"
+  fi
+  log INFO "Copying \"$SOURCE_DIR\" to \"$UTILITY_DIR/$SCRIPT_NAME\""
+  if ditto "$SOURCE_DIR" "$UTILITY_DIR/$SCRIPT_NAME"; then
+    log SUCCESS "Folder copied to Utility scripts."
+  else
+    log ERROR "Failed to copy folder. Please copy it manually."
+  fi
+else
+  log WARN "Source folder not found next to this script: $SOURCE_DIR"
+fi
+
+# Step 2: Prepare wheel download directory
 log INFO "Preparing wheel download directory: $WHEEL_DIR"
 mkdir -p "$WHEEL_DIR"
 
-# ———————— 步骤 2：清理 pip 缓存（可选） ————————
+# Step 3: Clear pip cache (optional)
 log INFO "Clearing pip cache..."
 $PYTHON -m pip cache purge >/dev/null 2>&1 || log WARN "pip cache purge failed or already empty."
 
-# ———————— 步骤 3：下载最新版本的包及依赖 ————————
+# Step 4: Download packages and dependencies
 PRIMARY_INDEX="$PIP_OFFICIAL"; SECONDARY_INDEX="$PIP_MIRROR"
 if is_china_region; then
   PRIMARY_INDEX="$PIP_MIRROR"; SECONDARY_INDEX="$PIP_OFFICIAL"
@@ -115,13 +137,13 @@ else
   fi
 fi
 
-# ———————— 步骤 4：创建目标目录 & 修复权限 ————————
+# Step 5: Create target directory & fix ownership
 log INFO "Preparing target installation directory: $TARGET_DIR"
 sudo mkdir -p "$TARGET_DIR"
 sudo chown -R "$(whoami)" "$TARGET_DIR"
 log SUCCESS "Target directory ready and owned by $(whoami)."
 
-# ———————— 步骤 5：离线安装指定的包及其依赖 ————————
+# Step 6: Offline install specified packages and dependencies
 log INFO "Installing specified packages offline..."
 if $PYTHON -m pip install "${PACKAGES[@]}" \
      --no-index \
@@ -133,6 +155,6 @@ else
   exit 1
 fi
 
-# ———————— 步骤 6：安装汇总 ————————
+# Step 7: Summary
 log INFO "Installation process completed. Please verify modules in $TARGET_DIR."
 log SUCCESS "All done."

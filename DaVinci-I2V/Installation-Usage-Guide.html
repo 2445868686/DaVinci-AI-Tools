@@ -103,9 +103,7 @@
           <strong>安装指南</strong>
           <ul>
             <li><a href="#zh-step-1">步骤 1：检查 Python</a></li>
-            <li><a href="#zh-step-2">步骤 2：移动插件</a></li>
-            <li><a href="#zh-step-3">步骤 3：安装依赖</a></li>
-            <li><a href="#zh-step-4">步骤 4：配置 API</a></li>
+            <li><a href="#zh-step-2">步骤 2：安装插件</a></li>
           </ul>
         </li>
         <li>
@@ -130,47 +128,42 @@
     </nav>
 
     <div class="content">
-      <!-- 安装 -->
-      <div class="container" id="install-zh">
-        <header><h1>DaVinci I2V 安装指南</h1></header>
-
-        <section id="zh-step-1">
+      <!-- 安装指南 -->
+      <div class="container" id="install-guide">
+        <header>
+          <h1>DaVinci Resolve Sub Translator 安装指南</h1>
+        </header>
+        <section id="step-1">
           <h2>步骤 1：检查 DaVinci Resolve 中是否已安装 Python</h2>
-          <p>在达芬奇中点击：<code>工作区</code> → <code>控制台</code> → <code>Py3</code>。
-            若已安装，将直接打开 Python 控制台（进入<a href="#zh-step-2">步骤 2</a>）。
-            若弹出 “Python was not found”，请按提示安装后继续。</p>
-          <p><strong>Windows 用户</strong>：安装 Python 时请勾选 <span style="color:red">Add Python to PATH</span>。</p>
+          <p>
+            点击：<code>菜单栏</code>——&gt;<code>工作区</code> ——&gt; <code>控制台</code> ——&gt; <code>Py3</code>。如果已安装，则不会弹出窗口（直接进入
+            <a href="#step-2">步骤 2：安装插件</a>）。
+          </p>
+          <p>
+            若未安装，则会弹出 "<strong>Python was not found</strong>"
+            消息，请根据提示下载并安装，安装完成后进入<a href="#step-2">步骤 2：安装插件</a>！
+          </p>
+          <p>
+            <strong>⚠️ Windows 用户：</strong>安装 Python 时请务必勾选 "<span
+              style="color: red"
+              >Add Python to PATH</span
+            >" 选项，否则可能需要重新安装或手动设置环境变量。
+          </p>
         </section>
-
-        <section id="zh-step-2">
-          <h2>步骤 2：移动 DaVinci I2V 插件</h2>
-          <p>将 <code>DaVinci I2V</code> 文件夹移动到如下目录：</p>
-          <pre><code>Mac:
-/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility
-
-Windows:
-C:\\ProgramData\\Blackmagic Design\\DaVinci Resolve\\Fusion\\Scripts\\Utility</code></pre>
-          <p>完成后，可在达芬奇 <code>工作区</code> → <code>脚本</code> 菜单看到并启动该插件。</p>
-        </section>
-
-        <section id="zh-step-3">
-          <h2>步骤 3：安装依赖</h2>
+        <section id="step-2">
+          <h2>步骤 2：安装插件</h2>
+          
           <h3>Mac 用户：</h3>
-          <p>双击 <code>Mac_Install.command</code>，脚本会自动下载并离线安装依赖（默认安装到 <code>HB/DaVinci I2V/Lib</code>）。</p>
-          <h3>Windows 用户：</h3>
-          <p>双击 <code>Windows_Install.bat</code>，按提示完成离线安装。</p>
-        </section>
-
-        <section id="zh-step-4">
-          <h2>步骤 4：配置 API</h2>
-          <p>打开插件后，进入“配置”页，分别点击 <strong>Minimax</strong> 与 <strong>Runway</strong> 右侧的“配置”按钮，填写 <strong>Base URL</strong> 与 <strong>API Key</strong>。</p>
-          <ul>
-            <li><strong>Minimax</strong>：默认 Base URL 为 <code>https://api.minimaxi.com</code>，如无特殊代理可直接使用。</li>
-            <li><strong>Runway</strong>：默认 Base URL 为 <code>https://api.dev.runwayml.com</code>。</li>
-            <li>如需注册账号，可在配置弹窗中点击“注册”快速跳转：
-              <a href="https://platform.minimaxi.com/login" target="_blank">MiniMax</a> /
-              <a href="https://dev.runwayml.com/" target="_blank">Runway</a>。</li>
-          </ul>
+          <p>
+            双击 <code>Mac_Install.command</code>进行安装，等待安装完成。
+          </p>
+          <h3>Win 用户：</h3>
+          <p> 
+            双击 <code>Windows_Install.bat</code>进行安装，等待安装完成。
+          </p>
+          <p>
+            安装完成后，可通过 <code>菜单栏</code>——&gt;<code>工作区</code> ——&gt; <code>脚本</code> 打开插件进行使用。
+          </p>
         </section>
       </div>
 
@@ -289,9 +282,7 @@ C:\\ProgramData\\Blackmagic Design\\DaVinci Resolve\\Fusion\\Scripts\\Utility</c
           <strong>Installation</strong>
           <ul>
             <li><a href="#en-step-1">Step 1: Check Python</a></li>
-            <li><a href="#en-step-2">Step 2: Move Plugin</a></li>
-            <li><a href="#en-step-3">Step 3: Install Deps</a></li>
-            <li><a href="#en-step-4">Step 4: Configure API</a></li>
+            <li><a href="#en-step-2">Step 2: Install Plugin</a></li>
           </ul>
         </li>
         <li>
@@ -319,42 +310,22 @@ C:\\ProgramData\\Blackmagic Design\\DaVinci Resolve\\Fusion\\Scripts\\Utility</c
       <div class="container">
         <header><h1>DaVinci I2V – Installation Guide</h1></header>
         <section id="en-step-1">
-          <h2>Step 1: Check Python in DaVinci Resolve</h2>
-          <p>In Resolve, click <code>Workspace</code> → <code>Console</code> → <code>Py3</code>. If a Python console opens, continue to <a href="#en-step-2">Step 2</a>.
-            If you see “Python was not found”, install Python first.</p>
-          <p><strong>Windows</strong>: make sure to check <span style="color:red">Add Python to PATH</span> during installation.</p>
+          <h2>Step 1: Check for Python in DaVinci Resolve</h2>
+          <p>In Resolve, go to <code>Menu Bar</code> → <code>Workspace</code> → <code>Console</code> → <code>Py3</code>. If the Python console opens, proceed to <a href="#en-step-2">Step 2: Install Plugin</a>. If you see “Python was not found”, install Python first.</p>
+          <p><strong>Windows</strong>: during installation, make sure to select <span style="color:red">Add Python to PATH</span>.</p>
         </section>
+
+        
 
         <section id="en-step-2">
-          <h2>Step 2: Move the DaVinci I2V Plugin</h2>
-          <p>Move the <code>DaVinci I2V</code> folder to:</p>
-          <pre><code>macOS:
-/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility
-
-Windows:
-C:\\ProgramData\\Blackmagic Design\\DaVinci Resolve\\Fusion\\Scripts\\Utility</code></pre>
-          <p>Then open it under <code>Workspace</code> → <code>Scripts</code> in Resolve.</p>
-        </section>
-
-        <section id="en-step-3">
-          <h2>Step 3: Install Dependencies</h2>
+          <h2>Step 2: Install Plugin</h2>
           <h3>macOS:</h3>
-          <p>Double‑click <code>Mac_Install.command</code>. It downloads and installs dependencies offline to <code>HB/DaVinci I2V/Lib</code>.</p>
+          <p>Double-click <code>Mac_Install.command</code> to install and wait for completion.</p>
           <h3>Windows:</h3>
-          <p>Double‑click <code>Windows_Install.bat</code> and follow the prompts.</p>
+          <p>Double-click <code>Windows_Install.bat</code> to install and wait for completion.</p>
         </section>
 
-        <section id="en-step-4">
-          <h2>Step 4: Configure API</h2>
-          <p>Open the plugin, go to <strong>Configuration</strong>, click “Config” beside <strong>Minimax</strong> and <strong>Runway</strong>, and fill <strong>Base URL</strong> and <strong>API Key</strong>.</p>
-          <ul>
-            <li><strong>Minimax</strong>: default Base URL <code>https://api.minimaxi.com</code>.</li>
-            <li><strong>Runway</strong>: default Base URL <code>https://api.dev.runwayml.com</code>.</li>
-            <li>Need accounts? Click “Register” in dialogs to visit:
-              <a href="https://platform.minimaxi.com/login" target="_blank">MiniMax</a> /
-              <a href="https://dev.runwayml.com/" target="_blank">Runway</a>.</li>
-          </ul>
-        </section>
+        
       </div>
 
       <div class="container">
@@ -499,4 +470,3 @@ C:\\ProgramData\\Blackmagic Design\\DaVinci Resolve\\Fusion\\Scripts\\Utility</c
   </script>
 </body>
 </html>
-

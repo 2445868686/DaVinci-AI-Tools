@@ -195,8 +195,7 @@
           <strong>安装指南</strong>
           <ul>
             <li><a href="#step-1">步骤 1：检查 Python</a></li>
-            <li><a href="#step-2">步骤 2：移动插件</a></li>
-            <li><a href="#step-3">步骤 3：安装依赖</a></li>
+            <li><a href="#step-2">步骤 2：安装插件</a></li>
           </ul>
         </li>
         <li>
@@ -223,31 +222,22 @@
         <section id="step-1">
           <h2>步骤 1：检查 DaVinci Resolve 中是否已安装 Python</h2>
           <p>
-            点击：<code>工作区</code> ——&gt; <code>控制台</code> ——&gt; <code>Py3</code>。如果已安装，则不会弹出窗口（直接进入
-            <a href="#step-2">步骤 2</a>）。
+            点击：<code>菜单栏</code>——&gt;<code>工作区</code> ——&gt; <code>控制台</code> ——&gt; <code>Py3</code>。如果已安装，则不会弹出窗口（直接进入
+            <a href="#step-2">步骤 2：安装插件</a>）。
           </p>
           <p>
             若未安装，则会弹出 "<strong>Python was not found</strong>"
-            消息，请根据提示下载并安装，安装完成后进入<a href="#step-2">步骤 2</a>！
+            消息，请根据提示下载并安装，安装完成后进入<a href="#step-2">步骤 2：安装插件</a>！
           </p>
           <p>
-            <strong>Windows 用户：</strong>安装 Python 时请务必勾选 "<span
+            <strong>⚠️ Windows 用户：</strong>安装 Python 时请务必勾选 "<span
               style="color: red"
               >Add Python to PATH</span
             >" 选项，否则可能需要重新安装或手动设置环境变量。
           </p>
         </section>
         <section id="step-2">
-          <h2>步骤 2：移动 Sub AI Translator 插件</h2>
-          <p>将 <code>Sub AI Translator</code> 文件夹移动到以下位置：</p>
-          <pre><code>Mac: 
-/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility 
-
-Win: 
-C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></pre>
-        </section>
-        <section id="step-3">
-          <h2>步骤 3：安装依赖</h2>
+          <h2>步骤 2：安装插件</h2>
           
           <h3>Mac 用户：</h3>
           <p>
@@ -258,7 +248,7 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
             双击 <code>Windows_Install.bat</code>进行安装，等待安装完成。
           </p>
           <p>
-            安装完成后，可通过 <code>工作台</code> ——&gt; <code>脚本</code> 菜单打开插件进行使用。
+            安装完成后，可通过 <code>菜单栏</code>——&gt;<code>工作区</code> ——&gt; <code>脚本</code> 打开插件进行使用。
           </p>
         </section>
       </div>
@@ -284,10 +274,10 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
             <li><strong>选项</strong>:
               <ul>
                 <li><code>Google</code>: 免费，无需配置，适合快速、常规的翻译。</li>
-                <li><code>Microsoft (API Key)</code>: 微软翻译，需要配置API Key和区域。</li>
-                <li><code>DeepL (API Key)</code>: DeepL翻译，质量较高，需要配置API Key。</li>
-                <li><code>Open AI Format (API Key)</code>: 兼容OpenAI格式的各类模型，如GPT系列、Groq、Kimi、Deepseek等，需要进行详细配置。</li>
-                <li><code>Free AI (GLM-4-Flash)</code>: 免费的AI模型，无需配置，由服务器提供支持。</li>
+                <li><code>Microsoft</code>: 免费（可选：自行配置 API）。</li>
+                <li><code>GLM-4.5-Flash (Free AI)</code>: 免费的 AI 模型，无需配置，由服务器提供支持。</li>
+                <li><code>Open AI Format (API Key)</code>: 兼容 OpenAI 格式的各类模型，如 GPT 系列、Groq、Kimi、Deepseek 等，需要进行详细配置。</li>
+                <li><code>DeepL (API Key)</code>: 需要配置 API Key。</li>
               </ul>
             </li>
           </ul>
@@ -372,8 +362,7 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
           <strong>Installation Guide</strong>
           <ul>
             <li><a href="#step-1-en">Step 1: Check Python</a></li>
-            <li><a href="#step-2-en">Step 2: Move Plugin</a></li>
-            <li><a href="#step-3-en">Step 3: Install Requirement</a></li>
+            <li><a href="#step-2-en">Step 2: Install Plugin</a></li>
           </ul>
         </li>
         <li>
@@ -399,15 +388,15 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
         <section id="step-1-en">
           <h2>Step 1: Check if Python is Installed in DaVinci Resolve</h2>
           <p>
-            Click: <code>Workspace</code> ——&gt; <code>Console</code> ——&gt;
+            Click: <code>Menu Bar</code> ——&gt; <code>Workspace</code> ——&gt; <code>Console</code> ——&gt;
             <code>Py3</code>. If it is already installed, no window will pop up
-            (proceed directly to <a href="#step-2-en">Step 2</a>).
+            (proceed directly to <a href="#step-2-en">Step 2: Install Plugin</a>).
           </p>
           <p>
             If it is not installed, a "<strong>Python was not found</strong>"
             message will pop up. Follow the pop-up instructions to download and
             install it. After installation, proceed to
-            <a href="#step-2-en">Step 2</a>!
+            <a href="#step-2-en">Step 2: Install Plugin</a>!
           </p>
           <p>
             <strong>Important for Windows users:</strong> During Python
@@ -418,16 +407,7 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
           </p>
         </section>
         <section id="step-2-en">
-          <h2>Step 2: Move the Sub AI Translator Plugin</h2>
-          <p>Move the <code>Sub AI Translator</code> folder to the following location:</p>
-          <pre><code>Mac: 
-/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility 
-
-Win: 
-C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></pre>
-        </section>
-        <section id="step-3-en">
-          <h2>Step 3: Install Requirement</h2>
+          <h2>Step 2: Install Plugin</h2>
           
           <h3>For Mac Users:</h3>
           <p>
@@ -438,7 +418,7 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
             Double-click the <code>Windows_Install.bat</code> ,Install it and wait for it to complete..
           </p>
           <p>
-            After installation, open the plugin in DaVinci Resolve by navigating to <code>Workspace</code> ——&gt; <code>Scripts</code>.
+            After installation, open the plugin by navigating to <code>Menu Bar</code> ——&gt; <code>Workspace</code> ——&gt; <code>Scripts</code>.
           </p>
         </section>
       </div>
@@ -463,11 +443,11 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
             <li><strong>Function</strong>: Select the AI service for translation.</li>
             <li><strong>Options</strong>:
               <ul>
-                <li><code>Google</code>: Free, no configuration required, suitable for quick and general translations.</li>
-                <li><code>Microsoft (API Key)</code>: Microsoft Translator, requires API Key and region configuration.</li>
-                <li><code>DeepL (API Key)</code>: DeepL translation, high quality, requires API Key configuration.</li>
-                <li><code>Open AI Format (API Key)</code>: Compatible with various models in OpenAI format, such as GPT series, Groq, Kimi, Deepseek, etc., requiring detailed configuration.</li>
-                <li><code>Free AI (GLM-4-Flash)</code>: A free AI model, no configuration required, supported by the server.</li>
+                <li><code>Google</code>: Free, no configuration required; great for quick, general translation.</li>
+                <li><code>Microsoft</code>: Free (optional: configure your own API).</li>
+                <li><code>GLM-4.5-Flash (Free AI)</code>: Free AI model, no configuration required, supported by the server.</li>
+                <li><code>Open AI Format (API Key)</code>: Compatible with OpenAI-format models (e.g., GPT series, Groq, Kimi, Deepseek); requires detailed configuration.</li>
+                <li><code>DeepL (API Key)</code>: Requires an API Key.</li>
               </ul>
             </li>
           </ul>

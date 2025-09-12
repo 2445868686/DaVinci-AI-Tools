@@ -1577,25 +1577,29 @@ def on_runway_post(ev):
     if not save_dir:
         show_dynamic_message("Select a save path in the configuration panel!", "前往配置栏选择保存路径！")
         return
-    if not first_img:
-        show_dynamic_message("Pick a first frame!", "请至少选择首帧！")
-        return
+    # Gen-3 Alpha 支持首帧或尾帧其一，或者首尾帧一起传输
+    model    = items["RunwayModelCombo"].CurrentText if items.get("RunwayModelCombo") else "gen4_turbo"
+    if model == "gen3a_turbo":
+        if not first_img and not last_img:
+            show_dynamic_message("Pick a first or last frame!", "请至少选择首帧或尾帧！")
+            return
+    else:
+        if not first_img:
+            show_dynamic_message("Pick a first frame!", "请至少选择首帧！")
+            return
     if not api_key:
         show_dynamic_message("Enter API key in the configuration panel!", "前往配置栏填写API密钥！")
         return
-
-    model    = items["RunwayModelCombo"].CurrentText if items.get("RunwayModelCombo") else "gen4_turbo"
     duration = int(items["RunwayDurationCombo"].CurrentText or 5) if items.get("RunwayDurationCombo") else 5
-    # UI 选择 720P/768P；实际 ratio 在此根据图片横竖屏确定
     res_choice = (items["RunwayResCombo"].CurrentText or ("720P" if model == "gen4_turbo" else "768P")).strip()
-    # 检测首帧图片方向
+    # 检测参考图片方向（优先首帧；若 gen3a_turbo 且仅尾帧，则用尾帧）
     try:
-        size = get_image_size(first_img)
+        ref_img = first_img or (last_img if model == "gen3a_turbo" else None)
+        size = get_image_size(ref_img) if ref_img else None
         is_landscape = None
         if isinstance(size, tuple) and len(size) == 2 and all(isinstance(x, int) and x > 0 for x in size):
             w, h = size
             is_landscape = (w >= h)
-        # 生成 ratio（默认横屏）
         if res_choice == "768P":
             ratio = "1280:768" if (is_landscape is None or is_landscape) else "768:1280"
         else:  # 720P
@@ -1604,15 +1608,26 @@ def on_runway_post(ev):
         # 回退：按模型默认横屏比例
         ratio = "1280:720" if model == "gen4_turbo" else "1280:768"
 
-    # Build promptImage per API: string or array of {uri, position}
-    first_uri = encode_image_to_data_uri(first_img)
-    prompt_image_payload = first_uri
-    if model == "gen3a_turbo" and last_img:
-        last_uri = encode_image_to_data_uri(last_img)
-        prompt_image_payload = [
-            {"uri": first_uri, "position": "first"},
-            {"uri": last_uri,  "position": "last"},
-        ]
+    # - 非 gen3a_turbo：仅支持首帧，使用字符串 data-uri
+    # - gen3a_turbo：支持首帧、尾帧任意组合
+    prompt_image_payload = None
+    if model == "gen3a_turbo":
+        if first_img and last_img:
+            first_uri = encode_image_to_data_uri(first_img)
+            last_uri  = encode_image_to_data_uri(last_img)
+            prompt_image_payload = [
+                {"uri": first_uri, "position": "first"},
+                {"uri": last_uri,  "position": "last"},
+            ]
+        elif first_img:
+            prompt_image_payload = encode_image_to_data_uri(first_img)
+        else:
+            last_uri  = encode_image_to_data_uri(last_img)
+            prompt_image_payload = [
+                {"uri": last_uri,  "position": "last"},
+            ]
+    else:
+        prompt_image_payload = encode_image_to_data_uri(first_img)
 
     save_path    = generate_filename(save_dir, prompt or "untitled", ".mp4")
     _OP_START_TS = time.time()

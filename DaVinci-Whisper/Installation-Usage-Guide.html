@@ -237,9 +237,8 @@ ul {
           <strong>安装指南</strong>
           <ul>
             <li><a href="#step-1">步骤 1：检查 Python</a></li>
-            <li><a href="#step-2">步骤 2：移动插件</a></li>
-            <li><a href="#step-3">步骤 3：安装依赖</a></li>
-            <li><a href="#step-4">步骤 4：下载模型</a></li>
+            <li><a href="#step-2">步骤 2：安装插件</a></li>
+            <li><a href="#step-3">步骤 3：下载模型</a></li>
           </ul>
         </li>
         <li>
@@ -278,30 +277,40 @@ ul {
         <section id="step-1">
           <h2>步骤 1：检查 DaVinci Resolve 中是否已安装 Python</h2>
           <p>
-            点击：<code>工作区</code> ——&gt; <code>控制台</code> ——&gt; <code>Py3</code>。如果已安装，则不会弹出窗口（直接进入
-            <a href="#step-2">步骤 2</a>）。
+            点击：<code>菜单栏</code>——&gt;<code>工作区</code> ——&gt; <code>控制台</code> ——&gt; <code>Py3</code>。如果已安装，则不会弹出窗口（直接进入
+            <a href="#step-2">步骤 2：安装插件</a>）。
           </p>
           <p>
             若未安装，则会弹出 "<strong>Python was not found</strong>"
-            消息，请根据提示下载并安装，安装完成后进入<a href="#step-2">步骤 2</a>！
+            消息，请根据提示下载并安装，安装完成后进入<a href="#step-2">步骤 2：安装插件</a>！
           </p>
           <p>
-            <strong>Windows 用户：</strong>安装 Python 时请务必勾选 "<span
+            <strong>⚠️ Windows 用户：</strong>安装 Python 时请务必勾选 "<span
               style="color: red"
               >Add Python to PATH</span
             >" 选项，否则可能需要重新安装或手动设置环境变量。
           </p>
         </section>
         <section id="step-2">
-          <h2>步骤 2：移动 Whisper 插件</h2>
-          <p>将 <code>Whisper</code> 文件夹移动到以下位置：</p>
-          <pre><code>Mac: 
+          <h2>步骤 2：安装插件</h2>
+          <h3>Mac 用户：</h3>
+          <p>
+            双击 <code>Mac_Install.command</code> 进行安装，等待安装完成。
+          </p>
+          <h3>Win 用户：</h3>
+          <p>
+            双击 <code>Windows_Install.bat</code> 进行安装，等待安装完成。
+          </p>
+          <p>
+            安装完成后，可通过 <code>菜单栏</code>——&gt;<code>工作区</code> ——&gt; <code>脚本</code> 打开插件进行使用。
+          </p>
+          <pre style="display:none"><code>Mac: 
 /Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility 
 
 Win: 
 C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></pre>
         </section>
-        <section id="step-3">
+        <section id="step-3-old" style="display:none">
           <h2>步骤 3：安装依赖</h2>
           
           <h3>Mac 用户：</h3>
@@ -313,13 +322,13 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
             双击 <code>Windows_Install.bat</code> 进行安装，等待安装完成。
           </p>
           <p>
-            安装完成后，可通过 <code>工作台</code> ——&gt; <code>脚本</code> 菜单打开插件进行使用。
+            安装完成后，可通过 <code>菜单栏</code>——&gt;<code>工作区</code> ——&gt; <code>脚本</code> 打开插件进行使用。
           </p>
         </section>
-        <section id="step-4">
-          <h2>步骤 4：下载并替换模型</h2>
+        <section id="step-3">
+          <h2>步骤 3：下载并替换模型</h2>
           <p>你可以在<a href="https://pan.baidu.com/s/1kthNbHJAggTUT2cv9nKaUg?pwd=8888" target="_blank">下载页面</a>选择需要的模型文件夹进行下载：</p>
-          <p>下载完成后，将相应模型文件夹复制到 <code>Whisper/model</code> 目录下，替换同名文件夹即可。</p>
+          <p>下载完成后，将相应模型文件夹复制到 <code>DaVinci Whisper/model</code> 目录下，替换同名文件夹即可。</p>
         </section>
       </div>
 
@@ -351,7 +360,7 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
           <div class="collapsible-content">
             <ul>
               <li><strong>功能</strong>：点击此按钮会打开浏览器，引导您到百度网盘下载本地模型文件。</li>
-              <li><strong>注意</strong>：此按钮仅在未使用 OpenAI API 时可用。下载后的模型文件替换插件目录下的 <code>Whisper/model/</code> 对应模型文件夹（例如 <code>small</code> 文件夹）。</li>
+              <li><strong>注意</strong>：此按钮仅在未使用 OpenAI API 时可用。下载后的模型文件替换插件目录下的 <code>DaVinci Whisper/model/</code> 对应模型文件夹（例如 <code>small</code> 文件夹）。</li>
             </ul>
           </div>
 
@@ -477,7 +486,7 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
                 <li><strong>API 模式（可选）</strong>：准备好您的 OpenAI API 密钥。</li>
               </ul>
             </li>
-            <li><strong>打开插件</strong>：在达芬奇的【工作区】->【脚本】中找到并运行 <code>Whisper</code> 。</li>
+            <li><strong>打开插件</strong>：在达芬奇的【菜单栏】->【工作区】->【脚本】中找到并运行 <code>Whisper</code> 。</li>
             <li><strong>选择模式</strong>：
               <ul>
                 <li><strong>追求便捷</strong>：勾选【使用 OpenAI API】，在弹出窗口填入您的 Key。</li>
@@ -522,9 +531,8 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
           <strong>Installation Guide</strong>
           <ul>
             <li><a href="#step-1-en">Step 1: Check Python</a></li>
-            <li><a href="#step-2-en">Step 2: Move Plugin</a></li>
-            <li><a href="#step-3-en">Step 3: Install Requirement</a></li>
-            <li><a href="#step-4-en">Step 4: Download Model</a></li>
+            <li><a href="#step-2-en">Step 2: Install Plugin</a></li>
+            <li><a href="#step-3-en">Step 3: Download Model</a></li>
           </ul>
         </li>
         <li>
@@ -562,15 +570,15 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
         <section id="step-1-en">
           <h2>Step 1: Check if Python is Installed in DaVinci Resolve</h2>
           <p>
-            Click: <code>Workspace</code> ——&gt; <code>Console</code> ——&gt;
+            Click: <code>Menu Bar</code> ——&gt; <code>Workspace</code> ——&gt; <code>Console</code> ——&gt;
             <code>Py3</code>. If it is already installed, no window will pop up
-            (proceed directly to <a href="#step-2-en">Step 2</a>).
+            (proceed directly to <a href="#step-2-en">Step 2: Install Plugin</a>).
           </p>
           <p>
             If it is not installed, a "<strong>Python was not found</strong>"
             message will pop up. Follow the pop-up instructions to download and
             install it. After installation, proceed to
-            <a href="#step-2-en">Step 2</a>!
+            <a href="#step-2-en">Step 2: Install Plugin</a>!
           </p>
           <p>
             <strong>Important for Windows users:</strong> During Python
@@ -581,15 +589,26 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
           </p>
         </section>
         <section id="step-2-en">
-          <h2>Step 2: Move the Whisper Plugin</h2>
-          <p>Move the <code>Whisper</code> folder to the following location:</p>
-          <pre><code>Mac: 
+          <h2>Step 2: Install Plugin</h2>
+          
+          <h3>For Mac Users:</h3>
+          <p>
+            Double-click the <code>Mac_Install.command</code>,Install it and wait for it to complete..
+          </p>
+          <h3>For Windows Users:</h3>
+          <p>
+            Double-click the <code>Windows_Install.bat</code>,Install it and wait for it to complete..
+          </p>
+          <p>
+            After installation, open the plugin in DaVinci Resolve by navigating to <code>Menu Bar</code> ——&gt; <code>Workspace</code> ——&gt; <code>Scripts</code>.
+          </p>
+          <pre style="display:none"><code>Mac: 
 /Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility 
 
 Win: 
 C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></pre>
         </section>
-        <section id="step-3-en">
+        <section id="step-3-old-en" style="display:none">
           <h2>Step 3: Install Requirement</h2>
           
           <h3>For Mac Users:</h3>
@@ -601,14 +620,14 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
             Double-click the <code>Windows_Install.bat</code>,Install it and wait for it to complete..
           </p>
           <p>
-            After installation, open the plugin in DaVinci Resolve by navigating to <code>Workspace</code> ——&gt; <code>Scripts</code>.
+            After installation, open the plugin in DaVinci Resolve by navigating to <code>Menu Bar</code> ——&gt; <code>Workspace</code> ——&gt; <code>Scripts</code>.
           </p>
         </section>
-        <section id="step-4-en">
-          <h2>Step 4: Download & Replace Model</h2>
+        <section id="step-3-en">
+          <h2>Step 3: Download & Replace Model</h2>
           <p>You can choose the model folder to download from <a href="https://drive.google.com/drive/folders/16FLicjnstLhrl3yKgCHOvle5-3_mLii5?usp=sharing" target="_blank">the page.</a></p>
 
-          <p>After downloading, copy the downloaded model folder into the <code>Whisper/model</code> directory, replacing the existing folder with the same name.</p>
+          <p>After downloading, copy the downloaded model folder into the <code>DaVinci Whisper/model</code> directory, replacing the existing folder with the same name.</p>
         </section>
       </div>
 
@@ -640,7 +659,7 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
           <div class="collapsible-content">
             <ul>
               <li><strong>Function</strong>: Clicking this button opens a browser to download local model files from Baidu Netdisk or Google Drive.</li>
-              <li><strong>Note</strong>: This button is only available when not using the OpenAI API. The downloaded model files need to be unzipped and placed in the corresponding model folder under <code>Whisper/model/</code> (e.g., the <code>small</code> folder).</li>
+              <li><strong>Note</strong>: This button is only available when not using the OpenAI API. The downloaded model files need to be unzipped and placed in the corresponding model folder under <code>DaVinci Whisper/model/</code> (e.g., the <code>small</code> folder).</li>
             </ul>
           </div>
 

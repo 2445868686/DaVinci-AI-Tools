@@ -17,10 +17,10 @@ DaVinci-TTS/DaVinci TTS/config/TTS_settings.json
 # === End DaVinci-Resolve-TTS/.gitignore ===
 
 # === Begin DaVinci-Resolve-Whisper/.gitignore ===
-DaVinci-Whisper/Whisper/config/settings.json
-DaVinci-Whisper/Whisper/model/**/model.bin
+DaVinci-Whisper/DaVinci Whisper/config/settings.json
+DaVinci-Whisper/DaVinci Whisper/model/**/model.bin
 DaVinci-Whisper/.DS_Store
-DaVinci-Whisper/Whisper/WhisperX.py
+DaVinci-Whisper/DaVinci Whisper/WhisperX.py
 # === End DaVinci-Resolve-Whisper/.gitignore ===
 
 # === Begin DaVinci-Sub-Translator/.gitignore ===

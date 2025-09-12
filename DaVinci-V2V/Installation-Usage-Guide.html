@@ -194,8 +194,7 @@
           <strong>安装指南</strong>
           <ul>
             <li><a href="#step-1">步骤 1：检查 Python</a></li>
-            <li><a href="#step-2">步骤 2：移动插件</a></li>
-            <li><a href="#step-3">步骤 3：安装依赖</a></li>
+            <li><a href="#step-2">步骤 2：安装插件</a></li>
           </ul>
         </li>
         <li>
@@ -220,30 +219,40 @@
         <section id="step-1">
           <h2>步骤 1：检查 DaVinci Resolve 中是否已安装 Python</h2>
           <p>
-            点击：<code>工作区</code> ——&gt; <code>控制台</code> ——&gt; <code>Py3</code>。如果已安装，则不会弹出窗口（直接进入
-            <a href="#step-2">步骤 2</a>）。
+            点击：<code>菜单栏</code>——&gt;<code>工作区</code> ——&gt; <code>控制台</code> ——&gt; <code>Py3</code>。如果已安装，则不会弹出窗口（直接进入
+            <a href="#step-2">步骤 2：安装插件</a>）。
           </p>
           <p>
             若未安装，则会弹出 "<strong>Python was not found</strong>"
-            消息，请根据提示下载并安装，安装完成后进入<a href="#step-2">步骤 2</a>！
+            消息，请根据提示下载并安装，安装完成后进入<a href="#step-2">步骤 2：安装插件</a>！
           </p>
           <p>
-            <strong>Windows 用户：</strong>安装 Python 时请务必勾选 "<span
+            <strong>⚠️ Windows 用户：</strong>安装 Python 时请务必勾选 "<span
               style="color: red"
               >Add Python to PATH</span
             >" 选项，否则可能需要重新安装或手动设置环境变量。
           </p>
         </section>
         <section id="step-2">
-          <h2>步骤 2：移动 DaVinci V2V 插件</h2>
-          <p>将 <code>DaVinci V2V</code> 文件夹移动到以下位置：</p>
-          <pre><code>Mac: 
+          <h2>步骤 2：安装插件</h2>
+          <h3>Mac 用户：</h3>
+          <p>
+            双击 <code>Mac_Install.command</code>进行安装，等待安装完成。
+          </p>
+          <h3>Win 用户：</h3>
+          <p> 
+            双击 <code>Windows_Install.bat</code>进行安装，等待安装完成。
+          </p>
+          <p>
+            安装完成后，可通过 <code>菜单栏</code>——&gt;<code>工作区</code> ——&gt; <code>脚本</code> 打开插件进行使用。
+          </p>
+          <pre style="display:none"><code>Mac: 
 /Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility 
 
 Win: 
 C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></pre>
         </section>
-        <section id="step-3">
+        <section id="step-3" style="display:none">
           <h2>步骤 3：安装依赖</h2>
           
           <h3>Mac 用户：</h3>
@@ -255,7 +264,7 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
             双击 <code>Windows_Install.bat</code>进行安装，等待安装完成。
           </p>
           <p>
-            安装完成后，可通过 <code>工作台</code> ——&gt; <code>脚本</code> 菜单打开插件进行使用。
+            安装完成后，可通过 <code>菜单栏</code>——&gt;<code>工作区</code> ——&gt; <code>脚本</code> 打开插件进行使用。
           </p>
         </section>
       </div>
@@ -336,8 +345,7 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
           <strong>Installation Guide</strong>
           <ul>
             <li><a href="#step-1-en">Step 1: Check Python</a></li>
-            <li><a href="#step-2-en">Step 2: Move Plugin</a></li>
-            <li><a href="#step-3-en">Step 3: Install Requirement</a></li>
+            <li><a href="#step-2-en">Step 2: Install Plugin</a></li>
           </ul>
         </li>
         <li>
@@ -361,15 +369,15 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
         <section id="step-1-en">
           <h2>Step 1: Check if Python is Installed in DaVinci Resolve</h2>
           <p>
-            Click: <code>Workspace</code> ——&gt; <code>Console</code> ——&gt;
+            Click: <code>Menu Bar</code> ——&gt; <code>Workspace</code> ——&gt; <code>Console</code> ——&gt;
             <code>Py3</code>. If it is already installed, no window will pop up
-            (proceed directly to <a href="#step-2-en">Step 2</a>).
+            (proceed directly to <a href="#step-2-en">Step 2: Install Plugin</a>).
           </p>
           <p>
             If it is not installed, a "<strong>Python was not found</strong>"
             message will pop up. Follow the pop-up instructions to download and
             install it. After installation, proceed to
-            <a href="#step-2-en">Step 2</a>!
+            <a href="#step-2-en">Step 2: Install Plugin</a>!
           </p>
           <p>
             <strong>Important for Windows users:</strong> During Python
@@ -380,15 +388,26 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
           </p>
         </section>
         <section id="step-2-en">
-          <h2>Step 2: Move the DaVinci V2V Plugin</h2>
-          <p>Move the <code>DaVinci V2V</code> folder to the following location:</p>
-          <pre><code>Mac: 
+          <h2>Step 2: Install Plugin</h2>
+          
+          <h3>For Mac Users:</h3>
+          <p>
+            Double-click the <code>Mac_Install.command</code> ,Install it and wait for it to complete..
+          </p>
+          <h3>For Windows Users:</h3>
+          <p>
+            Double-click the <code>Windows_Install.bat</code> ,Install it and wait for it to complete..
+          </p>
+          <p>
+            After installation, open the plugin by navigating to <code>Menu Bar</code> ——&gt; <code>Workspace</code> ——&gt; <code>Scripts</code>.
+          </p>
+          <pre style="display:none"><code>Mac: 
 /Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility 
 
 Win: 
 C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></pre>
         </section>
-        <section id="step-3-en">
+        <section id="step-3-en" style="display:none">
           <h2>Step 3: Install Requirement</h2>
           
           <h3>For Mac Users:</h3>
@@ -400,7 +419,7 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
             Double-click the <code>Windows_Install.bat</code> ,Install it and wait for it to complete..
           </p>
           <p>
-            After installation, open the plugin in DaVinci Resolve by navigating to <code>Workspace</code> ——&gt; <code>Scripts</code>.
+            After installation, open the plugin by navigating to <code>Menu Bar</code> ——&gt; <code>Workspace</code> ——&gt; <code>Scripts</code>.
           </p>
         </section>
       </div>
