@@ -160,7 +160,6 @@ import sys
 import platform
 import re
 import time
-import wave
 import json
 import threading
 import webbrowser
@@ -348,6 +347,7 @@ class MiniMaxProvider:
 
     def synthesize(self, text: str, model: str, voice_id: str, speed: float, vol: float, pitch: int, file_format: str, subtitle_enable: bool = False, emotion: Optional[str] = None,sound_effects: Optional[str] = None) -> Dict[str, Any]:
         """Synthesizes speech and returns audio content and subtitle URL."""
+        show_warning_message(STATUS_MESSAGES.synthesizing)
         url = self._make_url("/v1/t2a_v2")
         self.session.headers["Content-Type"] = "application/json"
 
@@ -371,17 +371,20 @@ class MiniMaxProvider:
 
             if resp_data.get("base_resp", {}).get("status_code") != 0:
                 error_info = self._handle_api_error(resp_data)
+                show_warning_message(STATUS_MESSAGES.synthesis_failed)
                 return {"audio_content": None, "subtitle_url": None, **error_info}
 
             data = resp_data.get("data", {})
             audio_hex = data.get("audio")
             if not audio_hex:
+                show_warning_message(STATUS_MESSAGES.synthesis_failed)
                 return {"audio_content": None, "subtitle_url": None, "error_code": -1, "error_message": "No audio data in response."}
 
             return {"audio_content": bytes.fromhex(audio_hex), "subtitle_url": data.get("subtitle_file"), "error_code": None, "error_message": None}
         except (requests.exceptions.RequestException, json.JSONDecodeError, KeyError) as e:
             error_message = f"Failed during synthesis request: {e}"
             print(error_message)
+            show_warning_message(STATUS_MESSAGES.synthesis_failed)
             return {"audio_content": None, "subtitle_url": None, "error_code": -1, "error_message": error_message}
 
     def upload_file_for_clone(self, file_path: str) -> Dict[str, Any]:
@@ -490,6 +493,7 @@ class OpenAIProvider:
         Returns:
             bytes: The audio content as bytes if successful, otherwise None.
         """
+        show_warning_message(STATUS_MESSAGES.synthesizing)
         url = f"{self.base_url}/v1/audio/speech"
         payload = {
             "model": model,
@@ -511,19 +515,23 @@ class OpenAIProvider:
             content_type = response.headers.get('Content-Type', '')
             if 'audio' not in content_type:
                 # The API returned a success status but not audio (e.g., a JSON error)
+                show_warning_message(STATUS_MESSAGES.synthesis_failed)
                 print(f"API Error: Expected audio, but received {content_type}")
                 print(f"Response content: {response.text}")
                 return None
 
             return response.content
         except requests.exceptions.RequestException as e:
+            
             print(f"OpenAI API request failed: {e}")
             if e.response is not None:
                 # Try to print JSON error if possible, otherwise raw text
                 try:
                     error_details = e.response.json()
+                    show_warning_message(STATUS_MESSAGES.synthesis_failed)
                     print(f"Error details: {error_details}")
                 except ValueError:
+                    show_warning_message(STATUS_MESSAGES.synthesis_failed)
                     print(f"Error details: {e.response.text}")
             return None
 
@@ -2545,10 +2553,12 @@ def generate_filename(base_path, subtitle, extension):
             return filename
 
 def on_fromsub_button_clicked(ev):
+    resolve, current_project,current_timeline = connect_resolve()
     current_timeline = current_project.GetCurrentTimeline()
     if not current_timeline:
         show_warning_message(STATUS_MESSAGES.create_timeline)
         return
+    
     if items["Path"].Text == '':
         show_warning_message(STATUS_MESSAGES.select_save_path)
         return
@@ -2565,6 +2575,9 @@ def on_fromsub_button_clicked(ev):
 
     global subtitle, stream, flag
     subtitle, start_frame, end_frame = get_current_subtitle(current_timeline)
+    if subtitle is None:
+        show_warning_message(STATUS_MESSAGES.no_subtitle_at_playhead)
+        return
     print_text_on_box(subtitle)
     
     extension = ".mp3" if azure_items["UnuseAPICheckBox"].Checked else items["OutputFormatCombo"].CurrentText.split(", ")[1]
@@ -2590,6 +2603,7 @@ def on_fromsub_button_clicked(ev):
 win.On.FromSubButton.Clicked = on_fromsub_button_clicked
 
 def on_fromtxt_button_clicked(ev):
+    resolve, current_project,current_timeline = connect_resolve()
     current_timeline = current_project.GetCurrentTimeline()
     if not current_timeline:
         show_warning_message(STATUS_MESSAGES.create_timeline)
@@ -2610,6 +2624,9 @@ def on_fromtxt_button_clicked(ev):
 
     global subtitle, stream, flag
     subtitle = items["AzureTxt"].PlainText
+    if not subtitle.strip():
+        show_warning_message(STATUS_MESSAGES.prev_txt)
+        return
     
     extension = ".mp3" if azure_items["UnuseAPICheckBox"].Checked else items["OutputFormatCombo"].CurrentText.split(", ")[1]
     filename = generate_filename(items["Path"].Text, subtitle, extension)
@@ -2693,50 +2710,6 @@ def on_play_button_clicked(ev):
     items["PlayButton"].Enabled = True
 win.On.PlayButton.Clicked = on_play_button_clicked
 #============== MINIMAX ====================#
-def play_audio_segment(pcm_file, json_file, voice_name, sample_rate=32000, channels=2, sample_width=2):
-    try:
-        # 读取 JSON 文件
-        with open(json_file, 'r', encoding='utf-8') as f:
-            voice_data = json.load(f)
-        
-        # 检查声音名称是否存在
-        if voice_name not in voice_data:
-            raise ValueError(f"音色 '{voice_name}' 不存在于 JSON 文件中。")
-        
-        # 获取音频片段起止位置
-        start, end = voice_data[voice_name]["start"], voice_data[voice_name]["end"]
-        
-        # 从 PCM 文件中读取对应片段
-        with open(pcm_file, 'rb') as pcm_in:
-            pcm_in.seek(start)
-            data = pcm_in.read(end - start + 1)
-        
-        # 将 PCM 数据转化为 WAV 格式
-        wav_file = f"{voice_name}_temp.wav"
-        print(wav_file)
-        with wave.open(wav_file, 'wb') as wav_out:
-            wav_out.setnchannels(channels)
-            wav_out.setsampwidth(sample_width)
-            wav_out.setframerate(sample_rate)
-            wav_out.writeframes(data)
-        
-        # 使用系统命令播放音频
-        if os.name == 'nt':  # Windows 系统
-            import winsound
-            winsound.PlaySound(wav_file, winsound.SND_FILENAME)
-
-        else:  # Linux/Unix 或 macOS
-            subprocess.run(['afplay', wav_file], check=True)
-
-        # 删除临时 WAV 文件
-        time.sleep(1)  # 等待1秒钟
-        os.remove(wav_file)
-        print(f"播放完成: {voice_name}")
-    
-    except Exception as e:
-        os.remove(wav_file)
-        print(f"播放失败: {e}")
-
 def json_to_srt(json_data, srt_path):
     """
     将JSON格式的字幕信息转换为 .srt 文件并保存。
@@ -2897,7 +2870,6 @@ def on_minimax_clone_confirm(ev):
         show_warning_message(STATUS_MESSAGES.select_save_path)
         return
 
-    
     global MINIMAX_CLONE_VOICES
     voice_name = minimax_clone_items["minimaxCloneVoiceName"].Text.strip()
     voice_id = minimax_clone_items["minimaxCloneVoiceID"].Text.strip()
@@ -3004,33 +2976,7 @@ def on_minimax_preview_button_click(ev):
     if minimax_items["intlCheckBox"].Checked:
         webbrowser.open(MINIMAX_PREW_URL)
     else:
-        webbrowser.open(MINIMAXI_PREW_URL)
-    """
-        try:
-            # 请确保文件路径正确
-            pcm_file = os.path.join(config_dir, "minimax_voice_data.pcm")  # 拼接完整路径
-            json_file = os.path.join(config_dir, "minimax_voice_data.json")
-            # 检查文件是否存在
-            if not os.path.exists(pcm_file):
-                show_warning_message(STATUS_MESSAGES.download_pcm)
-                return
-            if not os.path.exists(json_file):
-                show_warning_message(STATUS_MESSAGES.download_json)
-                return
-            voice_name = items["minimaxVoiceCombo"].CurrentText  # 目标音色
-
-            voice_id = next(
-                (v["voice_name"] for v in minimax_voices 
-                if voice_name == v["voice_name"] or voice_name == v["voice_id"]),
-                ""
-            )
-
-            # 播放音频
-            play_audio_segment(pcm_file, json_file, voice_id)
-
-        except Exception as e:
-            print(f"播放失败: {e}")
-    """      
+        webbrowser.open(MINIMAXI_PREW_URL)   
 win.On.minimaxPreviewButton.Clicked = on_minimax_preview_button_click
 
 def process_minimax_request(text_func, timeline_func):
@@ -3144,10 +3090,14 @@ def on_minimax_fromsub_button_clicked(ev):
     if items["Path"].Text == '':
         show_warning_message(STATUS_MESSAGES.select_save_path)
         return
+    subtitle_text, start_frame, end_frame = get_current_subtitle(current_timeline)
+    if subtitle_text is None:
+        show_warning_message(STATUS_MESSAGES.no_subtitle_at_playhead)
+        return
     items["minimaxSubtitleCheckBox"].Checked = False
     process_minimax_request(
-        text_func=lambda: get_current_subtitle(current_timeline)[0],
-        timeline_func=lambda: get_current_subtitle(current_timeline)[1:]
+        text_func=lambda: subtitle_text,
+        timeline_func=lambda: (start_frame, end_frame)
     )
 win.On.minimaxFromSubButton.Clicked = on_minimax_fromsub_button_clicked
 
@@ -3159,10 +3109,15 @@ def on_minimax_fromtxt_button_clicked(ev):
     if items["Path"].Text == '':
         show_warning_message(STATUS_MESSAGES.select_save_path)
         return
+    
+    text = items["minimaxText"].PlainText
+    if not text.strip():
+        show_warning_message(STATUS_MESSAGES.prev_txt)
+        return
     process_minimax_request(
-        text_func=lambda: items["minimaxText"].PlainText,
+        text_func=lambda: text,
         timeline_func=lambda: (
-            # 动态获取当前帧和时间线结束帧
+            # 动态获取当前帧和时间线结束?
             timecode_to_frames(
                 current_timeline.GetCurrentTimecode(),
                 float(current_timeline.GetSetting("timelineFrameRate"))
@@ -3260,10 +3215,14 @@ def on_openai_fromsub_button_clicked(ev):
     if not current_timeline:
         show_warning_message(STATUS_MESSAGES.create_timeline)
         return False
-
+    
+    subtitle_text, start_frame, end_frame = get_current_subtitle(current_timeline)
+    if subtitle_text is None:
+        show_warning_message(STATUS_MESSAGES.no_subtitle_at_playhead)
+        return False
     process_openai_request(
-        text_func=lambda: get_current_subtitle(current_timeline)[0],
-        timeline_func=lambda: get_current_subtitle(current_timeline)[1:]
+        text_func=lambda: subtitle_text,
+        timeline_func=lambda: (start_frame, end_frame)
         )
 win.On.OpenAIFromSubButton.Clicked = on_openai_fromsub_button_clicked
 
@@ -3272,18 +3231,22 @@ def on_openai_fromtxt_button_clicked(ev):
     if not current_timeline:
         show_warning_message(STATUS_MESSAGES.create_timeline)
         return False
-
+    
+    text = items["OpenAIText"].PlainText
+    if not text.strip():
+        show_warning_message(STATUS_MESSAGES.prev_txt)
+        return False
     process_openai_request(
-        text_func=lambda: items["OpenAIText"].PlainText,
+        text_func=lambda: text,
         timeline_func=lambda: (
-            # 动态获取当前帧和时间线结束帧
+            # 动态获取当前帧和时间线结束?
             timecode_to_frames(
                 current_timeline.GetCurrentTimecode(),
                 float(current_timeline.GetSetting("timelineFrameRate"))
             ),
             current_timeline.GetEndFrame()
         )
-    ) 
+    )
 win.On.OpenAIFromTxtButton.Clicked = on_openai_fromtxt_button_clicked
 
 

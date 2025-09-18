@@ -228,49 +228,56 @@ settings_file     = os.path.join(config_dir, "translator_settings.json")
 custom_models_file = os.path.join(config_dir, "models.json")
 status_file = os.path.join(config_dir, 'status.json')
 
-# ================== Dify 密钥获取工具函数 ==================
-def fetch_dify_provider_secret(
+# ================== 密钥获取工具函数 ==================
+SUPABASE = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRiamxzaWVsZnhta3hsZHptb2tjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgxMDc3MDIsImV4cCI6MjA3MzY4MzcwMn0.FTgYJJ-GlMcQKOSWu63TufD6Q_5qC_M4cvcd3zpcFJo"
+def fetch_provider_secret(
     provider: str,
     *,
     user_id: str,
-    token: str = None,
-    url: str = "http://118.89.121.18/v1/workflows/run",
+    url: str = "https://tbjlsielfxmkxldzmokc.supabase.co",
     timeout: int = 15,
     max_retry: int = 3,
 ) -> str:
-
-    if not provider:
-        raise ValueError("provider 不能为空")
-
-    app_token = token or os.environ.get("DIFY_APP_TOKEN", "app-OjDy6bAH8ZvxQTaWGqZGRwMx")
     headers = {
-        "Authorization": f"Bearer {app_token}",
+        "Authorization": (
+            f"Bearer {SUPABASE}"
+        ),
         "Content-Type": "application/json",
     }
-    payload = {
-        "inputs": {"provider": provider},
-        "user": user_id,
-        "response_mode": "blocking",
-    }
+    function_url = f"{url}/functions/v1/getApiKey?provider={provider}"
 
-    last_err = None
-    for attempt in range(1, max_retry + 1):
+    for attempt in range(max_retry):
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
-            resp.raise_for_status()
-            jr = resp.json()
-            outputs = (jr.get("data") or {}).get("outputs") or {}
-            if "result" not in outputs:
-                raise ValueError(
-                    "Dify 返回中找不到 'result' 字段：\n" + json.dumps(jr, ensure_ascii=False, indent=2)
-                )
-            return outputs["result"]
-        except Exception as e:
-            last_err = e
-            if attempt >= max_retry:
-                raise
-            time.sleep(2 ** attempt)
-    raise RuntimeError(f"Unexpected error when fetching provider secret: {last_err}")
+            resp = requests.get(function_url, headers=headers, timeout=timeout)
+            if resp.status_code == 200:
+                api_key = resp.json().get("api_key")
+                if api_key:
+                    return api_key
+                raise ValueError("API key not found in the response.")
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After")
+                wait = float(retry_after) if retry_after else min(2 ** attempt, 30)
+                print(f"[{attempt+1}/{max_retry}] 429 rate limited, sleeping {wait}s")
+                time.sleep(wait)
+                continue
+            if 500 <= resp.status_code < 600:
+                wait = min(2 ** attempt, 30)
+                print(f"[{attempt+1}/{max_retry}] server {resp.status_code}, sleeping {wait}s")
+                time.sleep(wait)
+                continue
+            try:
+                err = resp.json()
+            except Exception:
+                err = {"error": resp.text[:200]}
+            raise RuntimeError(f"HTTP {resp.status_code}: {err}")
+
+        except requests.exceptions.RequestException as e:
+            jitter = random.random()  # 0~1 秒
+            wait = min(2 ** attempt + jitter, 30)
+            print(f"[{attempt+1}/{max_retry}] network error: {e}; sleeping {wait:.2f}s")
+            time.sleep(wait)
+
+    raise RuntimeError("Failed to fetch API key after multiple attempts.")
 
 class STATUS_MESSAGES:
     pass
@@ -382,18 +389,18 @@ USERID = get_machine_id()
 class AzureProvider(BaseProvider):
     name = AZURE_PROVIDER
     _session = requests.Session()
-    _dify_key_cache = None
+    _key_cache = None
     _key_lock = threading.Lock()
 
     @classmethod
-    def _ensure_dify_key(cls):
+    def _ensure_key(cls):
         # 并发安全：仅首次向 Dify 拉取一次 Azure Key
-        if cls._dify_key_cache:
-            return cls._dify_key_cache
+        if cls._key_cache:
+            return cls._key_cache
         with cls._key_lock:
-            if not cls._dify_key_cache:
-                cls._dify_key_cache = fetch_dify_provider_secret("AZURE", user_id=USERID)
-        return cls._dify_key_cache
+            if not cls._key_cache:
+                cls._key_cache = fetch_provider_secret("AZURE", user_id=USERID)
+        return cls._key_cache
 
     def translate(self, text, target_lang):
         # -------- 1. 优先使用用户配置 --------
@@ -405,7 +412,7 @@ class AzureProvider(BaseProvider):
             region = user_region
         else:
             # -------- 2. 无用户完整配置时，使用 Dify 获取 Azure Key，region 固定 eastus --------
-            api_key = self._ensure_dify_key()
+            api_key = self._ensure_key()
             region = "eastus"
 
         params = {"api-version": "3.0", "to": target_lang}
@@ -517,7 +524,7 @@ class GLMProvider(BaseProvider):
 
         with self._key_lock:
             if env_key not in self._api_keys:
-                self._api_keys[env_key] = fetch_dify_provider_secret(provider_name, user_id=USERID)
+                self._api_keys[env_key] = fetch_provider_secret(provider_name, user_id=USERID)
             return self._api_keys[env_key]
 
     def translate(self, text, target_lang, prefix: str = "", suffix: str = "", prompt_content: str = None):

@@ -116,8 +116,28 @@ if errorlevel 1 (
     pause & exit /b 1
 )
 
+rem 8. Set folder permissions for user access (NEWLY ADDED SECTION)
 echo.
-echo [%DATE% %TIME%] SUCCESS: All packages have been installed successfully!
+echo [%DATE% %TIME%] Setting permissions to allow standard user access...
+
+echo [%DATE% %TIME%] Applying permissions to library directory: "%TARGET_DIR%"
+icacls "%TARGET_DIR%" /inheritance:e /grant Users:(RX) /grant "Authenticated Users":(M) /T /C >nul
+if errorlevel 1 (
+    echo [%DATE% %TIME%] WARNING: Failed to set all permissions on "%TARGET_DIR%".
+) else (
+    echo [%DATE% %TIME%] SUCCESS: Permissions set on library directory.
+)
+
+echo [%DATE% %TIME%] Applying permissions to script directory: "%UTILITY_DIR%\%SCRIPT_NAME%"
+icacls "%UTILITY_DIR%\%SCRIPT_NAME%" /inheritance:e /grant Users:(RX) /grant "Authenticated Users":(M) /T /C >nul
+if errorlevel 1 (
+    echo [%DATE% %TIME%] WARNING: Failed to set all permissions on "%UTILITY_DIR%\%SCRIPT_NAME%".
+) else (
+    echo [%DATE% %TIME%] SUCCESS: Permissions set on script directory.
+)
+
+echo.
+echo [%DATE% %TIME%] SUCCESS: All packages have been installed and configured successfully!
 echo ------------------------------------------------------------
 pause
 endlocal
