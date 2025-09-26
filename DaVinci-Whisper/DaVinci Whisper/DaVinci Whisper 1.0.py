@@ -1542,7 +1542,7 @@ else:
 items["OnlineCheckBox"].Enabled=False
 
 def import_srt_to_first_empty(path):
-    resolve, current_project, current_media_pool, current_root_folder, current_timeline, fps = connect_resolve()
+    resolve, current_project, current_media_pool, current_root_folder, current_timeline, fps_frac = connect_resolve()
     if not current_timeline:
         return False
 
@@ -1552,36 +1552,30 @@ def import_srt_to_first_empty(path):
         if states[i]:
             current_timeline.SetTrackEnable("subtitle", i, False)
 
-    target = next(
-        (i for i in range(1, current_timeline.GetTrackCount("subtitle") + 1)
-         if not current_timeline.GetItemListInTrack("subtitle", i)),
-        None
-    )
+    target = next((i for i in range(1, current_timeline.GetTrackCount("subtitle")+1)
+                   if not current_timeline.GetItemListInTrack("subtitle", i)), None)
     if target is None:
         current_timeline.AddTrack("subtitle")
         target = current_timeline.GetTrackCount("subtitle")
     current_timeline.SetTrackEnable("subtitle", target, True)
 
-    srt_folder = None
-    for folder in current_root_folder.GetSubFolderList():
-        if folder.GetName() == "srt":
-            srt_folder = folder
-            break
-
+    # 放入 srt 文件夹
+    srt_folder = next((f for f in current_root_folder.GetSubFolderList() if f.GetName()=="srt"), None)
     if srt_folder is None:
         srt_folder = current_media_pool.AddSubFolder(current_root_folder, "srt")
-
     current_media_pool.SetCurrentFolder(srt_folder)
 
-    current_media_pool.ImportMedia([path])
+    added = current_media_pool.ImportMedia([path])
+    if added and isinstance(added, list):
+        mpi = added[-1]
+    else:
+        name = os.path.basename(path)
+        clips = [c for c in srt_folder.GetClipList() if c.GetName()==name]
+        if not clips: return False
+        mpi = clips[0]
 
-    clips = srt_folder.GetClipList()
-
-    latest_clip = clips[-1] 
-
-    current_media_pool.AppendToTimeline([latest_clip])
-
-    print("🎉 The subtitles were inserted into folder 'srt' and track #", target)
+    current_timeline.SetCurrentTimecode(current_timeline.GetStartTimecode())
+    current_media_pool.AppendToTimeline([mpi])
     return True
 
 def load_audio_only_preset(project, keyword="audio only"):

@@ -83,11 +83,11 @@ if /I "!TZ_NAME!"=="China Standard Time" (
 echo.
 echo [%DATE% %TIME%] Attempting to download from: !PRIMARY_INDEX!
 python -m pip download %PACKAGES% --dest "%WHEEL_DIR%" --only-binary=:all: ^
-    --use-feature=fast-deps --no-cache-dir -i "!PRIMARY_INDEX!"
+    --no-cache-dir -i "!PRIMARY_INDEX!" --retries 3 --timeout 30
 if errorlevel 1 (
     echo [%DATE% %TIME%] WARNING: Primary index failed. Trying secondary: !SECONDARY_INDEX!
     python -m pip download %PACKAGES% --dest "%WHEEL_DIR%" --only-binary=:all: ^
-        --use-feature=fast-deps --no-cache-dir -i "!SECONDARY_INDEX!"
+        --no-cache-dir -i "!SECONDARY_INDEX!" --retries 3 --timeout 30
     if errorlevel 1 (
         echo [%DATE% %TIME%] ERROR: Failed to download packages from both indexes. Check your network or package names.
         pause & exit /b 1

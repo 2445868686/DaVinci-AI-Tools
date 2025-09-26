@@ -1,6 +1,6 @@
 # ================= 用户配置 =================
 SCRIPT_NAME    = "Sub AI Translator"
-SCRIPT_VERSION = " 1.2"
+SCRIPT_VERSION = " 1.3"
 SCRIPT_AUTHOR  = "HEIBA"
 
 SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
@@ -172,9 +172,27 @@ def connect_resolve():
     mp  = prj.GetMediaPool()
     root= mp.GetRootFolder()
     tl  = prj.GetCurrentTimeline()
-    fps = float(prj.GetSetting("timelineFrameRate"))
-    return resolve, prj, mp, root, tl, fps
+    print(tl.GetSetting("timelineFrameRate"))
+    from fractions import Fraction
+    def _fps_frac(tl):
+        s = str(tl.GetSetting("timelineFrameRate") or "").strip()
+        table = {"23.976": Fraction(24000,1001), "29.97": Fraction(30000,1001),
+                 "59.94": Fraction(60000,1001), "47.952": Fraction(48000,1001),
+                 "119.88": Fraction(120000,1001)}
+        if s in table: return table[s]
+        try: return Fraction(int(round(float(s))),1)
+        except: return Fraction(24,1)
+    fps_frac = _fps_frac(tl)
+    print(f"fps_frac:{fps_frac}")
+    return resolve, prj, mp, root, tl, fps_frac
 
+def frames_to_srt_tc(frames, fps_frac):
+    ms = round(frames * 1000 * fps_frac.denominator / fps_frac.numerator)
+    if ms < 0: ms = 0
+    h, rem = divmod(ms, 3600000)
+    m, rem = divmod(rem, 60000)
+    s, ms  = divmod(rem, 1000)
+    return f"{h:02}:{m:02}:{s:02},{ms:03}"
 try:
     import requests
     from deep_translator import GoogleTranslator
@@ -1360,7 +1378,7 @@ def frame_to_timecode(frame, fps):
     s, msec  = divmod(rem, 1)
     return f"{int(h):02}:{int(m):02}:{int(s):02},{int(msec*1000):03}"
 
-def write_srt(subs, start_frame, fps, timeline_name, lang_code, output_dir="."):
+def write_srt(subs, start_frame, fps_frac, timeline_name, lang_code, output_dir="."):
     """
     按 [时间线名称]_[语言code]_[月日时分]_[4位随机码]_[版本].srt 规则写文件：
       1. 安全化时间线名称和语言code
@@ -1395,67 +1413,55 @@ def write_srt(subs, start_frame, fps, timeline_name, lang_code, output_dir="."):
     path = os.path.join(output_dir, filename)
 
     # 6. 写入 SRT 内容
+    subs = sorted(subs, key=lambda x: x["start"])
     with open(path, "w", encoding="utf-8") as f:
         for idx, s in enumerate(subs, 1):
+            st = max(0, s["start"] - start_frame)
+            ed = max(0, s["end"]   - start_frame)
+            if ed <= st: ed = st + 1
             f.write(
                 f"{idx}\n"
-                f"{frame_to_timecode(s['start'] - start_frame, fps)} --> "
-                f"{frame_to_timecode(s['end']   - start_frame, fps)}\n"
+                f"{frames_to_srt_tc(st, fps_frac)} --> "
+                f"{frames_to_srt_tc(ed, fps_frac)}\n"
                 f"{s['text']}\n\n"
             )
-
     return path
 
 def import_srt_to_first_empty(path):
-    resolve, current_project, current_media_pool, current_root_folder, current_timeline, fps = connect_resolve()
+    resolve, current_project, current_media_pool, current_root_folder, current_timeline, fps_frac = connect_resolve()
     if not current_timeline:
         return False
 
-    # 1. 禁用所有现有字幕轨
     states = {}
     for i in range(1, current_timeline.GetTrackCount("subtitle") + 1):
         states[i] = current_timeline.GetIsTrackEnabled("subtitle", i)
         if states[i]:
             current_timeline.SetTrackEnable("subtitle", i, False)
 
-    # 2. 找第一条空轨，没有就新建
-    target = next(
-        (i for i in range(1, current_timeline.GetTrackCount("subtitle") + 1)
-         if not current_timeline.GetItemListInTrack("subtitle", i)),
-        None
-    )
+    target = next((i for i in range(1, current_timeline.GetTrackCount("subtitle")+1)
+                   if not current_timeline.GetItemListInTrack("subtitle", i)), None)
     if target is None:
         current_timeline.AddTrack("subtitle")
         target = current_timeline.GetTrackCount("subtitle")
     current_timeline.SetTrackEnable("subtitle", target, True)
 
-    # —— 新增部分：在根目录下创建 / 获取 srt 子文件夹 —— #
-    # 3. 检查是否已存在名为 "srt" 的子文件夹
-    srt_folder = None
-    for folder in current_root_folder.GetSubFolderList():
-        if folder.GetName() == "srt":
-            srt_folder = folder
-            break
-    # 4. 如果不存在，就创建一个
+    # 放入 srt 文件夹
+    srt_folder = next((f for f in current_root_folder.GetSubFolderList() if f.GetName()=="srt"), None)
     if srt_folder is None:
         srt_folder = current_media_pool.AddSubFolder(current_root_folder, "srt")
-
-    # 5. 切换到 srt 文件夹
     current_media_pool.SetCurrentFolder(srt_folder)
 
-    # —— 导入并追加到轨道 —— #
-    # 6. 导入 SRT 文件
-    current_media_pool.ImportMedia([path])
+    added = current_media_pool.ImportMedia([path])
+    if added and isinstance(added, list):
+        mpi = added[-1]
+    else:
+        name = os.path.basename(path)
+        clips = [c for c in srt_folder.GetClipList() if c.GetName()==name]
+        if not clips: return False
+        mpi = clips[0]
 
-    # 7. 从 srt_folder 中获取最新导入的剪辑
-    clips = srt_folder.GetClipList()
-    latest_clip = clips[-1]  # 列表最后一个即刚导入的
-
-    # 8. 追加到时间线
     current_timeline.SetCurrentTimecode(current_timeline.GetStartTimecode())
-    current_media_pool.AppendToTimeline([latest_clip])
-
-    print("🎉 The subtitles were inserted into folder 'srt' and track #", target)
+    current_media_pool.AppendToTimeline([mpi])
     return True
 
 

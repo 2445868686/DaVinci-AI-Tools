@@ -11,7 +11,6 @@ Y_CENTER = (SCREEN_HEIGHT - WINDOW_HEIGHT) // 2
 SCRIPT_KOFI_URL="https://ko-fi.com/heiba"
 SCRIPT_BILIBILI_URL  = "https://space.bilibili.com/385619394"
 
-# Registration links
 MINIMAX_LINK = "https://platform.minimaxi.com/login"
 RUNWAY_LINK  = "https://dev.runwayml.com/"
 
@@ -45,8 +44,10 @@ import time
 import json
 import base64 
 import webbrowser
+import shutil
 
 SCRIPT_PATH      = os.path.dirname(os.path.abspath(sys.argv[0]))
+TEMP_DIR         = os.path.join(SCRIPT_PATH, "temp")
 SETTINGS         = os.path.join(SCRIPT_PATH, "config", "i2v_settings.json")
 STATUS_MAP_FILE  = os.path.join(SCRIPT_PATH, "config", "status.json")
 
@@ -235,30 +236,42 @@ def build_provider_tab_ui(id_prefix: str):
                 ui.VGroup({"Spacing": 8, "Weight": 1}, [
                     ui.HGroup({"Spacing": 8, "Weight": 1}, [
                         ui.Button({
-                            "ID": f"{id_prefix}PickFirstBtn",
-                            "Text": "选择首帧",
+                            "ID": f"{id_prefix}PickFirstCurrentBtn",
+                            "Text": "从播放头选择首帧",
                             "StyleSheet": "border:2px dashed #555; border-radius:12px; font-size:14px; padding:4px 10px;",
                             "Weight": 1
                         }),
+                        ui.Button({
+                            "ID": f"{id_prefix}PickFirstBtn",
+                            "Text": "上传首帧",
+                            "StyleSheet": "border:0px dashed #555; border-radius:12px; font-size:14px; padding:4px 10px;",
+                            "Weight": 0
+                        }),
                     ]),
                 ]),
-                ui.Button({
-                    "ID": f"{id_prefix}SwapBtn",
-                    "Text": "⇆",
-                    "Alignment": {"AlignHCenter": True, "AlignVCenter": True},
-                    "Font": ui.Font({"PixelSize": 12, "StyleName": "Bold"}),
-                    "Flat": True,
-                    "TextColor": [0.1, 0.3, 0.9, 1],
-                    "BackgroundColor": [1, 1, 1, 0],
-                    "Weight": 0
-                }),
+                    ui.Button({
+                        "ID": f"{id_prefix}SwapBtn",
+                        "Text": "⇆",
+                        "Alignment": {"AlignHCenter": True, "AlignVCenter": True},
+                        "Font": ui.Font({"PixelSize": 12, "StyleName": "Bold"}),
+                        "Flat": True,
+                        "TextColor": [0.1, 0.3, 0.9, 1],
+                        "BackgroundColor": [1, 1, 1, 0],
+                        "Weight": 0
+                    }),
                 ui.VGroup({"Spacing": 8, "Weight": 1}, [
                     ui.HGroup({"Spacing": 8, "Weight": 1}, [
                         ui.Button({
-                            "ID": f"{id_prefix}PickLastBtn",
-                            "Text": "选择尾帧",
+                            "ID": f"{id_prefix}PickLastCurrentBtn",
+                            "Text": "从播放头选择尾帧",
                             "StyleSheet": "border:2px dashed #555; border-radius:12px; font-size:14px; padding:4px 10px;",
                             "Weight": 1
+                        }),
+                        ui.Button({
+                            "ID": f"{id_prefix}PickLastBtn",
+                            "Text": "上传尾帧",
+                            "StyleSheet": "border:0px dashed #555; border-radius:12px; font-size:14px; padding:4px 10px;",
+                            "Weight": 0
                         }),
                     ]),
                 ]),
@@ -429,8 +442,10 @@ translations = {
         "InfoText":"支持 JPG / PNG，≤10MB，建议尺寸 ≥ 300px",
         "ShowMinimax": "配置",
         "ShowRunway": "配置",
-        "PickFirstBtn": "选择首帧",
-        "PickLastBtn": "选择尾帧",
+        "PickFirstBtn": "📂",
+        "PickLastBtn": "📂",
+        "PickFirstCurrentBtn": "从播放头选择首帧",
+        "PickLastCurrentBtn": "从播放头选择尾帧",
         "MinimaxModelLabel": "模型：",
         "MinimaxDurationLabel": "时长(s)：",
         "TaskIDLabel": "任务ID：",
@@ -454,8 +469,10 @@ translations = {
         "RunwayConfigLabel": "Runway",
         "ShowMinimax": "Config",
         "ShowRunway": "Config",
-        "PickFirstBtn": "First Frame",
-        "PickLastBtn": "Last Frame",
+        "PickFirstBtn": "📂",
+        "PickLastBtn": "📂",
+        "PickFirstCurrentBtn": "Current First",
+        "PickLastCurrentBtn": "Current Last",
         "MinimaxModelLabel": "Model:",
         "MinimaxDurationLabel": "Duration(s):",
         "TaskIDLabel": "Task ID:",
@@ -554,10 +571,11 @@ def add_to_media_pool_and_timeline(start_frame, end_frame, filename):
         "stereoEye": "both"
     }
     tli = mpool.AppendToTimeline([clip_info])
+    tag = elapsed_tag(_OP_START_TS)
     if tli:
-        print(f"Appended clip: {clip.GetName()} to timeline at frame {start_frame} on track {track_index}.")
+        print(f"{tag} Appended clip: {clip.GetName()} to timeline at frame {start_frame} on track {track_index}.")
         return True
-    print("Failed to append clip to timeline.")
+    print(f"{tag} Failed to append clip to timeline.")
     return False
 
 def encode_image_to_data_uri(img_path: str) -> str:
@@ -631,6 +649,66 @@ def _is_image_ok(path):
 def _set_preview(btn_id, path):
     items[btn_id].Icon = ui.Icon({"File": path})
 
+
+def _ensure_temp_dir() -> bool:
+    try:
+        os.makedirs(TEMP_DIR, exist_ok=True)
+        return True
+    except Exception as exc:
+        print(f"Failed to prepare temp directory: {exc}")
+        return False
+
+
+def _export_current_frame_to_temp(prefix: str) -> Optional[str]:
+    resolve, proj, mpool, root, tl, fps = connect_resolve()
+    if not proj or not tl:
+        show_dynamic_message("No active timeline.", "没有激活的时间线。")
+        return None
+    if not _ensure_temp_dir():
+        show_dynamic_message("Cannot prepare temp folder.", "无法创建临时文件夹。")
+        return None
+
+    timestamp = int(time.time() * 1000)
+    filename = f"{prefix}_{timestamp}.png"
+    file_path = os.path.join(TEMP_DIR, filename)
+
+    try:
+        ok = proj.ExportCurrentFrameAsStill(file_path)
+    except Exception as exc:
+        print(f"ExportCurrentFrameAsStill failed: {exc}")
+        ok = False
+
+    if ok and os.path.exists(file_path):
+        return file_path
+
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    except Exception:
+        pass
+    show_dynamic_message("Export current frame failed.", "导出当前帧失败。")
+    return None
+
+
+def select_current_frame_for(preview_btn_id: str, prefix: str):
+    still_path = _export_current_frame_to_temp(prefix)
+    if not still_path:
+        return
+    _set_preview(preview_btn_id, still_path)
+    PREVIEW_PATHS[preview_btn_id] = still_path
+    try:
+        items[preview_btn_id].Update()
+    except Exception:
+        pass
+
+
+def cleanup_temp_dir():
+    try:
+        if os.path.isdir(TEMP_DIR):
+            shutil.rmtree(TEMP_DIR)
+    except Exception as exc:
+        print(f"Failed to clean temp directory: {exc}")
+
 def generate_filename(base_path, prompt, extension):
     if not os.path.exists(base_path):
         os.makedirs(base_path)
@@ -670,6 +748,15 @@ def show_dynamic_message(en_text, zh_text):
     except Exception:
         pass
 
+
+def elapsed_tag(start_ts: Any) -> str:
+    """Return a `[+Xs]` tag for console output using a numeric timestamp or dict ref."""
+    if isinstance(start_ts, dict):
+        start_ts = start_ts.get("ts")
+    if isinstance(start_ts, (int, float)) and start_ts > 0:
+        return f"[+{int(max(0, time.time() - start_ts))}s]"
+    return "[+0s]"
+
 def show_error_by_code(code: Any, fallback_en: str = "", fallback_zh: str = ""):
     pair  = _status_text_by_code(code)
     en_m  = pair["en"] or fallback_en or "Unknown error"
@@ -707,6 +794,7 @@ _last_tail_enable_state = {"val": None}
 def _apply_last_frame_ui_minimax(allow: bool, show_tip: bool = True):
     if allow:
         items["MinimaxPickLastBtn"].Enabled = True
+        items["MinimaxPickLastCurrentBtn"].Enabled = True
         if show_tip:
             if items["LangEnCheckBox"].Checked:
                 items["MinimaxCurrentMode"].Text = "Current mode: First & Last Frame"
@@ -719,6 +807,7 @@ def _apply_last_frame_ui_minimax(allow: bool, show_tip: bool = True):
         else:
             items["MinimaxCurrentMode"].Text = "当前模式：图生视频"
         items["MinimaxPickLastBtn"].Enabled = False
+        items["MinimaxPickLastCurrentBtn"].Enabled = False
         items["MinimaxLastPreview"].Icon = ui.Icon({})
         items["MinimaxLastPreview"].Update()
         PREVIEW_PATHS["MinimaxLastPreview"] = None
@@ -727,6 +816,7 @@ _runway_last_enable_state = {"val": None}
 def _apply_last_frame_ui_runway(allow: bool, show_tip: bool = True):
     if allow:
         items["RunwayPickLastBtn"].Enabled = True
+        items["RunwayPickLastCurrentBtn"].Enabled = True
         if show_tip:
             if items["LangEnCheckBox"].Checked:
                 items["RunwayCurrentMode"].Text = "Current mode: First & Last Frame"
@@ -738,6 +828,7 @@ def _apply_last_frame_ui_runway(allow: bool, show_tip: bool = True):
         else:
             items["RunwayCurrentMode"].Text = "当前模式：图生视频"
         items["RunwayPickLastBtn"].Enabled = False
+        items["RunwayPickLastCurrentBtn"].Enabled = False
         items["RunwayLastPreview"].Icon = ui.Icon({})
         items["RunwayLastPreview"].Update()
         PREVIEW_PATHS["RunwayLastPreview"] = None
@@ -772,6 +863,7 @@ class BaseVideoProvider(ABC):
         if not base_url: raise ValueError("base_url 不能为空")
         self.api_key  = api_key
         self.base_url = base_url.rstrip("/")
+        self._op_start_ts = time.time()
 
     @abstractmethod
     def create_video_task(self, **kwargs) -> str: ...
@@ -793,17 +885,26 @@ class BaseVideoProvider(ABC):
                 raise VideoGenError(f"[{task_id}] 轮询超时 {timeout}s")
             time.sleep(poll_interval)
 
+    def set_operation_origin(self, ts: float):
+        if isinstance(ts, (int, float)) and ts > 0:
+            self._op_start_ts = ts
+
 class MiniMaxProvider(BaseVideoProvider):
     def __init__(self, api_key: str, base_url: str, on_status=None, debug: bool = False):
         super().__init__(api_key, base_url)
-        self.on_status   = on_status
-        self.debug       = debug
-        self._last_status= None
-        self._poll_count = 0
+        self.on_status    = on_status
+        self.debug        = debug
+        self._last_status = None
+        self._poll_count  = 0
+        # Track operation timing for richer debug prints
+        self._op_start_ts   = time.time()
+        self._current_stage = None
 
     def _dbg(self, msg: str):
         if self.debug:
-            print(f"[MiniMax][{time.strftime('%H:%M:%S')}] {msg}")
+            elapsed = int(max(0, time.time() - (self._op_start_ts or time.time())))
+            stage_suffix = f"[{self._current_stage}]" if self._current_stage else ""
+            print(f"[MiniMax][{time.strftime('%H:%M:%S')}] {stage_suffix}[{elapsed}s] {msg}")
 
     def _headers(self) -> Dict[str, str]:
         return {"authorization": f"Bearer {self.api_key}", "content-type": "application/json"}
@@ -838,68 +939,78 @@ class MiniMaxProvider(BaseVideoProvider):
     def create_video_task(self, *, model: str, prompt: str = "", duration: int = 6,
                           resolution: str = "", first_frame_image: Optional[str] = None,
                           last_frame_image: Optional[str] = None, **extra) -> str:
-        payload = {"model": model, "prompt": prompt or "", "duration": int(duration)}
-        if resolution: payload["resolution"] = resolution
-        if first_frame_image: payload["first_frame_image"] = encode_image_to_data_uri(first_frame_image)
-        if last_frame_image:  payload["last_frame_image"]  = encode_image_to_data_uri(last_frame_image)
-        if extra: payload.update(extra)
+        prev_stage = self._current_stage
+        self._current_stage = "create"
+        try:
+            payload = {"model": model, "prompt": prompt or "", "duration": int(duration)}
+            if resolution: payload["resolution"] = resolution
+            if first_frame_image: payload["first_frame_image"] = encode_image_to_data_uri(first_frame_image)
+            if last_frame_image:  payload["last_frame_image"]  = encode_image_to_data_uri(last_frame_image)
+            if extra: payload.update(extra)
 
-        show_dynamic_message("Submitting task to MiniMax…", "正在向 MiniMax 提交任务…")
-        data    = self._request("POST", "v1/video_generation", json_body=payload).json()
-        if self.debug:
-            try:
-                self._dbg("[create] Full JSON response ↓")
-                print(json.dumps(data, ensure_ascii=False, indent=2))
-            except Exception as _e:
-                self._dbg(f"[create] JSON dump failed: {_e}")
-        task_id = data.get("task_id") or ""
-        if not task_id:
-            base_resp = data.get("base_resp") or {}
-            code = base_resp.get("status_code") or data.get("status_code") or data.get("code") or "1000"
-            raise VideoGenError("MiniMax create task failed", code=code, info=data)
-        self._dbg(f"Task submitted: task_id={task_id}")
-        return task_id
+            show_dynamic_message("Submitting task to MiniMax…", "正在向 MiniMax 提交任务…")
+            data    = self._request("POST", "v1/video_generation", json_body=payload).json()
+            if self.debug:
+                try:
+                    self._dbg("[create] Full JSON response ↓")
+                    print(json.dumps(data, ensure_ascii=False, indent=2))
+                except Exception as _e:
+                    self._dbg(f"[create] JSON dump failed: {_e}")
+            task_id = data.get("task_id") or ""
+            if not task_id:
+                base_resp = data.get("base_resp") or {}
+                code = base_resp.get("status_code") or data.get("status_code") or data.get("code") or "1000"
+                raise VideoGenError("MiniMax create task failed", code=code, info=data)
+            self._dbg(f"Task submitted: task_id={task_id}")
+            return task_id
+        finally:
+            self._current_stage = prev_stage
 
     def query_video_task(self, task_id: str) -> Dict[str, Any]:
         if not task_id:
             raise ValueError("task_id 不能为空")
 
-        resp = self._request(
-            "GET",
-            "v1/query/video_generation",
-            params={"task_id": task_id},
-            json_body=None,
-        )
-        data = resp.json()
-        if self.debug:
-            try:
-                self._dbg("[query] Full JSON response ↓")
-                print(json.dumps(data, ensure_ascii=False, indent=2))
-            except Exception as _e:
-                self._dbg(f"[query] JSON dump failed: {_e}")
+        prev_stage = self._current_stage
+        self._current_stage = "query"
+        try:
+            resp = self._request(
+                "GET",
+                "v1/query/video_generation",
+                params={"task_id": task_id},
+                json_body=None,
+            )
+            data = resp.json()
+            if self.debug:
+                try:
+                    self._dbg("[query] Full JSON response ↓")
+                    print(json.dumps(data, ensure_ascii=False, indent=2))
+                except Exception as _e:
+                    self._dbg(f"[query] JSON dump failed: {_e}")
 
-        base_code = (data.get("base_resp") or {}).get("status_code")
-        if isinstance(base_code, int) and base_code != 0:
+            base_code = (data.get("base_resp") or {}).get("status_code")
+            if isinstance(base_code, int) and base_code != 0:
+                if callable(self.on_status):
+                    try:
+                        self.on_status("failed", data)
+                    except Exception:
+                        pass
+                raise VideoGenError("MiniMax query failed", code=base_code, info=data)
+
+            status = data.get("status")
+            if status is None:
+                raise VideoGenError(f"查询任务返回异常：{data}")
+
+            self._dbg(f"Query task={task_id} status={status}")
+
             if callable(self.on_status):
                 try:
-                    self.on_status("failed", data)
+                    self.on_status(status, data)
                 except Exception:
                     pass
-            raise VideoGenError("MiniMax query failed", code=base_code, info=data)
 
-        status = data.get("status")
-        if status is None:
-            raise VideoGenError(f"查询任务返回异常：{data}")
-
-        self._dbg(f"Query task={task_id} status={status}")
-
-        if callable(self.on_status):
-            try:
-                self.on_status(status, data)
-            except Exception:
-                pass
-
-        return data
+            return data
+        finally:
+            self._current_stage = prev_stage
 
     def download_file(self, file_id: str, save_path: str) -> str:
         if not file_id: raise ValueError("file_id 不能为空")
@@ -951,14 +1062,14 @@ class MiniMaxProvider(BaseVideoProvider):
                             if pct != last_pct:
                                 show_dynamic_message(f"[MiniMax] Downloading: {pct}%",
                                                      f"[MiniMax] 下载进度: {pct}%")
-                                print(f"[MiniMax] Downloading: {pct}%")
+                                print(f"[MiniMax]{elapsed_tag(self._op_start_ts)} Downloading: {pct}%")
                                 last_pct = pct
                         else:
                             if time.time() - last_time >= 0.5:
                                 mb = downloaded / (1024 * 1024)
                                 show_dynamic_message(f"[MiniMax] Downloaded {mb:.1f} MB",
                                                      f"[MiniMax] 已下载 {mb:.1f} MB")
-                                print(f"[MiniMax] Downloaded {mb:.1f} MB")
+                                print(f"[MiniMax]{elapsed_tag(self._op_start_ts)} Downloaded {mb:.1f} MB")
                                 last_time = time.time()
         except requests.RequestException as e:
             raise VideoGenError(f"下载文件失败：{e}")
@@ -1022,7 +1133,7 @@ class RunwayProvider(BaseVideoProvider):
 
     def _dbg(self, msg: str):
         if self.debug:
-            print(f"[Runway][{time.strftime('%H:%M:%S')}] {msg}")
+            print(f"[Runway][{time.strftime('%H:%M:%S')}] {elapsed_tag(self._op_start_ts)} {msg}")
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -1240,14 +1351,14 @@ class RunwayProvider(BaseVideoProvider):
                             if pct != last_pct:
                                 show_dynamic_message(f"[Runway] Downloading: {pct}%",
                                                      f"[Runway] 下载进度: {pct}%")
-                                print(f"[Runway] Downloading: {pct}%")
+                                print(f"[Runway]{elapsed_tag(self._op_start_ts)} Downloading: {pct}%")
                                 last_pct = pct
                         else:
                             if time.time() - last_time >= 0.5:
                                 mb = downloaded / (1024 * 1024)
                                 show_dynamic_message(f"[Runway] Downloaded {mb:.1f} MB",
                                                      f"[Runway] 已下载 {mb:.1f} MB")
-                                print(f"[Runway] Downloaded {mb:.1f} MB")
+                                print(f"[Runway]{elapsed_tag(self._op_start_ts)} Downloaded {mb:.1f} MB")
                                 last_time = time.time()
         except requests.RequestException as e:
             raise VideoGenError(f"Runway: 下载失败 {e}")
@@ -1255,9 +1366,12 @@ class RunwayProvider(BaseVideoProvider):
 
 # ---------- 统一的状态回调工厂/下载入库封装 ----------
 def make_status_cb(op_start_ts_ref):
-    _last = {"val": None}
+    state = {"status": None, "last_emit": 0.0}
+
     def _cb(status: str, info: dict):
-        elapsed = int(time.time() - op_start_ts_ref["ts"])
+        now = time.time()
+        elapsed = int(now - op_start_ts_ref["ts"])
+
         en_map = {
             "Preparing":  f"Preparing… {elapsed}s",
             "Queueing":   f"In queue… {elapsed}s",
@@ -1276,10 +1390,19 @@ def make_status_cb(op_start_ts_ref):
             "Fail":       f"任务失败。{elapsed}秒",
             "failed":     f"任务失败。{elapsed}秒",
         }
-        if status != _last["val"]:
-            _last["val"] = status
-            show_dynamic_message(en_map.get(status, f"Status: {status} {elapsed}s"),
-                                 zh_map.get(status, f"状态：{status} {elapsed}秒"))
+
+        norm_status = str(status or "")
+        should_emit = (
+            norm_status != state["status"] or
+            now - state["last_emit"] >= 1.0
+        )
+
+        if should_emit:
+            state["status"] = norm_status
+            state["last_emit"] = now
+            show_dynamic_message(en_map.get(norm_status, f"Status: {norm_status} {elapsed}s"),
+                                 zh_map.get(norm_status, f"状态：{norm_status} {elapsed}秒"))
+
     return _cb
 
 def minimax_provider_factory(on_status):
@@ -1328,9 +1451,17 @@ def _pick_first(ev):
     select_image_for("MinimaxFirstPreview", "选择首帧图片")
 win.On["MinimaxPickFirstBtn"].Clicked    = _pick_first
 
+def _pick_first_current(ev):
+    select_current_frame_for("MinimaxFirstPreview", "minimax_first")
+win.On["MinimaxPickFirstCurrentBtn"].Clicked = _pick_first_current
+
 def _pick_last(ev):
     select_image_for("MinimaxLastPreview", "选择尾帧图片")
 win.On["MinimaxPickLastBtn"].Clicked     = _pick_last
+
+def _pick_last_current(ev):
+    select_current_frame_for("MinimaxLastPreview", "minimax_last")
+win.On["MinimaxPickLastCurrentBtn"].Clicked = _pick_last_current
 def on_msg_close(ev):
     msgbox.Hide()
 msgbox.On.OkButton.Clicked = on_msg_close
@@ -1411,9 +1542,17 @@ def on_runway_pick_first(ev):
     select_image_for("RunwayFirstPreview", "选择首帧图片")
 win.On["RunwayPickFirstBtn"].Clicked = on_runway_pick_first
 
+def on_runway_pick_first_current(ev):
+    select_current_frame_for("RunwayFirstPreview", "runway_first")
+win.On["RunwayPickFirstCurrentBtn"].Clicked = on_runway_pick_first_current
+
 def on_runway_pick_last(ev):
     select_image_for("RunwayLastPreview", "选择尾帧图片")
 win.On["RunwayPickLastBtn"].Clicked = on_runway_pick_last
+
+def on_runway_pick_last_current(ev):
+    select_current_frame_for("RunwayLastPreview", "runway_last")
+win.On["RunwayPickLastCurrentBtn"].Clicked = on_runway_pick_last_current
 
 def on_runway_swap(ev):
     mdl = items["RunwayModelCombo"].CurrentText
@@ -1509,17 +1648,21 @@ def on_minimax_post(ev):
     if _allow_last_frame(model, resolution) and last_img:
         params["last_frame_image"] = last_img    
 
-    save_path = generate_filename(save_dir, prompt or "untitled", ".mp4")
+    save_path    = generate_filename(save_dir, prompt or "untitled", ".mp4")
+
+    # 提前展示等待提示，避免编码参考帧期间 UI 无反馈
+    show_dynamic_message("Preparing MiniMax payload…", "正在准备 MiniMax 参数…")
 
     op_start_ref  = {"ts": _OP_START_TS}
     provider      = minimax_provider_factory(on_status=make_status_cb(op_start_ref))
-    
+    provider.set_operation_origin(op_start_ref["ts"])
+
     try:
         task_id = provider.create_video_task(**params)
         items["MinimaxTaskID"].Text = task_id
         file_id = provider.wait_for_finish(task_id)
         download_and_append_to_timeline(provider, file_id, save_path)
-        print(f"✔ Done! Saved to:\n{save_path}")
+        print(f"{elapsed_tag(op_start_ref)} ✔ Done! Saved to:\n{save_path}")
     except VideoGenError as e:
         if getattr(e, "code", None) is not None:
             show_error_by_code(e.code, "Request failed", "请求失败")
@@ -1528,6 +1671,7 @@ def on_minimax_post(ev):
 win.On.MinimaxPostButton.Clicked     = on_minimax_post
 
 def on_minimax_get(ev):
+    global _OP_START_TS
     resolve, proj, mpool, root, tl, fps = connect_resolve()
     if not tl:
         show_dynamic_message("No active timeline.", "没有激活的时间线。")
@@ -1543,13 +1687,18 @@ def on_minimax_get(ev):
 
     save_path = generate_filename(save_dir, prompt or "untitled", ".mp4")
 
+    # 立即给出查询提示，避免等待首次轮询前无状态
+    show_dynamic_message(f"Preparing to query task {task_id}…", f"正在准备查询任务 {task_id}…")
+
     op_start_ref = {"ts": time.time()}
+    _OP_START_TS = op_start_ref["ts"]
     provider     = minimax_provider_factory(on_status=make_status_cb(op_start_ref))
+    provider.set_operation_origin(op_start_ref["ts"])
 
     try:
         file_id = provider.wait_for_finish(task_id)
         download_and_append_to_timeline(provider, file_id, save_path)
-        print(f"✔ Done! Saved to:\n{save_path}")
+        print(f"{elapsed_tag(op_start_ref)} ✔ Done! Saved to:\n{save_path}")
     except VideoGenError as e:
         if getattr(e, "code", None) is not None:
             show_error_by_code(e.code, "Query failed", "查询失败")
@@ -1592,6 +1741,9 @@ def on_runway_post(ev):
         return
     duration = int(items["RunwayDurationCombo"].CurrentText or 5) if items.get("RunwayDurationCombo") else 5
     res_choice = (items["RunwayResCombo"].CurrentText or ("720P" if model == "gen4_turbo" else "768P")).strip()
+
+    # 提前告知正在准备 Runway 请求，涵盖图像读取/编码耗时
+    show_dynamic_message("Preparing Runway payload…", "正在准备 Runway 参数…")
     # 检测参考图片方向（优先首帧；若 gen3a_turbo 且仅尾帧，则用尾帧）
     try:
         ref_img = first_img or (last_img if model == "gen3a_turbo" else None)
@@ -1633,6 +1785,7 @@ def on_runway_post(ev):
     _OP_START_TS = time.time()
     op_start_ref = {"ts": _OP_START_TS}
     provider     = runway_provider_factory(on_status=make_status_cb(op_start_ref))
+    provider.set_operation_origin(op_start_ref["ts"])
 
     try:
         task_id = provider.create_video_task(model=model, prompt=prompt, duration=duration, ratio=ratio, promptImage=prompt_image_payload)
@@ -1641,12 +1794,13 @@ def on_runway_post(ev):
         # 轮询完成并下载
         file_id = provider.wait_for_finish(task_id)
         download_and_append_to_timeline(provider, file_id, save_path)
-        print(f"✔ Done! Saved to:\n{save_path}")
+        print(f"{elapsed_tag(op_start_ref)} ✔ Done! Saved to:\n{save_path}")
     except VideoGenError as e:
         show_dynamic_message(f"✗ Failed: {e}", f"✗ 失败：{e}")
 win.On.RunwayPostButton.Clicked = on_runway_post
 
 def on_runway_get(ev):
+    global _OP_START_TS
     """Runway 下载：根据 Task ID 轮询直至完成并下载到时间线。"""
     resolve, proj, mpool, root, tl, fps = connect_resolve()
     if not tl:
@@ -1663,13 +1817,15 @@ def on_runway_get(ev):
 
     save_path   = generate_filename(save_dir, prompt or "untitled", ".mp4")
     op_start_ref= {"ts": time.time()}
+    _OP_START_TS = op_start_ref["ts"]
     provider    = runway_provider_factory(on_status=make_status_cb(op_start_ref))
+    provider.set_operation_origin(op_start_ref["ts"])
 
     try:
         show_dynamic_message(f"Task {task_id} submitted. Waiting…", f"任务 {task_id} 已提交，等待完成…")
         file_id = provider.wait_for_finish(task_id)
         download_and_append_to_timeline(provider, file_id, save_path)
-        print(f"✔ Done! Saved to:\n{save_path}")
+        print(f"{elapsed_tag(op_start_ref)} ✔ Done! Saved to:\n{save_path}")
     except VideoGenError as e:
         show_dynamic_message(f"✗ Failed: {e}", f"✗ 失败：{e}")
 win.On.RunwayGetButton.Clicked = on_runway_get
@@ -1786,6 +1942,7 @@ win.On.CopyrightButton.Clicked = on_open_link_button_clicked
 
 def on_close(ev):
     save_file()
+    cleanup_temp_dir()
     dispatcher.ExitLoop()
 win.On.I2VWin.Close = on_close
 
