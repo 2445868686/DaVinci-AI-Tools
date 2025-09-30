@@ -1,5 +1,5 @@
 SCRIPT_NAME    = "DaVinci Whisper"
-SCRIPT_VERSION = " 1.1" # Updated version
+SCRIPT_VERSION = " 1.2" # Updated version
 SCRIPT_AUTHOR  = "HEIBA"
 
 SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
@@ -65,6 +65,7 @@ import unicodedata
 import io
 import threading
 import json
+from fractions import Fraction
 from itertools import tee
 from difflib import SequenceMatcher
 from typing import Optional, List, Generator, Dict
@@ -76,6 +77,137 @@ SUB_TEMP_DIR = os.path.join(SCRIPT_PATH, "sub_temp")
 SETTINGS = os.path.join(SCRIPT_PATH, "config", "settings.json")
 LANGUAGE_SUPPORT = os.path.join(SCRIPT_PATH, "config", "language_support.json")
 RAND_CODE = "".join(random.choices(string.digits, k=2))
+
+FPS_FALLBACK = Fraction(24, 1)
+_FPS_STRING_ALIASES = {
+    "23.976": Fraction(24000, 1001),
+    "23.9760": Fraction(24000, 1001),
+    "23.98": Fraction(24000, 1001),
+    "23.980": Fraction(24000, 1001),
+    "24000/1001": Fraction(24000, 1001),
+    "29.97": Fraction(30000, 1001),
+    "29.970": Fraction(30000, 1001),
+    "30000/1001": Fraction(30000, 1001),
+    "59.94": Fraction(60000, 1001),
+    "59.940": Fraction(60000, 1001),
+    "60000/1001": Fraction(60000, 1001),
+    "47.952": Fraction(48000, 1001),
+    "47.9520": Fraction(48000, 1001),
+    "48000/1001": Fraction(48000, 1001),
+    "119.88": Fraction(120000, 1001),
+    "119.880": Fraction(120000, 1001),
+    "120000/1001": Fraction(120000, 1001),
+}
+_FPS_FLOAT_ALIASES = {
+    23.976: Fraction(24000, 1001),
+    29.97: Fraction(30000, 1001),
+    59.94: Fraction(60000, 1001),
+    47.952: Fraction(48000, 1001),
+    119.88: Fraction(120000, 1001),
+}
+_FPS_STD_FRACTIONS = tuple({
+    Fraction(24, 1),
+    Fraction(25, 1),
+    Fraction(30, 1),
+    Fraction(50, 1),
+    Fraction(60, 1),
+    *(_FPS_STRING_ALIASES.values()),
+})
+
+
+def _normalize_fraction(frac: Fraction) -> Fraction:
+    for std_frac in _FPS_STD_FRACTIONS:
+        if abs(float(frac) - float(std_frac)) < 1e-6:
+            return std_frac
+    return frac
+
+
+def _fps_to_fraction(value, default=FPS_FALLBACK) -> Fraction:
+    def _fail():
+        if default is None:
+            raise ValueError("Invalid fps value")
+        return default
+
+    if isinstance(value, Fraction):
+        return _normalize_fraction(value) if value > 0 else _fail()
+    if value is None:
+        return _fail()
+    if isinstance(value, int):
+        if value <= 0:
+            return _fail()
+        return Fraction(value, 1)
+    numeric = None
+    if isinstance(value, float):
+        numeric = float(value)
+    else:
+        s = str(value).strip()
+        if not s:
+            return _fail()
+        alias = _FPS_STRING_ALIASES.get(s)
+        if alias:
+            return alias
+        if "." in s:
+            alias = _FPS_STRING_ALIASES.get(s.rstrip("0").rstrip("."))
+            if alias:
+                return alias
+        if "/" in s:
+            try:
+                frac = Fraction(s)
+                if frac > 0:
+                    return _normalize_fraction(frac)
+            except (ValueError, ZeroDivisionError):
+                pass
+        try:
+            numeric = float(s)
+        except ValueError:
+            return _fail()
+    if numeric is None:
+        return _fail()
+    for approx, frac in _FPS_FLOAT_ALIASES.items():
+        if abs(numeric - approx) < 1e-3:
+            return frac
+    if numeric <= 0:
+        return _fail()
+    if abs(numeric - round(numeric)) < 1e-6:
+        return Fraction(int(round(numeric)), 1)
+    frac = Fraction.from_float(numeric).limit_denominator(1000000)
+    return _normalize_fraction(frac) if frac > 0 else _fail()
+
+
+def _get_timeline_fps(timeline, project=None) -> Fraction:
+    candidates = []
+    timeline_keys = (
+        "timelineFrameRate",
+        "timelinePlaybackFrameRate",
+        "timelineProxyFrameRate",
+        "timelineOutputFrameRate",
+    )
+    if timeline:
+        for key in timeline_keys:
+            try:
+                candidates.append(timeline.GetSetting(key))
+            except Exception:
+                continue
+    if project:
+        for key in ("timelineFrameRate", "timelinePlaybackFrameRate"):
+            try:
+                candidates.append(project.GetSetting(key))
+            except Exception:
+                continue
+    for candidate in candidates:
+        try:
+            return _fps_to_fraction(candidate, default=None)
+        except Exception:
+            continue
+    return FPS_FALLBACK
+
+
+def _fps_as_float(fps_value) -> float:
+    return float(_fps_to_fraction(fps_value))
+
+
+def _fps_timebase(fps_value) -> int:
+    return max(1, int(round(_fps_as_float(fps_value))))
 
 if os.path.exists(LANGUAGE_SUPPORT):
     with open(LANGUAGE_SUPPORT, "r", encoding="utf-8") as f:
@@ -163,8 +295,8 @@ def connect_resolve():
     mp  = prj.GetMediaPool()
     root= mp.GetRootFolder()
     tl  = prj.GetCurrentTimeline()
-    fps = float(prj.GetSetting("timelineFrameRate"))
-    return resolve, prj, mp, root, tl, fps
+    fps_frac = _get_timeline_fps(tl, prj)
+    return resolve, prj, mp, root, tl, fps_frac
 
 if not hasattr(sys.stderr, "flush"):
     sys.stderr.flush = lambda: None
@@ -807,7 +939,7 @@ class FasterWhisperProvider(TranscriptionProvider):
         try:
             _, _, _, _, _, fps_now = connect_resolve()
         except Exception:
-            fps_now = 24.0
+            fps_now = FPS_FALLBACK
 
         subtitle_blocks = _quantize_and_fix_blocks(
             subtitle_blocks,
@@ -1631,8 +1763,8 @@ _editor_programmatic = False
 _selected_row_id = None
 _subtitle_blocks_state = []
 # —— 新增：把 subtitle_blocks 刷新到 Tree —— 
-def _frames_to_timecode(total_frames: int, fps: float) -> str:
-    int_fps = max(1, int(round(fps)))
+def _frames_to_timecode(total_frames: int, fps) -> str:
+    int_fps = _fps_timebase(fps)
     if total_frames < 0:
         total_frames = 0
     frames = total_frames % int_fps
@@ -1642,10 +1774,10 @@ def _frames_to_timecode(total_frames: int, fps: float) -> str:
     s = total_seconds % 60
     return f"{h:02d}:{m:02d}:{s:02d}:{frames:02d}"
 
-def _secs_to_abs_timecode(seconds: float, fps: float, start_frame: int) -> str:
-    int_fps = max(1, int(round(fps)))
-    rel_frames = int(round(seconds * int_fps))
-    return _frames_to_timecode(start_frame + rel_frames, fps)
+def _secs_to_abs_timecode(seconds: float, fps, start_frame: int) -> str:
+    fps_frac = _fps_to_fraction(fps)
+    rel_frames = int(round(seconds * float(fps_frac)))
+    return _frames_to_timecode(start_frame + rel_frames, fps_frac)
 
 def _refresh_subtitle_tree(subtitle_blocks):
     global _subtitle_blocks_state
@@ -1654,7 +1786,7 @@ def _refresh_subtitle_tree(subtitle_blocks):
         _, project, _, _, timeline, fps = connect_resolve()
         start_frame = timeline.GetStartFrame() or 0   # 基准帧
     except Exception:
-        fps = 24.0
+        fps = FPS_FALLBACK
         start_frame = 0
 
     tree = items.get("SubtitleTree")
@@ -1733,13 +1865,16 @@ def _quantize_and_fix_blocks(blocks, fps, enforce_no_gaps=False, min_frames=1):
     3) 勾选了“无空隙”时，后一条 start == 前一条 end（但仍保证至少 1 帧时长）。
     返回：新的 blocks（start/end 仍然用秒表示）。
     """
-    int_fps = max(1, int(round(float(fps) or 24.0)))
+    fps_frac = _fps_to_fraction(fps)
+    fps_float = float(fps_frac)
     fixed = []
     prev_end_f = 0
 
     for blk in blocks:
-        s_f = int(round(float(blk["start"]) * int_fps))
-        e_f = int(round(float(blk["end"])   * int_fps))
+        start_sec = float(blk.get("start", 0.0))
+        end_sec = float(blk.get("end", 0.0))
+        s_f = int(round(start_sec * fps_float))
+        e_f = int(round(end_sec * fps_float))
 
         # 无空隙：下一条的 start 钳到上一条 end
         if enforce_no_gaps:
@@ -1753,8 +1888,8 @@ def _quantize_and_fix_blocks(blocks, fps, enforce_no_gaps=False, min_frames=1):
             e_f = s_f + min_frames
 
         fixed.append({
-            "start": s_f / int_fps,
-            "end"  : e_f / int_fps,
+            "start": s_f / fps_float,
+            "end"  : e_f / fps_float,
             "text" : blk.get("text", "")
         })
         prev_end_f = e_f
@@ -1808,7 +1943,7 @@ def on_update_subtitle_clicked(ev):
     try:
         _, _, _, _, _, fps_now = connect_resolve()
     except Exception:
-        fps_now = 24.0
+        fps_now = FPS_FALLBACK
 
     sanitized_blocks = _quantize_and_fix_blocks(
         _subtitle_blocks_state,
@@ -1980,9 +2115,9 @@ def on_close(ev):
 whisper_win.On.WhisperWin.Close = on_close
 # ================== >>> 新增：把时间线现有字幕加载到 Tree ==================
 
-def _frames_to_seconds(frames: int, fps: float) -> float:
-    int_fps = max(1, int(round(float(fps) or 24.0)))
-    return float(frames) / float(int_fps)
+def _frames_to_seconds(frames: int, fps) -> float:
+    fps_frac = _fps_to_fraction(fps)
+    return float(frames) / float(fps_frac)
 
 def _collect_subtitles_from_timeline(timeline) -> list:
     """
@@ -1996,13 +2131,13 @@ def _collect_subtitles_from_timeline(timeline) -> list:
         return blocks
 
     try:
-        fps = float(timeline.GetSetting("timelineFrameRate"))  # 有的版本需从 project 取，你已有 connect_resolve 封装
+        fps = _get_timeline_fps(timeline)
     except Exception:
         # 回退到 connect_resolve 的 fps
         try:
             _, _, _, _, _, fps = connect_resolve()
         except Exception:
-            fps = 24.0
+            fps = FPS_FALLBACK
 
     try:
         start_frame_base = timeline.GetStartFrame() or 0
@@ -2037,7 +2172,7 @@ def _collect_subtitles_from_timeline(timeline) -> list:
 
                 # 最小时长兜底：至少 1 帧
                 if e_rel_sec <= s_rel_sec:
-                    e_rel_sec = s_rel_sec + (1.0 / max(1, int(round(fps))))
+                    e_rel_sec = s_rel_sec + (1.0 / float(_fps_to_fraction(fps)))
 
                 blocks.append({"start": s_rel_sec, "end": e_rel_sec, "text": name})
             except Exception as e:

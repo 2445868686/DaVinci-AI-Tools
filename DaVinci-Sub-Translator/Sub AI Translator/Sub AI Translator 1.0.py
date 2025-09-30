@@ -29,7 +29,7 @@ GLM_BASE_URL = "https://open.bigmodel.cn/api/paas"
 
 GOOGLE_PROVIDER         = "Google"
 AZURE_PROVIDER          = "Microsoft                     "
-GLM_PROVIDER            = "GLM-4.5-Flash            ( Free AI  )"
+GLM_PROVIDER            = "GLM-4-Flash               ( Free AI  )"
 OPENAI_FORMAT_PROVIDER  = "Open AI Format         ( API Key )"
 DEEPL_PROVIDER          = "DeepL                          ( API Key )"
 
@@ -100,8 +100,140 @@ import webbrowser
 import random
 import threading
 import string
+from fractions import Fraction
 SCRIPT_PATH = os.path.dirname(os.path.abspath(sys.argv[0]))
 RAND_CODE = "".join(random.choices(string.digits, k=2))
+
+FPS_FALLBACK = Fraction(24, 1)
+_FPS_STRING_ALIASES = {
+    "23.976": Fraction(24000, 1001),
+    "23.9760": Fraction(24000, 1001),
+    "23.98": Fraction(24000, 1001),
+    "23.980": Fraction(24000, 1001),
+    "24000/1001": Fraction(24000, 1001),
+    "29.97": Fraction(30000, 1001),
+    "29.970": Fraction(30000, 1001),
+    "30000/1001": Fraction(30000, 1001),
+    "59.94": Fraction(60000, 1001),
+    "59.940": Fraction(60000, 1001),
+    "60000/1001": Fraction(60000, 1001),
+    "47.952": Fraction(48000, 1001),
+    "47.9520": Fraction(48000, 1001),
+    "48000/1001": Fraction(48000, 1001),
+    "119.88": Fraction(120000, 1001),
+    "119.880": Fraction(120000, 1001),
+    "120000/1001": Fraction(120000, 1001),
+}
+_FPS_FLOAT_ALIASES = {
+    23.976: Fraction(24000, 1001),
+    29.97: Fraction(30000, 1001),
+    59.94: Fraction(60000, 1001),
+    47.952: Fraction(48000, 1001),
+    119.88: Fraction(120000, 1001),
+}
+_FPS_STD_FRACTIONS = tuple({
+    Fraction(24, 1),
+    Fraction(25, 1),
+    Fraction(30, 1),
+    Fraction(50, 1),
+    Fraction(60, 1),
+    *(_FPS_STRING_ALIASES.values()),
+})
+
+
+def _normalize_fraction(frac: Fraction) -> Fraction:
+    for std_frac in _FPS_STD_FRACTIONS:
+        if abs(float(frac) - float(std_frac)) < 1e-6:
+            return std_frac
+    return frac
+
+
+def _fps_to_fraction(value, default=FPS_FALLBACK) -> Fraction:
+    def _fail():
+        if default is None:
+            raise ValueError("Invalid fps value")
+        return default
+
+    if isinstance(value, Fraction):
+        return _normalize_fraction(value) if value > 0 else _fail()
+    if value is None:
+        return _fail()
+    if isinstance(value, int):
+        if value <= 0:
+            return _fail()
+        return Fraction(value, 1)
+    numeric = None
+    if isinstance(value, float):
+        numeric = float(value)
+    else:
+        s = str(value).strip()
+        if not s:
+            return _fail()
+        alias = _FPS_STRING_ALIASES.get(s)
+        if alias:
+            return alias
+        if "." in s:
+            alias = _FPS_STRING_ALIASES.get(s.rstrip("0").rstrip("."))
+            if alias:
+                return alias
+        if "/" in s:
+            try:
+                frac = Fraction(s)
+                if frac > 0:
+                    return _normalize_fraction(frac)
+            except (ValueError, ZeroDivisionError):
+                pass
+        try:
+            numeric = float(s)
+        except ValueError:
+            return _fail()
+    if numeric is None:
+        return _fail()
+    for approx, frac in _FPS_FLOAT_ALIASES.items():
+        if abs(numeric - approx) < 1e-3:
+            return frac
+    if numeric <= 0:
+        return _fail()
+    if abs(numeric - round(numeric)) < 1e-6:
+        return Fraction(int(round(numeric)), 1)
+    frac = Fraction.from_float(numeric).limit_denominator(1000000)
+    return _normalize_fraction(frac) if frac > 0 else _fail()
+
+
+def _get_timeline_fps(timeline, project=None) -> Fraction:
+    candidates = []
+    timeline_keys = (
+        "timelineFrameRate",
+        "timelinePlaybackFrameRate",
+        "timelineProxyFrameRate",
+        "timelineOutputFrameRate",
+    )
+    if timeline:
+        for key in timeline_keys:
+            try:
+                candidates.append(timeline.GetSetting(key))
+            except Exception:
+                continue
+    if project:
+        for key in ("timelineFrameRate", "timelinePlaybackFrameRate"):
+            try:
+                candidates.append(project.GetSetting(key))
+            except Exception:
+                continue
+    for candidate in candidates:
+        try:
+            return _fps_to_fraction(candidate, default=None)
+        except Exception:
+            continue
+    return FPS_FALLBACK
+
+
+def _fps_as_float(fps_value) -> float:
+    return float(_fps_to_fraction(fps_value))
+
+
+def _fps_timebase(fps_value) -> int:
+    return max(1, int(round(_fps_as_float(fps_value))))
 
 fusion     = resolve.Fusion()  
 ui       = fusion.UIManager
@@ -172,18 +304,7 @@ def connect_resolve():
     mp  = prj.GetMediaPool()
     root= mp.GetRootFolder()
     tl  = prj.GetCurrentTimeline()
-    print(tl.GetSetting("timelineFrameRate"))
-    from fractions import Fraction
-    def _fps_frac(tl):
-        s = str(tl.GetSetting("timelineFrameRate") or "").strip()
-        table = {"23.976": Fraction(24000,1001), "29.97": Fraction(30000,1001),
-                 "59.94": Fraction(60000,1001), "47.952": Fraction(48000,1001),
-                 "119.88": Fraction(120000,1001)}
-        if s in table: return table[s]
-        try: return Fraction(int(round(float(s))),1)
-        except: return Fraction(24,1)
-    fps_frac = _fps_frac(tl)
-    print(f"fps_frac:{fps_frac}")
+    fps_frac = _get_timeline_fps(tl, prj)
     return resolve, prj, mp, root, tl, fps_frac
 
 def frames_to_srt_tc(frames, fps_frac):
@@ -556,7 +677,7 @@ class GLMProvider(BaseProvider):
 
         # 统一使用 4.5 flash 型号（z.ai 要求），仍然允许外部配置覆盖
         payload = {
-            "model":       self.cfg.get("model", "glm-4.5-flash"),
+            "model":       self.cfg.get("model", "glm-4-flash"),
             "messages":    messages,
             "temperature": self.cfg.get("temperature", OPENAI_DEFAULT_TEMPERATURE),
             "thinking":    {"type": "disabled"}  
@@ -569,8 +690,9 @@ class GLMProvider(BaseProvider):
 
         use_en = self._is_en_checked()
         if use_en:
-            base = "https://api.z.ai/api/paas"
-            headers["Accept-Language"] = "en-US,en"
+            #base = "https://api.z.ai/api/paas"
+            #headers["Accept-Language"] = "en-US,en"
+            base = "https://open.bigmodel.cn/api/paas"
         else:
             base = "https://open.bigmodel.cn/api/paas"
         base = base.rstrip("/")
@@ -636,7 +758,7 @@ PROVIDERS_CFG = {
             "class": "GLMProvider",
             "base_url": GLM_BASE_URL,
             # 默认使用最新可用的 4.5 Flash 型号，兼容 z.ai 与 bigmodel 域名
-            "model":    "glm-4.5-flash",
+            "model":    "glm-4-flash",
             "temperature": OPENAI_DEFAULT_TEMPERATURE,
             "max_retry": MAX_RETRY,
             "timeout":  TIMEOUT,
