@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DaVinci Resolve Sub Editor – 中 / EN</title>
+
+  <!-- ===== 公共样式（两版一致，只保留一份） ===== -->
+  <style>
+    /* 全局字体与背景 */
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: #f0f2f5;
+      color: #555;
+    }
+
+    /* 固定左侧目录 */
+    .sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 250px;
+      height: 100%;
+      background: #fff;
+      border-right: 1px solid #e0e0e0;
+      padding: 20px;
+      overflow-y: auto;
+      box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
+    }
+    .sidebar h2 {
+      font-size: 1.8em;
+      margin: 0 0 20px;
+      color: #333;
+      text-align: center;
+      border-bottom: 1px solid #e0e0e0;
+      padding-bottom: 10px;
+    }
+    .sidebar ul {
+      list-style: none;
+      padding: 0;
+    }
+    .sidebar li {
+      margin: 10px 0;
+      font-size: 0.95em;
+    }
+    .sidebar li ul {
+      margin-top: 5px;
+      margin-left: 15px;
+    }
+    .sidebar a {
+      text-decoration: none;
+      color: #007bff;
+      transition: color 0.3s;
+    }
+    .sidebar a:hover {
+      color: #0056b3;
+    }
+
+    /* 主内容区 */
+    .content {
+      margin-left: 270px; /* 250 + 20 */
+      padding: 40px;
+    }
+
+    /* 卡片式容器 */
+    .container {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      padding: 30px;
+      margin-bottom: 40px;
+    }
+    header {
+      text-align: center;
+      padding-bottom: 20px;
+      border-bottom: 1px solid #e0e0e0;
+      margin-bottom: 30px;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 2em;
+      color: #333;
+    }
+    h2 {
+      color: #007bff;
+      margin-top: 30px;
+      border-left: 4px solid #007bff;
+      padding-left: 10px;
+    }
+    h3 {
+      color: #333;
+      margin-top: 20px;
+    }
+    p,
+    ul {
+      line-height: 1.8;
+      margin: 15px 0;
+    }
+    ul {
+      padding-left: 20px;
+    }
+    code {
+      background: #f9f9f9;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: Consolas, Monaco, "Courier New", monospace;
+    }
+    pre {
+      background: #f9f9f9;
+      padding: 15px;
+      border-left: 5px solid #007bff;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-family: Consolas, Monaco, "Courier New", monospace;
+    }
+    a {
+      color: #007bff;
+    }
+    footer {
+      text-align: center;
+      font-size: 0.9em;
+      color: #888;
+      margin-top: 40px;
+      border-top: 1px solid #e0e0e0;
+      padding-top: 20px;
+    }
+
+    /* 移动端适配 */
+    @media (max-width: 768px) {
+      .sidebar {
+        position: relative;
+        width: 100%;
+        height: auto;
+        box-shadow: none;
+        border-right: none;
+        border-bottom: 1px solid #e0e0e0;
+      }
+      .content {
+        margin-left: 0;
+        padding: 20px;
+      }
+    }
+
+    /* ===== 语言切换相关 ===== */
+    .lang {
+      display: none;
+    }
+    .lang.active {
+      display: block;
+    }
+
+    /* 切换按钮 */
+    .lang-switcher {
+      position: fixed;
+      top: 15px;
+      right: 20px;
+      z-index: 1000;
+    }
+    .lang-switcher button {
+      cursor: pointer;
+      border: 1px solid #007bff;
+      background: #fff;
+      color: #007bff;
+      font-size: 0.9em;
+      padding: 6px 12px;
+      border-radius: 20px;
+      transition: all 0.3s;
+      margin-left: 6px;
+    }
+    .lang-switcher button.active,
+    .lang-switcher button:hover {
+      background: #007bff;
+      color: #fff;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- ===== 语言切换按钮 ===== -->
+  <div class="lang-switcher">
+    <button id="btn-zh" class="active">中文</button>
+    <button id="btn-en">English</button>
+  </div>
+
+  <!-- ========== 中文版本（默认显示） ========== -->
+  <div id="lang-zh" class="lang active">
+    <nav class="sidebar">
+      <h2>目录</h2>
+      <ul>
+        <li>
+          <strong>安装指南</strong>
+          <ul>
+            <li><a href="#install-step-1">步骤 1：放置脚本文件</a></li>
+            <li><a href="#install-step-2">步骤 2：在 Resolve 中启用</a></li>
+          </ul>
+        </li>
+        <li>
+          <strong>使用指南</strong>
+          <ul>
+            <li><a href="#overview">简介</a></li>
+            <li><a href="#interface">界面概览</a></li>
+            <li><a href="#refresh-browse">1. 刷新与浏览字幕</a></li>
+            <li><a href="#find-replace">2. 查找与替换</a></li>
+            <li><a href="#edit-update">3. 编辑与更新时间线</a></li>
+            <li><a href="#tips">4. 小贴士</a></li>
+          </ul>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="content">
+      <div class="container" id="install-guide">
+        <header>
+          <h1>DaVinci Resolve Sub Editor 安装指南</h1>
+        </header>
+        <section id="install-step-1">
+          <h2>步骤 1：放置脚本文件</h2>
+          <p>
+            将 <code>DaVinci Sub Editor.lua</code> 复制到 DaVinci Resolve 的脚本目录中。如果文件已经位于本指南所在的 <code>Fusion/Scripts/Utility</code> 文件夹，可直接跳过。
+          </p>
+          <h3>Mac 路径</h3>
+          <p><code>~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility</code></p>
+          <h3>Windows 路径</h3>
+          <p><code>C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Fusion\Scripts\Utility</code></p>
+          <ul>
+            <li>若目录不存在，可手动创建 <code>Fusion/Scripts/Utility</code> 结构。</li>
+            <li>将脚本放置后，无需额外依赖或安装程序。</li>
+          </ul>
+        </section>
+        <section id="install-step-2">
+          <h2>步骤 2：在 Resolve 中启用</h2>
+          <ul>
+            <li>启动或切换回 DaVinci Resolve。</li>
+            <li>在菜单中点击 <code>工作区</code> ——&gt; <code>脚本</code> ——&gt; <code>Utility</code>，即可看到 <strong>DaVinci Sub Editor</strong>。</li>
+            <li>首次放置脚本后未出现时，请重启 Resolve 以刷新脚本列表。</li>
+            <li>建议将脚本固定到快捷菜单，方便快速调用。</li>
+          </ul>
+        </section>
+      </div>
+
+      <div class="container" id="usage-guide">
+        <header>
+          <h1>DaVinci Resolve Sub Editor 使用指南</h1>
+        </header>
+        <section id="overview">
+          <h2>简介</h2>
+          <p>DaVinci Sub Editor 是一个专为时间线字幕优化的高级编辑器，帮助你快速浏览、查找替换、精细修改并回写字幕内容。脚本直接使用 Resolve API 与时间线沟通，无需额外后端服务。</p>
+        </section>
+        <section id="interface">
+          <h2>界面概览</h2>
+          <ul>
+            <li><strong>顶部工具栏</strong>：包含查找/替换输入框、<code>查找</code>、<code>全部替换</code>、<code>替换</code> 按钮及中英界面切换复选框。</li>
+            <li><strong>字幕列表</strong>：按顺序展示字幕编号、起止时间和文本，支持单行选择与高亮显示。</li>
+            <li><strong>编辑区</strong>：显示所选字幕内容，可直接修改，修改会实时同步到列表。</li>
+            <li><strong>操作按钮</strong>：<code>刷新字幕</code> 用于从时间线读取最新字幕，<code>更新字幕</code> 会生成临时 SRT 并重新导入时间线。</li>
+            <li><strong>状态栏</strong>：实时提示加载、匹配、更新的进度与结果。</li>
+          </ul>
+        </section>
+        <section id="refresh-browse">
+          <h2>1. 刷新与浏览字幕</h2>
+          <ul>
+            <li>点击 <code>刷新字幕</code>，脚本会读取当前项目的活动时间线。</li>
+            <li>工具会自动定位第一个启用且包含字幕的字幕轨道，并按起止时间排序。</li>
+            <li>在列表中单击条目即可选中，同时跳转时间线指针到对应时间码，方便同步检查视频内容。</li>
+            <li>状态栏会显示已加载字幕数量及刷新结果。</li>
+          </ul>
+        </section>
+        <section id="find-replace">
+          <h2>2. 查找与替换</h2>
+          <ul>
+            <li>在 <code>查找文本</code> 中输入关键词，按回车或点击 <code>查找</code>，脚本会循环定位匹配的字幕并高亮显示。</li>
+            <li><code>全部替换</code> 将在所有字幕中执行纯文本替换，并在被修改的行上留下一次性高亮，方便复核。</li>
+            <li><code>替换</code> 会定位到当前选中字幕或下一条匹配字幕，仅对单条记录执行替换。</li>
+            <li>查找统计会显示匹配的字幕条数与命中次数，便于评估替换范围。</li>
+          </ul>
+        </section>
+        <section id="edit-update">
+          <h2>3. 编辑与更新时间线</h2>
+          <ul>
+            <li>选中某条字幕后即可在下方编辑框内直接修改文本，改动会实时同步至列表。</li>
+            <li>完成修改后点击 <code>更新字幕</code>，脚本会在插件目录下创建 <code>temp</code> 文件夹，导出带时间码的临时 SRT。</li>
+            <li>脚本自动将 SRT 导入媒体池的 <code>srt</code> 子文件夹，并追加到时间线新的或空白字幕轨道上。</li>
+            <li>为确保导入成功，其余字幕轨道会被临时禁用，完成后会仅启用目标轨道。</li>
+            <li>刷新完成后列表会重新读取最新内容，确保界面与时间线保持一致。</li>
+          </ul>
+        </section>
+        <section id="tips">
+          <h2>4. 小贴士</h2>
+          <ul>
+            <li>若需对多条字幕进行密集修改，建议先使用 <code>查找</code> 和高亮确认范围，再执行替换。</li>
+            <li>临时 SRT 文件在关闭窗口时会自动清理，如需保留可在更新后复制到其他位置。</li>
+            <li>时间线中至少需要一条字幕轨道并保持启用，否则脚本无法读取数据。</li>
+            <li>切换语言复选框可即时双语显示界面元素，状态栏提示也会跟随语言切换。</li>
+          </ul>
+        </section>
+      </div>
+      <footer>&copy; 2025 HB. All Rights Reserved.</footer>
+    </div>
+  </div>
+  <!-- ===== 中文版本结束 ===== -->
+
+  <!-- ========== English Version ========== -->
+  <div id="lang-en" class="lang">
+    <nav class="sidebar">
+      <h2>Contents</h2>
+      <ul>
+        <li>
+          <strong>Installation Guide</strong>
+          <ul>
+            <li><a href="#install-step-1-en">Step 1: Place the Script File</a></li>
+            <li><a href="#install-step-2-en">Step 2: Enable inside Resolve</a></li>
+          </ul>
+        </li>
+        <li>
+          <strong>Usage Guide</strong>
+          <ul>
+            <li><a href="#overview-en">Introduction</a></li>
+            <li><a href="#interface-en">Interface Overview</a></li>
+            <li><a href="#refresh-browse-en">1. Refresh & Browse Subtitles</a></li>
+            <li><a href="#find-replace-en">2. Find & Replace</a></li>
+            <li><a href="#edit-update-en">3. Edit & Update Timeline</a></li>
+            <li><a href="#tips-en">4. Tips</a></li>
+          </ul>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="content">
+      <div class="container" id="install-guide-en">
+        <header>
+          <h1>DaVinci Resolve Sub Editor Installation Guide</h1>
+        </header>
+        <section id="install-step-1-en">
+          <h2>Step 1: Place the Script File</h2>
+          <p>
+            Copy <code>DaVinci Sub Editor.lua</code> into Resolve's script directory. If the file is already located in the same <code>Fusion/Scripts/Utility</code> folder as this guide, you can skip this step.
+          </p>
+          <h3>macOS Path</h3>
+          <p><code>~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility</code></p>
+          <h3>Windows Path</h3>
+          <p><code>C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Fusion\Scripts\Utility</code></p>
+          <ul>
+            <li>Create the <code>Fusion/Scripts/Utility</code> structure manually if it does not exist yet.</li>
+            <li>No extra dependencies are required—the Lua script works with the built-in Resolve API.</li>
+          </ul>
+        </section>
+        <section id="install-step-2-en">
+          <h2>Step 2: Enable inside Resolve</h2>
+          <ul>
+            <li>Launch or return to DaVinci Resolve.</li>
+            <li>Navigate to <code>Menu Bar</code> ——&gt; <code>Workspace</code> ——&gt; <code>Scripts</code> ——&gt; <code>Utility</code> and locate <strong>DaVinci Sub Editor</strong>.</li>
+            <li>If you just copied the script and cannot see it, restart Resolve to refresh the script menu.</li>
+            <li>Pin the script to your favorites for faster access during daily work.</li>
+          </ul>
+        </section>
+      </div>
+
+      <div class="container" id="usage-guide-en">
+        <header>
+          <h1>DaVinci Resolve Sub Editor Usage Guide</h1>
+        </header>
+        <section id="overview-en">
+          <h2>Introduction</h2>
+          <p>DaVinci Sub Editor is an advanced timeline subtitle editor that lets you inspect, search, replace, and fine-tune subtitles before writing them back to the timeline. It leverages the Resolve scripting API directly, so no external service is required.</p>
+        </section>
+        <section id="interface-en">
+          <h2>Interface Overview</h2>
+          <ul>
+            <li><strong>Toolbar</strong>: Includes the search/replace inputs, <code>Find</code>, <code>All Replace</code>, <code>Replace</code> buttons, and language toggle checkboxes.</li>
+            <li><strong>Subtitle Tree</strong>: Lists subtitle index, start/end timecodes, and text with single-selection and highlight support.</li>
+            <li><strong>Editor Panel</strong>: Shows the selected subtitle text; editing here immediately updates the list entry.</li>
+            <li><strong>Action Buttons</strong>: Use <code>Refresh</code> to pull the latest subtitles from the timeline and <code>Update Timeline</code> to export/import the revised content.</li>
+            <li><strong>Status Bar</strong>: Displays progress messages for loading, matching, and updating operations.</li>
+          </ul>
+        </section>
+        <section id="refresh-browse-en">
+          <h2>1. Refresh & Browse Subtitles</h2>
+          <ul>
+            <li>Click <code>Refresh</code> to read the active project and timeline.</li>
+            <li>The script targets the first enabled subtitle track that contains clips, then sorts entries by start/end frames.</li>
+            <li>Selecting a row focuses the timeline playhead on the corresponding timecode so you can review the video context.</li>
+            <li>The status bar reports how many subtitles were loaded and whether the refresh succeeded.</li>
+          </ul>
+        </section>
+        <section id="find-replace-en">
+          <h2>2. Find & Replace</h2>
+          <ul>
+            <li>Enter a keyword in the <code>Find text</code> field. Press Enter or click <code>Find</code> to cycle through matches and highlight them.</li>
+            <li><code>All Replace</code> performs a plain-text substitution across every subtitle and keeps a temporary highlight on the edited rows.</li>
+            <li><code>Replace</code> operates on the current selection (or the next match) to update a single subtitle.</li>
+            <li>Match statistics in the status bar show both the number of rows and total occurrences found.</li>
+          </ul>
+        </section>
+        <section id="edit-update-en">
+          <h2>3. Edit & Update Timeline</h2>
+          <ul>
+            <li>Edit the chosen subtitle in the lower panel; changes instantly sync back to the tree view.</li>
+            <li>When ready, click <code>Update Timeline</code>. The script creates a temporary SRT inside a <code>temp</code> folder next to the script.</li>
+            <li>The SRT is imported into a <code>srt</code> subfolder in the media pool and appended to a new or empty subtitle track.</li>
+            <li>Other subtitle tracks are temporarily disabled to guarantee a clean import, then the target track is re-enabled.</li>
+            <li>After the import, the view refreshes to reflect the exact state of the timeline.</li>
+          </ul>
+        </section>
+        <section id="tips-en">
+          <h2>4. Tips</h2>
+          <ul>
+            <li>Use search highlights to confirm the scope of large edits before applying <code>All Replace</code>.</li>
+            <li>Temporary SRT files are removed when the window closes. Copy them elsewhere if you want to archive a snapshot.</li>
+            <li>Ensure at least one subtitle track remains enabled on the timeline, otherwise the script cannot read entries.</li>
+            <li>Switching the language checkboxes instantly localizes both the interface and status messages.</li>
+          </ul>
+        </section>
+      </div>
+      <footer>&copy; 2025 HB. All Rights Reserved.</footer>
+    </div>
+  </div>
+  <!-- ===== English Version 结束 ===== -->
+
+  <!-- ===== 语言切换脚本 ===== -->
+  <script>
+    const btnZh = document.getElementById("btn-zh");
+    const btnEn = document.getElementById("btn-en");
+    const langZh = document.getElementById("lang-zh");
+    const langEn = document.getElementById("lang-en");
+
+    /* 切换到中文 */
+    btnZh.addEventListener("click", () => {
+      btnZh.classList.add("active");
+      btnEn.classList.remove("active");
+      langZh.classList.add("active");
+      langEn.classList.remove("active");
+      document.documentElement.lang = "zh-CN";
+    });
+
+    /* 切换到英文 */
+    btnEn.addEventListener("click", () => {
+      btnEn.classList.add("active");
+      btnZh.classList.remove("active");
+      langEn.classList.add("active");
+      langZh.classList.remove("active");
+      document.documentElement.lang = "en";
+    });
+  </script>
+</body>
+</html>

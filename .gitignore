@@ -32,3 +32,5 @@ DaVinci-Sub-Translator/Sub AI Translator/config/translator_settings.json
 DaVinci-V2V/.DS_Store
 DaVinci-V2V/DaVinci V2V/config/settings.json
 # === End DaVinci-V2V/.gitignore ===
+
+DaVinci-Sub-Editor/config/subedit_settings.json

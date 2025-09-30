@@ -4,6 +4,12 @@
 local SCRIPT_NAME    = "DaVinci Sub Editor"
 local SCRIPT_VERSION = "1.0.0"
 local SCRIPT_AUTHOR  = "HEIBA"
+local SCRIPT_KOFI_URL = "https://ko-fi.com/heiba"
+local SCRIPT_BILIBILI_URL = "https://space.bilibili.com/385619394"
+local SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
+local WINDOW_WIDTH, WINDOW_HEIGHT = 600, 500
+local X_CENTER = math.floor((SCREEN_WIDTH  - WINDOW_WIDTH ) / 2)
+local Y_CENTER = math.floor((SCREEN_HEIGHT - WINDOW_HEIGHT) / 2)
 
 local resolve = resolve or Resolve()
 if not resolve then
@@ -40,17 +46,17 @@ local state = {
 math.randomseed(os.time() + tonumber(tostring({}):sub(8), 16))
 state.sessionCode = string.format("%04X", math.random(0, 0xFFFF))
 
-local highlightColor = { R = 0.4, G = 0.4, B = 0.4, A = 0.6 }
-local findHighlightColor    = { R = 0.40, G = 0.40, B = 0.40, A = 0.60 } -- 查找命中
-local replaceHighlightColor = { R = 0.18, G = 0.55, B = 0.95, A = 0.50 } -- 替换过的行（可选）
+local findHighlightColor    = { R = 0.40, G = 0.40, B = 0.40, A = 0.60 } -- 查找命中 / 替换后标记
 local transparentColor      = { R = 0.0,  G = 0.0,  B = 0.0,  A = 0.0  } -- 透明，真正清空
 local editorProgrammatic = false
 local languageProgrammatic = false
 local unpack = table.unpack or unpack
+local configDir
+local settingsFile
 
 local uiText = {
     cn = {
-        tree_title = "字幕",
+        tree_title = "高级字幕编辑器",
         find_button = "查找",
         all_replace_button = "全部替换",
         single_replace_button = "替换",
@@ -60,12 +66,13 @@ local uiText = {
         replace_placeholder = "替换文本",
         editor_placeholder = "在此编辑选中的字幕",
         tree_headers = { "#", "开始", "结束", "字幕" },
-    lang_cn = "简体中文",
-    lang_en = "EN",
+        lang_cn = "简体中文",
+        lang_en = "EN",
+        tabs = { "字幕编辑", "配置" },
         copyright = "© 2025, 版权所有 " .. SCRIPT_AUTHOR,
     },
     en = {
-        tree_title = "Subtitles",
+        tree_title = "Advanced Subtitle Editor",
         find_button = "Find",
         all_replace_button = "All Replace",
         single_replace_button = "Replace",
@@ -77,6 +84,7 @@ local uiText = {
         tree_headers = { "#", "Start", "End", "Subtitle" },
         lang_cn = "简体中文",
         lang_en = "EN",
+        tabs = { "Subtitle Editing", "Settings" },
         copyright = "© 2025, Copyright by " .. SCRIPT_AUTHOR,
     }
 }
@@ -101,6 +109,8 @@ local messages = {
     create_srt_folder_failed = { cn = "无法创建 srt 媒体池文件夹", en = "Unable to create 'srt' media pool folder" },
     append_failed = { cn = "无法将字幕追加至时间线", en = "Failed to append subtitles to timeline" },
     match_progress = { cn = "匹配项：第 %d 个结果，共 %d 个结果", en = "Match: result %d of %d" },
+    matches_rows_occ = { cn = "包含条目：%d 条；出现次数：%d 处", en = "Rows: %d; Occurrences: %d" },
+
 }
 
 local function scriptDir()
@@ -177,6 +187,11 @@ local function ensureDir(path)
     return true
 end
 
+configDir = joinPath(scriptDir(), "config")
+ensureDir(configDir)
+settingsFile = joinPath(configDir, "subedit_settings.json")
+local storedSettings
+
 local function nextSrtPathForTimeline(timeline)
     local tempDir = getTempDir()
     ensureDir(tempDir)
@@ -248,10 +263,81 @@ local function messageString(key)
     return bucket[lang] or bucket.cn
 end
 
+local function openExternalUrl(url)
+    if not url or url == "" then
+        return
+    end
+    if bmd and bmd.openurl then
+        local ok, err = pcall(bmd.openurl, url)
+        if not ok then
+            print("openurl failed: " .. tostring(err))
+        end
+        return
+    end
+    local sep = package.config:sub(1, 1)
+    if sep == "\\" then
+        os.execute(string.format('start "" "%s"', url))
+        return
+    end
+    local escaped = url:gsub("'", "'\\''")
+    local ok = os.execute("open '" .. escaped .. "'")
+    if not ok then
+        os.execute("xdg-open '" .. escaped .. "'")
+    end
+end
+
 local function currentHeaders()
     local lang = currentLanguage()
     local pack = uiText[lang]
     return (pack and pack.tree_headers) or uiText.cn.tree_headers
+end
+
+local function loadSettings(path)
+    local file = io.open(path, "r")
+    if not file then
+        return nil
+    end
+    local content = file:read("*a")
+    file:close()
+    if not content or content == "" then
+        return nil
+    end
+    local langCnValue = content:match('"lang_cn"%s*:%s*(true|false)')
+    local langEnValue = content:match('"lang_en"%s*:%s*(true|false)')
+    if not langCnValue and not langEnValue then
+        return nil
+    end
+    return {
+        lang_cn = langCnValue == "true",
+        lang_en = langEnValue == "true",
+    }
+end
+
+local function saveSettings(path, values)
+    if not values then
+        return
+    end
+    ensureDir(configDir)
+    local file, err = io.open(path, "w")
+    if not file then
+        print(string.format("无法写入设置文件 %s: %s", tostring(path), tostring(err)))
+        return
+    end
+    local content = string.format('{"lang_cn": %s, "lang_en": %s}',
+        values.lang_cn and "true" or "false",
+        values.lang_en and "true" or "false"
+    )
+    file:write(content)
+    file:close()
+end
+
+storedSettings = loadSettings(settingsFile)
+if storedSettings then
+    if storedSettings.lang_en then
+        state.language = "en"
+    elseif storedSettings.lang_cn then
+        state.language = "cn"
+    end
 end
 
 local function parseFps(raw)
@@ -548,63 +634,85 @@ end
 local win = disp:AddWindow({
     ID = "SubtitleUtilityWin",
     WindowTitle = string.format("%s %s", SCRIPT_NAME, SCRIPT_VERSION),
-    Geometry = { 200, 200, 640, 520 },
+    Geometry = { X_CENTER, Y_CENTER, WINDOW_WIDTH, WINDOW_HEIGHT },
     StyleSheet = "*{font-size:14px;}"
 }, ui:VGroup{
     ID = "root",
     Weight = 1,
-    ui:Label{
-        ID = "TreeTitleLabel",
-        Text = uiString("tree_title"),
+    ui:TabBar{
+        ID = "MainTabs",
         Weight = 0,
-        Alignment = { AlignHCenter = true, AlignVCenter = true },
     },
-    ui:HGroup{
-        Weight = 0.1,
-        ui:LineEdit{ ID = "FindInput", PlaceholderText = uiString("find_placeholder"), Weight = 1, Events = { TextChanged = true, EditingFinished = true } },
-        ui:Button{ ID = "FindButton", Text = uiString("find_button"), Weight = 0 },
-        ui:LineEdit{ ID = "ReplaceInput", PlaceholderText = uiString("replace_placeholder"), Weight = 1 },
-        ui:Button{ ID = "AllReplaceButton", Text = uiString("all_replace_button"), Weight = 0 },
-        ui:Button{ ID = "SingleReplaceButton", Text = uiString("single_replace_button"), Weight = 0 },
-        ui:CheckBox{ ID = "LangCnCheckBox", Text = uiString("lang_cn"), Checked = false,Weight = 0, },
-        ui:CheckBox{ ID = "LangEnCheckBox", Text = uiString("lang_en"), Checked = true,Weight = 0, },
-    },
-    ui:Tree{
-        ID = "SubtitleTree",
-        AlternatingRowColors = true,
-        WordWrap = true,
-        UniformRowHeights = false,
-        HorizontalScrollMode = true,
-        FrameStyle = 1,
-        ColumnCount = 4,
-        SelectionMode = "SingleSelection",
-        Weight = 0.7,
-        
-    },
-    ui:TextEdit{
-        ID = "SubtitleEditor",
-        Weight = 0,
-        PlaceholderText = uiString("editor_placeholder"),
-        WordWrap = true,
-    },
-    ui:HGroup{
-        Weight = 0.1,
-        ui:Button{ ID = "RefreshButton", Text = uiString("refresh_button"), Weight = 1 },
-        ui:Button{ ID = "UpdateSubtitleButton", Text = uiString("update_button"), Weight = 1 },
+    ui:Stack{
+        ID = "MainStack",
+        Weight = 1,
+        ui:VGroup{
+            ID = "EditTab",
+            Weight = 1,
+            ui:Label{
+                ID = "TreeTitleLabel",
+                Text = uiString("tree_title"),
+                Weight = 0,
+                StyleSheet =  " font-size:16px;",
+                Alignment = { AlignHCenter = true, AlignVCenter = true },
+            },
+            ui:VGap(10),
+            ui:HGroup{
+                Weight = 0.1,
+                ui:LineEdit{ ID = "FindInput", PlaceholderText = uiString("find_placeholder"), Weight = 1, Events = { TextChanged = true, EditingFinished = true } },
+                ui:Button{ ID = "FindButton", Text = uiString("find_button"), Weight = 0 },
+                ui:LineEdit{ ID = "ReplaceInput", PlaceholderText = uiString("replace_placeholder"), Weight = 1 },
+                ui:Button{ ID = "AllReplaceButton", Text = uiString("all_replace_button"), Weight = 0 },
+                ui:Button{ ID = "SingleReplaceButton", Text = uiString("single_replace_button"), Weight = 0 },
+            },
+            ui:Tree{
+                ID = "SubtitleTree",
+                AlternatingRowColors = true,
+                WordWrap = true,
+                UniformRowHeights = false,
+                HorizontalScrollMode = true,
+                FrameStyle = 1,
+                ColumnCount = 4,
+                SelectionMode = "SingleSelection",
+                Weight = 0.7,
+            },
+            ui:TextEdit{
+                ID = "SubtitleEditor",
+                Weight = 0,
+                PlaceholderText = uiString("editor_placeholder"),
+                WordWrap = true,
+            },
+            ui:HGroup{
+                Weight = 0.1,
+                ui:Button{ ID = "RefreshButton", Text = uiString("refresh_button"), Weight = 1 },
+                ui:Button{ ID = "UpdateSubtitleButton", Text = uiString("update_button"), Weight = 1 },
+            },
+            ui:HGroup{
+                Weight = 0.1,
+                ui:Label{ ID = "StatusLabel", Text = "", Weight = 1, Alignment = { AlignHCenter = true, AlignVCenter = true } },
+            },
+            
         },
-    ui:HGroup{
-        Weight = 0.1,
-        ui:Label{ ID = "StatusLabel", Text = "", Weight = 1, Alignment = { AlignHCenter = true, AlignVCenter = true } },
-    },
-    ui:Button{
-        ID = "CopyrightButton",
-        Text = uiString("copyright"),
-        Alignment = { AlignHCenter = true, AlignVCenter = true },
-        Font = ui.Font({ PixelSize = 12, StyleName = "Bold" }),
-        Flat = true,
-        TextColor = { 0.1, 0.3, 0.9, 1 },
-        BackgroundColor = { 1, 1, 1, 0 },
-        Weight = 0,
+        ui:VGroup{
+            ID = "ConfigTab",
+            Weight = 1,
+            ui:VGap(20),
+            ui:HGroup{
+                Weight = 0,
+                ui:CheckBox{ ID = "LangCnCheckBox", Text = uiString("lang_cn"), Checked = false, Weight = 0 },
+                ui:CheckBox{ ID = "LangEnCheckBox", Text = uiString("lang_en"), Checked = true, Weight = 0 },
+            },
+            ui:Button{
+                ID = "CopyrightButton",
+                Text = uiString("copyright"),
+                Alignment = { AlignHCenter = true, AlignVCenter = true },
+                Font = ui.Font({ PixelSize = 12, StyleName = "Bold" }),
+                Flat = true,
+                TextColor = { 0.1, 0.3, 0.9, 1 },
+                BackgroundColor = { 1, 1, 1, 0 },
+                Weight = 0,
+            },
+        },
     },
 })
 
@@ -613,6 +721,19 @@ local tree = it.SubtitleTree
 local editor = it.SubtitleEditor
 local langCn = it.LangCnCheckBox
 local langEn = it.LangEnCheckBox
+local mainTabs = it.MainTabs
+local mainStack = it.MainStack
+
+if mainTabs then
+    local initialTabs = uiText.cn.tabs or { "字幕编辑", "配置" }
+    for _, title in ipairs(initialTabs) do
+        mainTabs:AddTab(title)
+    end
+    if mainStack then
+        mainTabs.CurrentIndex = 0
+        mainStack.CurrentIndex = 0
+    end
+end
 
 local function updateStatus(key, ...)
     state.lastStatusKey = key
@@ -642,28 +763,34 @@ local function setEditorText(text)
     editorProgrammatic = false
 end
 
-local function clearFindHighlights()
+local function clearFindHighlights(preserveIfStillMatch)
     if not state.currentMatchHighlight then return end
     local row = state.currentMatchHighlight - 1
     local item = tree:TopLevelItem(row)
-    if item then
-        -- 用透明色显式清空每一列的背景
-        for col = 0, (tree.ColumnCount or 4) - 1 do
-            item.BackgroundColor[col] = transparentColor
+    state.currentMatchHighlight = nil
+    if not item then return end
+
+    -- 用透明色显式清空每一列的背景
+    for col = 0, (tree.ColumnCount or 4) - 1 do
+        item.BackgroundColor[col] = transparentColor
+    end
+
+    if preserveIfStillMatch and state.findQuery and state.findQuery ~= "" then
+        local text = item.Text[3] or ""
+        if text:find(state.findQuery, 1, true) then
+            item.BackgroundColor[3] = findHighlightColor
         end
     end
-    state.currentMatchHighlight = nil
 end
 
 -- ✅ 新增：每次开始新查询前，清掉“所有行”的查找高亮
---（这里假设替换高亮用的是 replaceHighlightColor，如果你不区分两种颜色，就把下面的颜色判断去掉，直接清空即可）
+--（替换后的条目也使用 findHighlightColor，这里通过颜色判断来识别并清理）
 local function clearAllFindHighlights()
     local rows = tree:TopLevelItemCount()
     for r = 0, rows - 1 do
         local it = tree:TopLevelItem(r)
         if it then
-            -- 仅清除与“查找”相关的高亮；保留“替换高亮”
-            -- 如果你没有区分两种颜色，直接把 if 块里的判断去掉、无条件设透明即可
+            -- 仅清除与“查找/替换”高亮对应的颜色，其他自定义背景保持不变
             local bg = it.BackgroundColor[3]
             local isFindColor = bg
                 and math.abs((bg.R or 0) - findHighlightColor.R) < 1e-6
@@ -695,7 +822,7 @@ local function performTimelineJump(entry)
     if not ok then
         updateStatus("jump_failed")
     else
-        updateStatus("jump_success", timecode)
+        --updateStatus("jump_success", timecode)
     end
 end
 
@@ -734,14 +861,23 @@ local function jumpToEntry(index, doTimeline)
     end
 end
 
+local function countOccurrences(s, q)
+    if not s or not q or q == "" then return 0 end
+    local i, c = 1, 0
+    while true do
+        local a, b = string.find(s, q, i, true) -- 明确使用纯文本匹配
+        if not a then break end
+        c, i = c + 1, b + 1
+    end
+    return c
+end
 
 local function refreshFindMatches()
     local query = it.FindInput.Text or ""
     state.findQuery = query
 
-    clearFindHighlights()
-    state.findMatches = nil
-    state.findIndex = nil
+    clearAllFindHighlights()
+    state.findMatches, state.findIndex = nil, nil
 
     if query == "" then
         updateStatus("enter_find_text")
@@ -749,27 +885,36 @@ local function refreshFindMatches()
     end
 
     local matches = {}
+    local rowsMatched, occTotal = 0, 0
     local rows = tree:TopLevelItemCount()
     for row = 0, rows - 1 do
         local item = tree:TopLevelItem(row)
         if item then
             local text = item.Text[3] or ""
-            if text:find(query, 1, true) then
-                table.insert(matches, row + 1)
+            local c = countOccurrences(text, query)
+            if c > 0 then
+                item.BackgroundColor[3] = findHighlightColor
+                table.insert(matches, row + 1)  -- 仍按“行”来导航
+                rowsMatched = rowsMatched + 1
+                occTotal = occTotal + c
             end
         end
     end
 
-    if #matches == 0 then
+    if rowsMatched == 0 then
         updateStatus("no_find_results")
         state.findMatches = {}
+        state.findRows, state.findOcc = 0, 0
         return false
     end
 
     state.findMatches = matches
+    state.findRows, state.findOcc = rowsMatched, occTotal
     state.findIndex = 1
+    updateStatus("matches_rows_occ", rowsMatched, occTotal)
     return true
 end
+
 
 local function ensureFindMatches()
     local query = it.FindInput.Text or ""
@@ -798,7 +943,7 @@ local function gotoNextMatch()
     local entryIndex = matches[idx]
     state.findIndex = (idx % #matches) + 1
 
-    clearFindHighlights()
+    clearFindHighlights(true)
     jumpToEntry(entryIndex, true)
 
     local item = tree:TopLevelItem(entryIndex - 1)
@@ -808,6 +953,21 @@ local function gotoNextMatch()
     end
     updateStatus("match_progress", idx, #matches)
     return entryIndex
+end
+
+local function updateTabBarTexts()
+    if not mainTabs then
+        return
+    end
+    local lang = currentLanguage()
+    local pack = uiText[lang]
+    local titles = (pack and pack.tabs) or uiText.cn.tabs
+    if type(titles) ~= "table" then
+        return
+    end
+    for index, title in ipairs(titles) do
+        mainTabs:SetTabText(index - 1, title)
+    end
 end
 
 local function applyLanguage(lang)
@@ -826,6 +986,8 @@ local function applyLanguage(lang)
         langEn.Text = uiString("lang_en")
     end
     languageProgrammatic = false
+
+    updateTabBarTexts()
 
     if it.TreeTitleLabel then
         it.TreeTitleLabel.Text = uiString("tree_title")
@@ -942,7 +1104,7 @@ local function applyReplace()
             local item = tree:TopLevelItem(index - 1)
             if item then
                 item.Text[3] = newText
-                item.BackgroundColor[3] = highlightColor
+                item.BackgroundColor[3] = findHighlightColor
             end
             if state.selectedIndex == index then
                 setEditorText(newText)
@@ -1014,12 +1176,13 @@ local function replaceSingle()
     local item = tree:TopLevelItem(index - 1)
     if item then
         item.Text[3] = newText
-        item.BackgroundColor[3] = highlightColor
+        item.BackgroundColor[3] = findHighlightColor
     end
     setEditorText(newText)
 
     -- refresh matches and move to the next one
     local replacedIndex = index
+    state.currentMatchHighlight = nil
     refreshFindMatches()
     local updatedMatches = state.findMatches or {}
     if #updatedMatches == 0 then
@@ -1077,6 +1240,14 @@ function win.On.LangEnCheckBox.Clicked(ev)
     setLanguage("en")
 end
 
+function win.On.MainTabs.CurrentChanged(ev)
+    if not mainStack then
+        return
+    end
+    local index = (ev and ev.Index) or 0
+    mainStack.CurrentIndex = index
+end
+
 function win.On.FindInput.TextChanged(ev)
     clearAllFindHighlights()     -- ← 改成清全表
     state.findMatches = nil
@@ -1085,8 +1256,11 @@ function win.On.FindInput.TextChanged(ev)
 end
 
 function win.On.FindInput.EditingFinished(ev)
-    refreshFindMatches()
+    if refreshFindMatches() then
+        updateStatus("matches_rows_occ", state.findRows or 0, state.findOcc or 0)
+    end
 end
+
 
 function win.On.FindButton.Clicked(ev)
     gotoNextMatch()
@@ -1109,6 +1283,17 @@ end
 
 function win.On.UpdateSubtitleButton.Clicked(ev)
     exportAndImport()
+end
+
+function win.On.CopyrightButton.Clicked(ev)
+    local preferEnglish = false
+    if langEn and langEn.Checked then
+        preferEnglish = true
+    elseif state.language == "en" then
+        preferEnglish = true
+    end
+    local targetUrl = preferEnglish and SCRIPT_KOFI_URL or SCRIPT_BILIBILI_URL
+    openExternalUrl(targetUrl)
 end
 
 function win.On.SubtitleEditor.TextChanged(ev)
@@ -1147,6 +1332,10 @@ function win.On.SubtitleTree.ItemClicked(ev)
 end
 
 function win.On.SubtitleUtilityWin.Close(ev)
+    saveSettings(settingsFile, {
+        lang_cn = langCn and langCn.Checked or false,
+        lang_en = langEn and langEn.Checked or false,
+    })
     cleanupTempDir()
     disp:ExitLoop()
 end
