@@ -1,13 +1,13 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DaVinci Resolve Sub Editor – 中 / EN</title>
+  <title>DaVinci Resolve Sub Editor 安装与使用指南 / EN</title>
 
-  <!-- ===== 公共样式（两版一致，只保留一份） ===== -->
+  <!-- ===== Shared Styles ===== -->
   <style>
-    /* 全局字体与背景 */
+    /* Global font and background */
     body {
       margin: 0;
       padding: 0;
@@ -16,7 +16,7 @@
       color: #555;
     }
 
-    /* 固定左侧目录 */
+    /* Fixed left navigation */
     .sidebar {
       position: fixed;
       top: 0;
@@ -58,13 +58,13 @@
       color: #0056b3;
     }
 
-    /* 主内容区 */
+    /* Main content area */
     .content {
-      margin-left: 270px; /* 250 + 20 */
+      margin-left: 270px;
       padding: 40px;
     }
 
-    /* 卡片式容器 */
+    /* Card container */
     .container {
       background: #fff;
       border-radius: 8px;
@@ -127,7 +127,7 @@
       padding-top: 20px;
     }
 
-    /* 移动端适配 */
+    /* Mobile */
     @media (max-width: 768px) {
       .sidebar {
         position: relative;
@@ -143,7 +143,7 @@
       }
     }
 
-    /* ===== 语言切换相关 ===== */
+    /* Language toggles */
     .lang {
       display: none;
     }
@@ -151,7 +151,6 @@
       display: block;
     }
 
-    /* 切换按钮 */
     .lang-switcher {
       position: fixed;
       top: 15px;
@@ -178,13 +177,12 @@
 </head>
 
 <body>
-  <!-- ===== 语言切换按钮 ===== -->
   <div class="lang-switcher">
     <button id="btn-zh" class="active">中文</button>
     <button id="btn-en">English</button>
   </div>
 
-  <!-- ========== 中文版本（默认显示） ========== -->
+  <!-- ===== Chinese Version ===== -->
   <div id="lang-zh" class="lang active">
     <nav class="sidebar">
       <h2>目录</h2>
@@ -192,116 +190,111 @@
         <li>
           <strong>安装指南</strong>
           <ul>
-            <li><a href="#install-step-1">步骤 1：放置脚本文件</a></li>
+            <li><a href="#install-step-1">步骤 1：复制脚本文件</a></li>
             <li><a href="#install-step-2">步骤 2：在 Resolve 中启用</a></li>
           </ul>
         </li>
         <li>
           <strong>使用指南</strong>
           <ul>
-            <li><a href="#overview">简介</a></li>
-            <li><a href="#interface">界面概览</a></li>
-            <li><a href="#refresh-browse">1. 刷新与浏览字幕</a></li>
-            <li><a href="#find-replace">2. 查找与替换</a></li>
-            <li><a href="#edit-update">3. 编辑与更新时间线</a></li>
-            <li><a href="#tips">4. 小贴士</a></li>
+            <li><a href="#overview-zh">1. 功能简介</a></li>
+            <li><a href="#interface-zh">2. 界面结构</a></li>
+            <li><a href="#refresh-zh">3. 刷新并浏览字幕</a></li>
+            <li><a href="#search-zh">4. 查找与替换</a></li>
+            <li><a href="#edit-zh">5. 编辑并写回时间线</a></li>
+            <li><a href="#faq-zh">6. 常见问题</a></li>
           </ul>
         </li>
       </ul>
     </nav>
 
     <div class="content">
-      <div class="container" id="install-guide">
+      <div class="container" id="install-guide-zh">
         <header>
           <h1>DaVinci Resolve Sub Editor 安装指南</h1>
         </header>
         <section id="install-step-1">
-          <h2>步骤 1：放置脚本文件</h2>
-          <p>
-            将 <code>DaVinci Sub Editor.lua</code> 复制到 DaVinci Resolve 的脚本目录中。如果文件已经位于本指南所在的 <code>Fusion/Scripts/Utility</code> 文件夹，可直接跳过。
-          </p>
-          <h3>Mac 路径</h3>
-          <p><code>~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility</code></p>
+          <h2>步骤 1：复制脚本文件</h2>
+          <p>将 <code>DaVinci Sub Editor</code> 文件夹放入 Resolve 脚本目录。如果本文件与脚本已经位于同一目录，可直接跳过。</p>
           <h3>Windows 路径</h3>
-          <p><code>C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Fusion\Scripts\Utility</code></p>
-          <ul>
-            <li>若目录不存在，可手动创建 <code>Fusion/Scripts/Utility</code> 结构。</li>
-            <li>将脚本放置后，无需额外依赖或安装程序。</li>
-          </ul>
+          <p><code>C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></p>
+          <h3>macOS 路径</h3>
+          <p><code>~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility</code></p>
         </section>
         <section id="install-step-2">
           <h2>步骤 2：在 Resolve 中启用</h2>
           <ul>
-            <li>启动或切换回 DaVinci Resolve。</li>
-            <li>在菜单中点击 <code>工作区</code> ——&gt; <code>脚本</code> ——&gt; <code>Utility</code>，即可看到 <strong>DaVinci Sub Editor</strong>。</li>
-            <li>首次放置脚本后未出现时，请重启 Resolve 以刷新脚本列表。</li>
-            <li>建议将脚本固定到快捷菜单，方便快速调用。</li>
+            <li>启动或切回 DaVinci Resolve。</li>
+            <li>打开含有字幕轨的时间线。</li>
+            <li>依次选择 <code>工作区</code> &gt; <code>脚本</code>  &gt; <strong>DaVinci Sub Editor</strong>。</li>
           </ul>
         </section>
       </div>
 
-      <div class="container" id="usage-guide">
+      <div class="container" id="usage-guide-zh">
         <header>
           <h1>DaVinci Resolve Sub Editor 使用指南</h1>
         </header>
-        <section id="overview">
-          <h2>简介</h2>
-          <p>DaVinci Sub Editor 是一个专为时间线字幕优化的高级编辑器，帮助你快速浏览、查找替换、精细修改并回写字幕内容。脚本直接使用 Resolve API 与时间线沟通，无需额外后端服务。</p>
+        <section id="overview-zh">
+          <h2>功能简介</h2>
+          <p>DaVinci Sub Editor 通过 Resolve Lua API 直接读取当前时间线字幕，提供检索、批量替换、逐条编辑、时间线跳转以及一键写回等功能。工具内置中英文界面，可在脱网环境下工作，适合审校和批处理字幕内容。</p>
         </section>
-        <section id="interface">
-          <h2>界面概览</h2>
+        <section id="interface-zh">
+          <h2>界面结构</h2>
           <ul>
-            <li><strong>顶部工具栏</strong>：包含查找/替换输入框、<code>查找</code>、<code>全部替换</code>、<code>替换</code> 按钮及中英界面切换复选框。</li>
-            <li><strong>字幕列表</strong>：按顺序展示字幕编号、起止时间和文本，支持单行选择与高亮显示。</li>
-            <li><strong>编辑区</strong>：显示所选字幕内容，可直接修改，修改会实时同步到列表。</li>
-            <li><strong>操作按钮</strong>：<code>刷新字幕</code> 用于从时间线读取最新字幕，<code>更新字幕</code> 会生成临时 SRT 并重新导入时间线。</li>
-            <li><strong>状态栏</strong>：实时提示加载、匹配、更新的进度与结果。</li>
+            <li><strong>查找替换区</strong>：包含查找/替换输入框和 <code>查找</code>、<code>全部替换</code>、<code>替换</code> 按钮。</li>
+            <li><strong>字幕列表</strong>：树状列表展示编号、起止时间码、字幕文本，支持单选和高亮。</li>
+            <li><strong>编辑器</strong>：下方文本框用于直接修改选中字幕，内容会同步回列表。</li>
+            <li><strong>状态栏</strong>：显示加载进度、匹配统计、导入结果等提示。</li>
+            <li><strong>操作按钮</strong>：底部的 <code>加载当前字幕</code> 与 <code>更新当前字幕</code> 控制读取与写回流程。</li>
           </ul>
         </section>
-        <section id="refresh-browse">
-          <h2>1. 刷新与浏览字幕</h2>
+        <section id="refresh-zh">
+          <h2>刷新并浏览字幕</h2>
           <ul>
-            <li>点击 <code>刷新字幕</code>，脚本会读取当前项目的活动时间线。</li>
-            <li>工具会自动定位第一个启用且包含字幕的字幕轨道，并按起止时间排序。</li>
-            <li>在列表中单击条目即可选中，同时跳转时间线指针到对应时间码，方便同步检查视频内容。</li>
-            <li>状态栏会显示已加载字幕数量及刷新结果。</li>
+            <li>点击 <code>加载当前字幕</code>，脚本会定位当前工程与时间线。</li>
+            <li>工具会寻找首个启用且包含字幕片段的字幕轨，读取其所有条目并按开始帧排序。</li>
+            <li>列表中会显示起止时间码与文本，同时在状态栏提示已加载的字幕总数。</li>
+            <li>单击任意条目，时间线播放头会跳转至对应字幕开头，方便核对画面。</li>
+            <li>若未检测到字幕轨，会在状态栏提示，请确认时间线中启用了至少一条字幕轨。</li>
           </ul>
         </section>
-        <section id="find-replace">
-          <h2>2. 查找与替换</h2>
+        <section id="search-zh">
+          <h2>查找与替换</h2>
           <ul>
-            <li>在 <code>查找文本</code> 中输入关键词，按回车或点击 <code>查找</code>，脚本会循环定位匹配的字幕并高亮显示。</li>
-            <li><code>全部替换</code> 将在所有字幕中执行纯文本替换，并在被修改的行上留下一次性高亮，方便复核。</li>
-            <li><code>替换</code> 会定位到当前选中字幕或下一条匹配字幕，仅对单条记录执行替换。</li>
-            <li>查找统计会显示匹配的字幕条数与命中次数，便于评估替换范围。</li>
+            <li>在「查找文本」输入关键字，按 Enter 或点击 <code>查找</code>，即可循环定位匹配字幕。</li>
+            <li>查找采用纯文本匹配（区分大小写），命中的行会以深灰背景高亮。</li>
+            <li><code>全部替换</code> 用于一次性修改所有匹配项，并保留高亮以便复核。</li>
+            <li><code>替换</code> 仅作用于当前选中的匹配项，方便逐条确认。</li>
+            <li>状态栏会同时展示匹配到的行数与总出现次数，便于评估替换范围。</li>
           </ul>
         </section>
-        <section id="edit-update">
-          <h2>3. 编辑与更新时间线</h2>
+        <section id="edit-zh">
+          <h2>编辑并写回时间线</h2>
           <ul>
-            <li>选中某条字幕后即可在下方编辑框内直接修改文本，改动会实时同步至列表。</li>
-            <li>完成修改后点击 <code>更新字幕</code>，脚本会在插件目录下创建 <code>temp</code> 文件夹，导出带时间码的临时 SRT。</li>
-            <li>脚本自动将 SRT 导入媒体池的 <code>srt</code> 子文件夹，并追加到时间线新的或空白字幕轨道上。</li>
-            <li>为确保导入成功，其余字幕轨道会被临时禁用，完成后会仅启用目标轨道。</li>
-            <li>刷新完成后列表会重新读取最新内容，确保界面与时间线保持一致。</li>
+            <li>在编辑器中直接修改字幕文本，列表会即时同步，避免遗漏。</li>
+            <li>确认无误后，点击 <code>更新当前字幕</code>，脚本会生成新的 SRT 文件并导入时间线。</li>
+            <li>导入流程会创建或复用媒体库根目录下的 <code>srt</code> 子文件夹，并将最新 SRT 放入其中。</li>
+            <li>写回期间其余字幕轨会临时禁用，避免重复叠加，完成后自动恢复原状态。</li>
+            <li>写回成功会提示「更新完成」，若导入失败或时间线被锁定，会在状态栏给出原因。</li>
           </ul>
         </section>
-        <section id="tips">
-          <h2>4. 小贴士</h2>
-          <ul>
-            <li>若需对多条字幕进行密集修改，建议先使用 <code>查找</code> 和高亮确认范围，再执行替换。</li>
-            <li>临时 SRT 文件在关闭窗口时会自动清理，如需保留可在更新后复制到其他位置。</li>
-            <li>时间线中至少需要一条字幕轨道并保持启用，否则脚本无法读取数据。</li>
-            <li>切换语言复选框可即时双语显示界面元素，状态栏提示也会跟随语言切换。</li>
-          </ul>
+        <section id="faq-zh">
+          <h2>常见问题</h2>
+          <h3>脚本没有读取到字幕？</h3>
+          <p>请确认时间线存在至少一条字幕轨，并且该轨已启用。如果字幕全部位于禁用轨，请手动开启后再次点击 <code>加载当前字幕</code>。</p>
+          <h3>写回后字幕顺序不对？</h3>
+          <p>脚本会按开始帧排序写入；请检查时间码是否正确或是否存在重叠的字幕片段。</p>
+          <h3>想保留导出的 SRT？</h3>
+          <p>写回过程中生成的 SRT 位于脚本目录的 <code>temp</code> 文件夹，窗口关闭时会自动删除。可在关闭前复制到其它路径。</p>
         </section>
       </div>
+
       <footer>&copy; 2025 HB. All Rights Reserved.</footer>
     </div>
   </div>
-  <!-- ===== 中文版本结束 ===== -->
 
-  <!-- ========== English Version ========== -->
+  <!-- ===== English Version ===== -->
   <div id="lang-en" class="lang">
     <nav class="sidebar">
       <h2>Contents</h2>
@@ -309,19 +302,19 @@
         <li>
           <strong>Installation Guide</strong>
           <ul>
-            <li><a href="#install-step-1-en">Step 1: Place the Script File</a></li>
+            <li><a href="#install-step-1-en">Step 1: Copy the Script</a></li>
             <li><a href="#install-step-2-en">Step 2: Enable inside Resolve</a></li>
           </ul>
         </li>
         <li>
           <strong>Usage Guide</strong>
           <ul>
-            <li><a href="#overview-en">Introduction</a></li>
-            <li><a href="#interface-en">Interface Overview</a></li>
-            <li><a href="#refresh-browse-en">1. Refresh & Browse Subtitles</a></li>
-            <li><a href="#find-replace-en">2. Find & Replace</a></li>
-            <li><a href="#edit-update-en">3. Edit & Update Timeline</a></li>
-            <li><a href="#tips-en">4. Tips</a></li>
+            <li><a href="#overview-en">1. Overview</a></li>
+            <li><a href="#interface-en">2. Interface Layout</a></li>
+            <li><a href="#refresh-en">3. Refresh &amp; Browse</a></li>
+            <li><a href="#search-en">4. Find &amp; Replace</a></li>
+            <li><a href="#edit-en">5. Edit &amp; Update Timeline</a></li>
+            <li><a href="#faq-en">6. FAQ</a></li>
           </ul>
         </li>
       </ul>
@@ -333,26 +326,18 @@
           <h1>DaVinci Resolve Sub Editor Installation Guide</h1>
         </header>
         <section id="install-step-1-en">
-          <h2>Step 1: Place the Script File</h2>
-          <p>
-            Copy <code>DaVinci Sub Editor.lua</code> into Resolve's script directory. If the file is already located in the same <code>Fusion/Scripts/Utility</code> folder as this guide, you can skip this step.
-          </p>
+          <h2>Step 1: Copy the Script</h2>
+          <p>Place <code>DaVinci Sub Editor</code> Folder inside Resolve's script directory. If the file already lives next to this guide you can skip the copy.</p>
+          <h3>Windows Path</h3>
+          <p><code>C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></p>
           <h3>macOS Path</h3>
           <p><code>~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility</code></p>
-          <h3>Windows Path</h3>
-          <p><code>C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Fusion\Scripts\Utility</code></p>
-          <ul>
-            <li>Create the <code>Fusion/Scripts/Utility</code> structure manually if it does not exist yet.</li>
-            <li>No extra dependencies are required—the Lua script works with the built-in Resolve API.</li>
-          </ul>
         </section>
         <section id="install-step-2-en">
           <h2>Step 2: Enable inside Resolve</h2>
           <ul>
-            <li>Launch or return to DaVinci Resolve.</li>
-            <li>Navigate to <code>Menu Bar</code> ——&gt; <code>Workspace</code> ——&gt; <code>Scripts</code> ——&gt; <code>Utility</code> and locate <strong>DaVinci Sub Editor</strong>.</li>
-            <li>If you just copied the script and cannot see it, restart Resolve to refresh the script menu.</li>
-            <li>Pin the script to your favorites for faster access during daily work.</li>
+            <li>Launch DaVinci Resolve and open the timeline containing subtitles.</li>
+            <li>Navigate to <code>Workspace</code> &gt; <code>Scripts</code> &gt; <strong>DaVinci Sub Editor</strong>.</li>
           </ul>
         </section>
       </div>
@@ -362,70 +347,71 @@
           <h1>DaVinci Resolve Sub Editor Usage Guide</h1>
         </header>
         <section id="overview-en">
-          <h2>Introduction</h2>
-          <p>DaVinci Sub Editor is an advanced timeline subtitle editor that lets you inspect, search, replace, and fine-tune subtitles before writing them back to the timeline. It leverages the Resolve scripting API directly, so no external service is required.</p>
+          <h2>Overview</h2>
+          <p>DaVinci Sub Editor reads the subtitles of the active timeline via the Resolve scripting API, giving you tools to review, search, batch replace, edit, jump the playhead, and push the changes back in one click. The tool ships with Chinese and English UI packs and works offline.</p>
         </section>
         <section id="interface-en">
-          <h2>Interface Overview</h2>
+          <h2>Interface Layout</h2>
           <ul>
-            <li><strong>Toolbar</strong>: Includes the search/replace inputs, <code>Find</code>, <code>All Replace</code>, <code>Replace</code> buttons, and language toggle checkboxes.</li>
-            <li><strong>Subtitle Tree</strong>: Lists subtitle index, start/end timecodes, and text with single-selection and highlight support.</li>
-            <li><strong>Editor Panel</strong>: Shows the selected subtitle text; editing here immediately updates the list entry.</li>
-            <li><strong>Action Buttons</strong>: Use <code>Refresh</code> to pull the latest subtitles from the timeline and <code>Update Timeline</code> to export/import the revised content.</li>
-            <li><strong>Status Bar</strong>: Displays progress messages for loading, matching, and updating operations.</li>
+            <li><strong>Find/Replace Strip</strong>: Enter search and replacement text, then trigger <code>Find</code>, <code>All Replace</code>, or <code>Replace</code>.</li>
+            <li><strong>Subtitle Tree</strong>: Displays index, start/end timecodes, and text with single-selection highlighting.</li>
+            <li><strong>Editor Panel</strong>: Edit the selected subtitle directly; the tree updates instantly.</li>
+            <li><strong>Status Line</strong>: Reports loading progress, match statistics, and import results.</li>
+            <li><strong>Action Buttons</strong>: <code>Load Timeline Subtitles</code> refreshes data, <code>Update Timeline Subtitles</code> writes changes back.</li>
           </ul>
         </section>
-        <section id="refresh-browse-en">
-          <h2>1. Refresh & Browse Subtitles</h2>
+        <section id="refresh-en">
+          <h2>Refresh &amp; Browse</h2>
           <ul>
-            <li>Click <code>Refresh</code> to read the active project and timeline.</li>
-            <li>The script targets the first enabled subtitle track that contains clips, then sorts entries by start/end frames.</li>
-            <li>Selecting a row focuses the timeline playhead on the corresponding timecode so you can review the video context.</li>
-            <li>The status bar reports how many subtitles were loaded and whether the refresh succeeded.</li>
+            <li>Click <code>Load Timeline Subtitles</code> to bind to the active project and timeline.</li>
+            <li>The script selects the first enabled subtitle track that contains clips and sorts entries by start frame.</li>
+            <li>Each row shows timecodes and text, while the status line confirms how many subtitles were loaded.</li>
+            <li>Selecting a row jumps the playhead to that subtitle's start frame so you can review the visuals.</li>
+            <li>If no subtitle track is found, the status line prompts you to enable one before retrying.</li>
           </ul>
         </section>
-        <section id="find-replace-en">
-          <h2>2. Find & Replace</h2>
+        <section id="search-en">
+          <h2>Find &amp; Replace</h2>
           <ul>
-            <li>Enter a keyword in the <code>Find text</code> field. Press Enter or click <code>Find</code> to cycle through matches and highlight them.</li>
-            <li><code>All Replace</code> performs a plain-text substitution across every subtitle and keeps a temporary highlight on the edited rows.</li>
-            <li><code>Replace</code> operates on the current selection (or the next match) to update a single subtitle.</li>
-            <li>Match statistics in the status bar show both the number of rows and total occurrences found.</li>
+            <li>Type a keyword in the Find field and press Enter or click <code>Find</code> to cycle through matches.</li>
+            <li>The search is plain-text and case-sensitive; matching rows receive a dark gray highlight.</li>
+            <li><code>All Replace</code> updates every match at once and keeps the highlight so you can double-check.</li>
+            <li><code>Replace</code> targets only the current match, making it safe for line-by-line review.</li>
+            <li>The status line reports both the number of rows and total occurrences that were matched.</li>
           </ul>
         </section>
-        <section id="edit-update-en">
-          <h2>3. Edit & Update Timeline</h2>
+        <section id="edit-en">
+          <h2>Edit &amp; Update Timeline</h2>
           <ul>
-            <li>Edit the chosen subtitle in the lower panel; changes instantly sync back to the tree view.</li>
-            <li>When ready, click <code>Update Timeline</code>. The script creates a temporary SRT inside a <code>temp</code> folder next to the script.</li>
-            <li>The SRT is imported into a <code>srt</code> subfolder in the media pool and appended to a new or empty subtitle track.</li>
-            <li>Other subtitle tracks are temporarily disabled to guarantee a clean import, then the target track is re-enabled.</li>
-            <li>After the import, the view refreshes to reflect the exact state of the timeline.</li>
+            <li>Edit the subtitle in the lower text area; the tree mirrors the change immediately.</li>
+            <li>When satisfied, click <code>Update Timeline Subtitles</code>. A new SRT is generated and imported.</li>
+            <li>The media pool stores the SRT inside an <code>srt</code> folder under the root before appending it to the subtitle track.</li>
+            <li>Other subtitle tracks are temporarily disabled during the import to avoid stacking duplicates, and restored afterwards.</li>
+            <li>Success, failures, or locked-track warnings are displayed in the status line.</li>
           </ul>
         </section>
-        <section id="tips-en">
-          <h2>4. Tips</h2>
-          <ul>
-            <li>Use search highlights to confirm the scope of large edits before applying <code>All Replace</code>.</li>
-            <li>Temporary SRT files are removed when the window closes. Copy them elsewhere if you want to archive a snapshot.</li>
-            <li>Ensure at least one subtitle track remains enabled on the timeline, otherwise the script cannot read entries.</li>
-            <li>Switching the language checkboxes instantly localizes both the interface and status messages.</li>
-          </ul>
+        <section id="faq-en">
+          <h2>FAQ</h2>
+          <h3>No subtitles were loaded.</h3>
+          <p>Ensure at least one subtitle track is enabled on the timeline and contains clips, then click <code>Load Timeline Subtitles</code> again.</p>
+          <h3>The order looks wrong after updating.</h3>
+          <p>The script writes entries sorted by start frame. Check your timecodes and resolve any overlapping segments.</p>
+          <h3>How do I keep the exported SRT?</h3>
+          <p>Exports live in the <code>temp</code> folder next to the script until the window closes. Copy the file elsewhere before exiting the tool.</p>
         </section>
       </div>
+
       <footer>&copy; 2025 HB. All Rights Reserved.</footer>
     </div>
   </div>
-  <!-- ===== English Version 结束 ===== -->
 
-  <!-- ===== 语言切换脚本 ===== -->
+  <!-- ===== Language Switch Script ===== -->
   <script>
     const btnZh = document.getElementById("btn-zh");
     const btnEn = document.getElementById("btn-en");
     const langZh = document.getElementById("lang-zh");
     const langEn = document.getElementById("lang-en");
 
-    /* 切换到中文 */
     btnZh.addEventListener("click", () => {
       btnZh.classList.add("active");
       btnEn.classList.remove("active");
@@ -434,7 +420,6 @@
       document.documentElement.lang = "zh-CN";
     });
 
-    /* 切换到英文 */
     btnEn.addEventListener("click", () => {
       btnEn.classList.add("active");
       btnZh.classList.remove("active");

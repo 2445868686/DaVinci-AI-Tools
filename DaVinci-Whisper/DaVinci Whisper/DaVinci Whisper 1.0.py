@@ -1,5 +1,5 @@
 SCRIPT_NAME    = "DaVinci Whisper"
-SCRIPT_VERSION = " 1.2" # Updated version
+SCRIPT_VERSION = " 1.3" # Updated version
 SCRIPT_AUTHOR  = "HEIBA"
 
 SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
@@ -1292,13 +1292,14 @@ whisper_win = dispatcher.AddWindow(
             ui.VGroup([
                 ui.VGroup({"Weight":1},[
                     ui.Label({"ID":"TitleLabel","Text":"Create subtitles from audio",
-                              "Alignment": {"AlignHCenter": True, "AlignVCenter": True},"Weight":0.1}),
+                              "Alignment": {"AlignHCenter": True, "AlignVCenter": True},"Weight":0}),
+                    ui.VGap(5),
                     ui.HGroup({"Weight":0.1},[
                         ui.Label({"ID":"ModelLabel","Text":"Model","Weight":0.5}),
                         ui.ComboBox({"ID":"ModelCombo","Weight":0.4}),
                         ui.CheckBox({"ID":"OnlineCheckBox", "Text":"Use OpenAI API", "Checked":False, "Weight":0}),
                     ]),
-                    ui.HGroup({"Weight":0.1},[
+                    ui.HGroup({"Weight":0},[
                         ui.Button({"ID":"DownloadButton","Text":"Download Model","Weight":1}),
                     ]),
                     ui.HGroup({"Weight":0.1},[
@@ -1326,6 +1327,16 @@ whisper_win = dispatcher.AddWindow(
                     ui.Label({"ID":"HotwordsLabel","Text":"Phrases / Prompt","Weight":0.1}),
                     ui.TextEdit({"ID":"Hotwords","Text":"","Weight":0.1}),
                     ui.Button({"ID":"CreateButton","Text":"Create","Weight":0}),
+                    ui.Button({
+                    "ID": "CopyrightButton",
+                    "Text": f"© 2025, Copyright by {SCRIPT_AUTHOR}",
+                    "Alignment": {"AlignLeft": True, "AlignVCenter": True},  # 左对齐
+                    "Font": ui.Font({"PixelSize": 12, "StyleName": "Bold"}),
+                    "Flat": True,
+                    "TextColor": [0.1, 0.3, 0.9, 1],
+                    "BackgroundColor": [1, 1, 1, 0],
+                    "Weight": 0
+                }),
                 ]),
             ], {"Weight": 4}),
 
@@ -1337,6 +1348,38 @@ whisper_win = dispatcher.AddWindow(
                     "Alignment": {"AlignHCenter": True, "AlignVCenter": True},
                     "Weight": 0
                 }),
+                ui.VGap(5),
+                ui.HGroup({
+                    "Weight": 0,
+                    "Spacing": 6
+                }, [
+                    ui.LineEdit({
+                        "ID": "FindInput",
+                        "PlaceholderText": "Find text",
+                        "Weight": 1,
+                        "Events": {"TextChanged": True, "EditingFinished": True}
+                    }),
+                    ui.Button({
+                        "ID": "FindButton",
+                        "Text": "Find",
+                        "Weight": 0
+                    }),
+                    ui.LineEdit({
+                        "ID": "ReplaceInput",
+                        "PlaceholderText": "Replace with",
+                        "Weight": 1
+                    }),
+                    ui.Button({
+                        "ID": "AllReplaceButton",
+                        "Text": "Replace All",
+                        "Weight": 0
+                    }),
+                    ui.Button({
+                        "ID": "SingleReplaceButton",
+                        "Text": "Replace",
+                        "Weight": 0
+                    }),
+                ]),
                 ui.Tree({
                     "ID": "SubtitleTree",
                     "AlternatingRowColors": True,
@@ -1344,6 +1387,7 @@ whisper_win = dispatcher.AddWindow(
                     "UniformRowHeights": False,
                     "HorizontalScrollMode": True,
                     "FrameStyle": 1,
+                    "SelectionMode": "SingleSelection",
                     "Weight": 1
                 }),
                 ui.TextEdit({
@@ -1355,27 +1399,15 @@ whisper_win = dispatcher.AddWindow(
                     "Text": "更新字幕",
                     "Weight": 0
                 }),
+                ui.HGroup({"Weight":0.1},[
+                    ui.Label({"ID":"StatusLabel","Text":"","Weight":0.4}),
+                    ui.CheckBox({"ID":"LangEnCheckBox","Text":"EN","Checked":True,"Weight":0}),
+                    ui.CheckBox({"ID":"LangCnCheckBox","Text":"简体中文","Checked":False,"Weight":0}),
+                ]),
+               
             ], {"Weight": 6})
-        ], {"Weight": 1}),
+        ], {"Weight": 4}),
 
-        # ---------- 下半部分：拆为两行 ----------
-        ui.VGroup({"Weight":0}, [
-            ui.HGroup({"Weight":0}, [
-                ui.Button({
-                    "ID": "CopyrightButton",
-                    "Text": f"© 2025, Copyright by {SCRIPT_AUTHOR}",
-                    "Alignment": {"AlignLeft": True, "AlignVCenter": True},  # 左对齐
-                    "Font": ui.Font({"PixelSize": 12, "StyleName": "Bold"}),
-                    "Flat": True,
-                    "TextColor": [0.1, 0.3, 0.9, 1],
-                    "BackgroundColor": [1, 1, 1, 0],
-                    "Weight": 0
-                }),
-                ui.Label({"Text": "", "Weight":1}),  # 左侧留白
-                ui.CheckBox({"ID":"LangEnCheckBox","Text":"EN","Checked":True,"Weight":0}),
-                ui.CheckBox({"ID":"LangCnCheckBox","Text":"简体中文","Checked":False,"Weight":0}),
-            ])
-        ])
     ])
 )
 
@@ -1500,8 +1532,11 @@ translations = {
         "NoGapCheckBox":"字幕间无空隙",
         "TrimPunctCheckBox":"删除句尾标点",
         "MatchTextCheckBox":"文稿匹配",
-        "TreeTitleLabel":"字幕",
+        "TreeTitleLabel":"字幕编辑",
         "UpdateSubtitleButton": "更新字幕",
+        "FindButton": "查找",
+        "AllReplaceButton": "全部替换",
+        "SingleReplaceButton": "替换",
         "MatchInfoLabel":"请在下方粘贴完整文稿（将按该文本对齐）：",
         "MatchTipLabel": "• 建议一句一换行，无标点符号\n• 句号、叹号、问号等会自动分句，逗号不会自动分句\n• 避免置入无标点和无换行的文本",
         #"MatchTextEdit":"在此粘贴全文...",
@@ -1526,8 +1561,11 @@ translations = {
         #"MatchTextEdit":"Paste the full text here...",
         "MatchConfirmBtn":"Confirm",
         "MatchCancelBtn":"Cancel",
-        "TreeTitleLabel":"Subtitle",
+        "TreeTitleLabel":"Subtitle Editor",
         "UpdateSubtitleButton": "Update SRT",
+        "FindButton": "Find",
+        "AllReplaceButton": "Replace All",
+        "SingleReplaceButton": "Replace",
         "CopyrightButton":f"More Features © 2025 by {SCRIPT_AUTHOR}",
         "HotwordsLabel":"Phrases / Prompt", 
         "MaxCharsLabel":"Max Chars", 
@@ -1540,17 +1578,103 @@ translations = {
         "OpenAIRegisterButton":"Register",
         }
 }
+placeholder_translations = {
+    "cn": {
+        "FindInput": "查找文本",
+        "ReplaceInput": "替换文本"
+    },
+    "en": {
+        "FindInput": "Find text",
+        "ReplaceInput": "Replace with"
+    }
+}
+
+STATUS_MESSAGES = {
+    "enter_find_text": {"cn": "请输入查找文本", "en": "Enter text to search."},
+    "matches_rows_occ": {"cn": "包含条目：%d 条；出现次数：%d 处", "en": "Found %d rows / %d matches."},
+    "no_find_results": {"cn": "未找到匹配字幕", "en": "No matches found."},
+    "match_progress": {"cn": "匹配项：第 %d 个结果，共 %d 个结果", "en": "Match %d of %d."},
+    "replace_no_find": {"cn": "请先填写查找文本", "en": "Specify text to find first."},
+    "no_replace": {"cn": "未替换任何字幕", "en": "No replacement performed."},
+    "replace_done": {"cn": "完成替换，共 %d 处", "en": "Replaced %d occurrence(s)."}
+}
+
+
 ""
 items = whisper_win.GetItems()
 msg_items = msgbox.GetItems()
 openai_items = openai_config_window.GetItems()
 match_items = match_window.GetItems()
+
+tree_widget = items.get("SubtitleTree")
+if tree_widget:
+    applied = False
+    for attr in ("SetSelectionMode", "setSelectionMode"):
+        setter = getattr(tree_widget, attr, None)
+        if callable(setter):
+            try:
+                setter("SingleSelection")
+                applied = True
+                break
+            except Exception:
+                pass
+    if not applied:
+        try:
+            tree_widget.SelectionMode = "SingleSelection"
+        except Exception:
+            pass
+
 items["SubtitleTree"].SetHeaderLabels(["#", "Start", "End", "Subtitle"]) 
 items["SubtitleTree"].ColumnWidth[0] = 50    # 文件名
 items["SubtitleTree"].ColumnWidth[1] = 50    # 开始TC
 items["SubtitleTree"].ColumnWidth[2] = 50    # 结束TC
 for lang_display_name in LANGUAGE_MAP.keys():
     items["LangCombo"].AddItem(lang_display_name)
+
+FIND_HIGHLIGHT_COLOR = {"R": 0.40, "G": 0.40, "B": 0.40, "A": 0.60}
+TRANSPARENT_COLOR = {"R": 0.0, "G": 0.0, "B": 0.0, "A": 0.0}
+
+def _is_find_highlight_color(color, tolerance=1e-6):
+    if not isinstance(color, dict):
+        return False
+    try:
+        return all(abs(float(color.get(component, 0.0)) - float(FIND_HIGHLIGHT_COLOR.get(component, 0.0))) <= tolerance for component in ("R", "G", "B"))
+    except Exception:
+        return False
+
+_last_status_key = None
+_last_status_args = ()
+_find_query = ""
+_find_matches = []
+_find_index = 0
+_current_match_highlight = None
+_sticky_highlights = set()
+_find_rows = 0
+_find_occurrences = 0
+_suppress_tree_event = False
+
+def update_status(key, *args):
+    global _last_status_key, _last_status_args
+    _last_status_key = key
+    _last_status_args = args
+    label = items.get("StatusLabel")
+    if not label:
+        return
+    if key is None:
+        label.Text = ""
+        return
+    lang_checkbox = items.get("LangEnCheckBox")
+    lang = "en" if lang_checkbox and lang_checkbox.Checked else "cn"
+    templates = STATUS_MESSAGES.get(key)
+    text = None
+    if templates:
+        text = templates.get(lang) or templates.get("cn")
+    if text is None:
+        text = str(key)
+    try:
+        label.Text = text % args if args else text
+    except Exception:
+        label.Text = text
 
 def populate_models(use_openai):
     provider = openai_provider if use_openai else faster_whisper_provider
@@ -1623,6 +1747,14 @@ def switch_language(lang):
             match_items[item_id].Text = text_value
         else:
             print(f"[Warning] No control with ID {item_id} exists in items, so the text cannot be set!")
+    placeholders = placeholder_translations.get(lang, {})
+    find_widget = items.get("FindInput")
+    replace_widget = items.get("ReplaceInput")
+    if find_widget and "FindInput" in placeholders:
+        find_widget.PlaceholderText = placeholders["FindInput"]
+    if replace_widget and "ReplaceInput" in placeholders:
+        replace_widget.PlaceholderText = placeholders["ReplaceInput"]
+    update_status(_last_status_key, *_last_status_args)
 
 def on_lang_checkbox_clicked(ev):
     is_en_checked = ev['sender'].ID == "LangEnCheckBox"
@@ -1759,6 +1891,445 @@ def render_timeline_audio(output_dir: str, custom_name: str) -> Optional[str]:
     project.DeleteRenderJob(job_id) # 
     return os.path.join(output_dir, f"{custom_name}.mp3")
 
+
+def _count_occurrences(haystack: str, needle: str) -> int:
+    if not haystack or not needle:
+        return 0
+    start = 0
+    total = 0
+    while True:
+        idx = haystack.find(needle, start)
+        if idx == -1:
+            break
+        total += 1
+        start = idx + 1
+    return total
+
+def _current_selection_index() -> Optional[int]:
+    if not _selected_row_id:
+        return None
+    try:
+        return int(_selected_row_id)
+    except (TypeError, ValueError):
+        return None
+
+def _clear_tree_selection():
+    tree = items.get("SubtitleTree")
+    if not tree:
+        return
+    cleared = False
+    for attr in ("ClearSelection", "clearSelection"):
+        method = getattr(tree, attr, None)
+        if callable(method):
+            try:
+                method()
+                cleared = True
+                break
+            except Exception:
+                pass
+    if cleared:
+        return
+    try:
+        selected = tree.SelectedItems()
+    except Exception:
+        selected = None
+    if isinstance(selected, (list, tuple)):
+        for entry in selected:
+            try:
+                entry.Selected = False
+            except Exception:
+                pass
+
+def _select_only_tree_row(entry_index):
+    tree = items.get("SubtitleTree")
+    if not tree or entry_index is None:
+        return
+    target_row = max(0, int(entry_index) - 1)
+    try:
+        total_rows = tree.TopLevelItemCount()
+    except Exception:
+        total_rows = len(_subtitle_blocks_state)
+    for row in range(total_rows):
+        try:
+            row_item = tree.TopLevelItem(row)
+        except Exception:
+            row_item = None
+        if not row_item:
+            continue
+        try:
+            row_item.Selected = (row == target_row)
+        except Exception:
+            pass
+
+def _clear_current_highlight(preserve_if_still_match=False):
+    global _current_match_highlight
+    if not _current_match_highlight:
+        return
+    tree = items.get("SubtitleTree")
+    if not tree:
+        _current_match_highlight = None
+        return
+    idx = _current_match_highlight
+    try:
+        item = tree.TopLevelItem(idx - 1)
+    except Exception:
+        item = None
+    _current_match_highlight = None
+    if not item:
+        return
+    text = item.Text[3] or ""
+    if preserve_if_still_match and _find_query and _find_query in text:
+        item.BackgroundColor[3] = FIND_HIGHLIGHT_COLOR
+        _current_match_highlight = idx
+        return
+    if idx in _sticky_highlights:
+        item.BackgroundColor[3] = FIND_HIGHLIGHT_COLOR
+        return
+    try:
+        item.BackgroundColor[3] = TRANSPARENT_COLOR
+    except Exception:
+        item.BackgroundColor[3] = None
+
+def _clear_all_find_highlights(force=False):
+    global _current_match_highlight, _sticky_highlights
+    tree = items.get("SubtitleTree")
+    if not tree:
+        return
+    try:
+        total_rows = tree.TopLevelItemCount()
+    except Exception:
+        total_rows = len(_subtitle_blocks_state)
+    for row in range(total_rows):
+        try:
+            item = tree.TopLevelItem(row)
+        except Exception:
+            item = None
+        if not item:
+            continue
+        row_index = row + 1
+        if not force and row_index in _sticky_highlights:
+            continue
+        try:
+            current_color = item.BackgroundColor[3]
+        except Exception:
+            current_color = None
+        if force or _is_find_highlight_color(current_color):
+            try:
+                item.BackgroundColor[3] = TRANSPARENT_COLOR
+            except Exception:
+                item.BackgroundColor[3] = None
+    if force:
+        _sticky_highlights.clear()
+    _current_match_highlight = None
+
+def _reset_find_state(clear_query=False):
+    global _find_matches, _find_index, _find_rows, _find_occurrences, _find_query, _sticky_highlights, _current_match_highlight
+    _clear_all_find_highlights(force=True)
+    _find_matches = []
+    _find_index = 0
+    _find_rows = 0
+    _find_occurrences = 0
+    if clear_query:
+        _find_query = ""
+    else:
+        find_widget = items.get("FindInput")
+        _find_query = (find_widget.Text if find_widget else _find_query) or ""
+    _sticky_highlights.clear()
+    _current_match_highlight = None
+    update_status(None)
+
+def _apply_tree_item_logic(item, do_timeline=True):
+    global _selected_row_id, _editor_programmatic
+    if not item:
+        return False
+    start_tc = (item.Text[1] or "").strip()
+    if do_timeline and start_tc:
+        try:
+            resolve, project, _, _, timeline, _ = connect_resolve()
+        except Exception:
+            resolve, timeline = None, None
+        if resolve and timeline:
+            try:
+                current_page = resolve.GetCurrentPage()
+                if current_page not in ("cut", "edit", "color", "fairlight", "deliver"):
+                    resolve.OpenPage("edit")
+            except Exception:
+                pass
+            try:
+                timeline.SetCurrentTimecode(start_tc)
+            except Exception:
+                pass
+    _selected_row_id = item.Text[0] or ""
+    editor_widget = items.get("SubtitleEditor")
+    if editor_widget:
+        try:
+            _editor_programmatic = True
+            editor_widget.Text = item.Text[3] or ""
+        finally:
+            _editor_programmatic = False
+    return True
+
+def _jump_to_tree_row(entry_index, do_timeline=True, ensure_visible=True):
+    tree = items.get("SubtitleTree")
+    if not tree or entry_index is None:
+        return False
+    try:
+        item = tree.TopLevelItem(entry_index - 1)
+    except Exception:
+        item = None
+    if not item:
+        return False
+    global _suppress_tree_event
+    if ensure_visible:
+        _suppress_tree_event = True
+        try:
+            _clear_tree_selection()
+            try:
+                setter = getattr(tree, "SetCurrentItem", None)
+                if callable(setter):
+                    setter(item)
+                else:
+                    tree.CurrentItem = item
+            except Exception:
+                tree.CurrentItem = item
+            _select_only_tree_row(entry_index)
+        finally:
+            _suppress_tree_event = False
+    else:
+        _select_only_tree_row(entry_index)
+    try:
+        tree.ScrollToItem(item)
+    except Exception:
+        pass
+    return _apply_tree_item_logic(item, do_timeline)
+
+def _refresh_find_matches():
+    global _find_query, _find_matches, _find_index, _find_rows, _find_occurrences
+    find_widget = items.get("FindInput")
+    tree = items.get("SubtitleTree")
+    if not find_widget or not tree:
+        return False
+    query = find_widget.Text or ""
+    _find_query = query
+    _find_matches = []
+    _find_index = 0
+    _find_rows = 0
+    _find_occurrences = 0
+    _clear_all_find_highlights()
+    if not query:
+        update_status("enter_find_text")
+        return False
+    matches = []
+    total_occ = 0
+    for idx, block in enumerate(_subtitle_blocks_state, 1):
+        text = block.get("text", "") or ""
+        occ = _count_occurrences(text, query)
+        if occ:
+            matches.append(idx)
+            total_occ += occ
+            try:
+                item = tree.TopLevelItem(idx - 1)
+                if item:
+                    item.BackgroundColor[3] = FIND_HIGHLIGHT_COLOR
+            except Exception:
+                pass
+    if not matches:
+        update_status("no_find_results")
+        return False
+    _find_matches = matches
+    _find_index = 1
+    _find_rows = len(matches)
+    _find_occurrences = total_occ
+    update_status("matches_rows_occ", len(matches), total_occ)
+    return True
+
+def _ensure_find_matches():
+    find_widget = items.get("FindInput")
+    if not find_widget:
+        return False
+    query = find_widget.Text or ""
+    if not query:
+        update_status("enter_find_text")
+        return False
+    if query != _find_query or not _find_matches:
+        return _refresh_find_matches()
+    if _find_matches:
+        return True
+    return _refresh_find_matches()
+
+def _goto_next_match():
+    global _find_index, _current_match_highlight
+    if not _ensure_find_matches():
+        return None
+    if not _find_matches:
+        update_status("no_find_results")
+        return None
+    idx = _find_index or 1
+    if idx > len(_find_matches):
+        idx = 1
+    entry_index = _find_matches[idx - 1]
+    _find_index = idx + 1 if idx < len(_find_matches) else 1
+    _clear_current_highlight(preserve_if_still_match=True)
+    if _jump_to_tree_row(entry_index, do_timeline=True, ensure_visible=True):
+        _current_match_highlight = entry_index
+        tree = items.get("SubtitleTree")
+        if tree:
+            try:
+                item = tree.TopLevelItem(entry_index - 1)
+                if item:
+                    item.BackgroundColor[3] = FIND_HIGHLIGHT_COLOR
+            except Exception:
+                pass
+        update_status("match_progress", idx, len(_find_matches))
+        return entry_index
+    return None
+
+def _apply_replace_all():
+    global _find_matches, _find_index, _current_match_highlight, _editor_programmatic, _sticky_highlights
+    find_widget = items.get("FindInput")
+    replace_widget = items.get("ReplaceInput")
+    if not find_widget:
+        return
+    find_text = find_widget.Text or ""
+    if not find_text:
+        update_status("replace_no_find")
+        return
+    replace_text = (replace_widget.Text if replace_widget else "") or ""
+    total_replaced = 0
+    tree = items.get("SubtitleTree")
+    for idx, block in enumerate(_subtitle_blocks_state, 1):
+        text = block.get("text", "") or ""
+        count = text.count(find_text)
+        if count:
+            new_text = text.replace(find_text, replace_text)
+            block["text"] = new_text
+            total_replaced += count
+            if tree:
+                try:
+                    item = tree.TopLevelItem(idx - 1)
+                    if item:
+                        item.Text[3] = new_text
+                        item.BackgroundColor[3] = FIND_HIGHLIGHT_COLOR
+                except Exception:
+                    pass
+            if str(idx) == (_selected_row_id or ""):
+                editor_widget = items.get("SubtitleEditor")
+                if editor_widget:
+                    try:
+                        _editor_programmatic = True
+                        editor_widget.Text = new_text
+                    finally:
+                        _editor_programmatic = False
+            _sticky_highlights.add(idx)
+    if total_replaced == 0:
+        update_status("no_replace")
+        return
+    _current_match_highlight = None
+    _find_matches = []
+    _find_index = 0
+    _refresh_find_matches()
+    update_status("replace_done", total_replaced)
+
+def _replace_single():
+    global _find_matches, _find_index, _current_match_highlight, _editor_programmatic, _sticky_highlights
+    find_widget = items.get("FindInput")
+    replace_widget = items.get("ReplaceInput")
+    if not find_widget:
+        return
+    find_text = find_widget.Text or ""
+    if not find_text:
+        update_status("replace_no_find")
+        return
+    if not _ensure_find_matches():
+        return
+    def current_contains():
+        idx = _current_selection_index()
+        if idx is None or not (1 <= idx <= len(_subtitle_blocks_state)):
+            return False
+        text = _subtitle_blocks_state[idx - 1].get("text", "") or ""
+        return find_text in text
+    attempts = 0
+    max_attempts = len(_find_matches)
+    while not current_contains() and attempts < max_attempts:
+        jumped = _goto_next_match()
+        attempts += 1
+        if not jumped:
+            break
+    if not current_contains():
+        update_status("no_replace")
+        return
+    replace_text = (replace_widget.Text if replace_widget else "") or ""
+    idx = _current_selection_index()
+    if idx is None:
+        update_status("no_replace")
+        return
+    text = _subtitle_blocks_state[idx - 1].get("text", "") or ""
+    count = text.count(find_text)
+    if count == 0:
+        update_status("no_replace")
+        return
+    new_text = text.replace(find_text, replace_text)
+    _subtitle_blocks_state[idx - 1]["text"] = new_text
+    tree = items.get("SubtitleTree")
+    if tree:
+        try:
+            item = tree.TopLevelItem(idx - 1)
+            if item:
+                item.Text[3] = new_text
+                item.BackgroundColor[3] = FIND_HIGHLIGHT_COLOR
+        except Exception:
+            pass
+    editor_widget = items.get("SubtitleEditor")
+    if editor_widget:
+        try:
+            _editor_programmatic = True
+            editor_widget.Text = new_text
+        finally:
+            _editor_programmatic = False
+    _sticky_highlights.add(idx)
+    _current_match_highlight = None
+    _find_matches = []
+    _find_index = 0
+    if _refresh_find_matches():
+        matches = list(_find_matches)
+        if matches:
+            next_index = 1
+            for position, entry_idx in enumerate(matches, 1):
+                if entry_idx > idx:
+                    next_index = position
+                    break
+            else:
+                next_index = 1
+            _find_index = next_index
+            _goto_next_match()
+    else:
+        update_status("match_progress", 0, 0)
+
+def _on_find_input_text_changed(ev):
+    global _find_query, _find_matches, _find_index, _find_rows, _find_occurrences, _current_match_highlight, _sticky_highlights
+    find_widget = items.get("FindInput")
+    _find_query = (find_widget.Text if find_widget else "") or ""
+    _find_matches = []
+    _find_index = 0
+    _find_rows = 0
+    _find_occurrences = 0
+    _clear_all_find_highlights(force=True)
+    _sticky_highlights.clear()
+    _current_match_highlight = None
+    update_status(None)
+
+def _on_find_input_editing_finished(ev):
+    _refresh_find_matches()
+
+def _on_find_button_clicked(ev):
+    _goto_next_match()
+
+def _on_all_replace_clicked(ev):
+    _apply_replace_all()
+
+def _on_single_replace_clicked(ev):
+    _replace_single()
+
 _editor_programmatic = False
 _selected_row_id = None
 _subtitle_blocks_state = []
@@ -1784,10 +2355,28 @@ def _refresh_subtitle_tree(subtitle_blocks):
     _subtitle_blocks_state = [dict(blk) for blk in subtitle_blocks]
     try:
         _, project, _, _, timeline, fps = connect_resolve()
-        start_frame = timeline.GetStartFrame() or 0   # 基准帧
+        start_frame = timeline.GetStartFrame() or 0   # ???
     except Exception:
         fps = FPS_FALLBACK
         start_frame = 0
+
+    tree = items.get("SubtitleTree")
+    if not tree:
+        return
+    _reset_find_state(clear_query=False)
+    tree.Clear()
+    tree.SetHeaderLabels(["#", "Start", "End", "Subtitle"])
+
+    for idx, blk in enumerate(subtitle_blocks, 1):
+        itm = tree.NewItem()
+        itm.Text[0] = str(idx)
+        itm.Text[1] = _secs_to_abs_timecode(blk["start"], fps, start_frame)  # ?? Start
+        itm.Text[2] = _secs_to_abs_timecode(blk["end"],   fps, start_frame)  # ?? End
+        itm.Text[3] = blk["text"].replace("\n", " ")
+        tree.AddTopLevelItem(itm)
+    if _find_query:
+        _refresh_find_matches()
+
 
     tree = items.get("SubtitleTree")
     if not tree:
@@ -1806,33 +2395,32 @@ def _refresh_subtitle_tree(subtitle_blocks):
 
 # 点击 Tree 的行，跳转到对应字幕开始时间码
 def _on_subtitle_tree_item_clicked(ev):
-    global _selected_row_id
-    tree = items["SubtitleTree"]
-    itm = tree.CurrentItem()
-    if not itm:
+    global _suppress_tree_event
+    if _suppress_tree_event:
         return
-
-    # 第2列存放开始时间码（形如 "HH:MM:SS:FF"）
-    start_tc = (itm.Text[1] or "").strip()
-    if not start_tc:
+    tree = items.get("SubtitleTree")
+    if not tree:
         return
-
-    resolve, project, _, _, timeline, fps = connect_resolve()
-    if not timeline:
+    item = tree.CurrentItem()
+    if not item:
         return
-    cur_page = resolve.GetCurrentPage() 
-    if cur_page not in ("cut", "edit", "color", "fairlight", "deliver"):
-        resolve.OpenPage("edit")  
-    ok = timeline.SetCurrentTimecode(start_tc)
-    now_tc = timeline.GetCurrentTimecode() 
-    print(f"[jump] request={start_tc}, ok={ok}, current={now_tc}")
-    _selected_row_id = itm.Text[0] or ""
     try:
-        global _editor_programmatic
-        _editor_programmatic = True
-        items["SubtitleEditor"].Text = itm.Text[3] or ""   
+        entry_index = int(item.Text[0])
+    except (TypeError, ValueError):
+        entry_index = None
+    _suppress_tree_event = True
+    try:
+        _clear_tree_selection()
+        if entry_index is not None:
+            _select_only_tree_row(entry_index)
+        else:
+            try:
+                item.Selected = True
+            except Exception:
+                pass
     finally:
-        _editor_programmatic = False
+        _suppress_tree_event = False
+    _apply_tree_item_logic(item, do_timeline=True)
 whisper_win.On['SubtitleTree'].ItemClicked = _on_subtitle_tree_item_clicked
 
 def _on_subtitle_editor_text_changed(ev):
@@ -1856,6 +2444,12 @@ def _on_subtitle_editor_text_changed(ev):
     except Exception:
         pass
 whisper_win.On['SubtitleEditor'].TextChanged = _on_subtitle_editor_text_changed
+
+whisper_win.On.FindInput.TextChanged = _on_find_input_text_changed
+whisper_win.On.FindInput.EditingFinished = _on_find_input_editing_finished
+whisper_win.On.FindButton.Clicked = _on_find_button_clicked
+whisper_win.On.AllReplaceButton.Clicked = _on_all_replace_clicked
+whisper_win.On.SingleReplaceButton.Clicked = _on_single_replace_clicked
 
 def _quantize_and_fix_blocks(blocks, fps, enforce_no_gaps=False, min_frames=1):
     """
