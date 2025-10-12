@@ -2,7 +2,7 @@
 -- 获取当前时间线字幕，在界面中支持查找和替换，然后回写到时间线
 
 local SCRIPT_NAME = "DaVinci Sub Editor"
-local SCRIPT_VERSION = "1.0.0"
+local SCRIPT_VERSION = "1.0.2"
 local SCRIPT_AUTHOR = "HEIBA"
 local SCRIPT_KOFI_URL = "https://ko-fi.com/heiba"
 local SCRIPT_BILIBILI_URL = "https://space.bilibili.com/385619394"
@@ -227,6 +227,7 @@ local state = {
     suppressTreeSelection = false,
     currentMatchHighlight = nil,
     stickyHighlights = {},
+    highlightedRows = {},
 }
 math.randomseed(os.time() + tonumber(tostring({}):sub(8), 16))
 state.sessionCode = string.format("%04X", math.random(0, 0xFFFF))
@@ -241,7 +242,7 @@ local settingsFile
 
 local uiText = {
     cn = {
-        find_button = "查找",
+        find_button = "查找下一个",
         all_replace_button = "全部替换",
         single_replace_button = "替换",
         refresh_button = "加载当前字幕",
@@ -257,7 +258,7 @@ local uiText = {
         copyright = " © 2025, 版权所有 " .. SCRIPT_AUTHOR
     },
     en = {
-        find_button = "Find",
+        find_button = "Find Next",
         all_replace_button = "All Replace",
         single_replace_button = "Replace",
         refresh_button = "Load Timeline Subtitles",
@@ -747,22 +748,26 @@ local function collectSubtitles()
         local enabled = timeline:GetIsTrackEnabled("subtitle", track)
         if enabled ~= false then
             local itemList = timeline:GetItemListInTrack("subtitle", track)
-            if itemList and #itemList > 0 then
-                state.activeTrackIndex = track
-                for _, item in ipairs(itemList) do
-                    local startValue = item:GetStart() or 0
-                    local endValue = item:GetEnd() or startValue
-                    local name = item:GetName() or ""
-                    table.insert(entries, {
-                        startFrame = math.floor(startValue + 0.5),
-                        endFrame = math.floor(endValue + 0.5),
-                        text = name,
-                    })
+                if itemList and #itemList > 0 then
+                    state.activeTrackIndex = track
+                    for _, item in ipairs(itemList) do
+                        local startValue = item:GetStart() or 0
+                        local endValue = item:GetEnd() or startValue
+                        local name = item:GetName() or ""
+                        local startFrame = math.floor(startValue + 0.5)
+                        local endFrame = math.floor(endValue + 0.5)
+                        table.insert(entries, {
+                            startFrame = startFrame,
+                            endFrame = endFrame,
+                            startText = framesToTimecode(startFrame, state.fps),
+                            endText = framesToTimecode(endFrame, state.fps),
+                            text = name,
+                        })
+                    end
+                    break
                 end
-                break
             end
         end
-    end
 
     sortEntries(entries)
     state.entries = entries
@@ -1009,6 +1014,40 @@ local langEn = it.LangEnCheckBox
 local mainTabs = it.MainTabs
 local mainStack = it.MainStack
 
+local function withUpdatesSuspended(widget, fn)
+    if not widget or type(fn) ~= "function" then
+        return
+    end
+    local canSuspend = type(widget.SetUpdatesEnabled) == "function"
+    if not canSuspend then
+        fn()
+        return
+    end
+    widget:SetUpdatesEnabled(false)
+    local ok, err = pcall(fn)
+    widget:SetUpdatesEnabled(true)
+    if not ok then
+        error(err)
+    end
+end
+
+local function setRowHighlight(rowIndex, color)
+    if not tree then
+        return
+    end
+    local item = tree:TopLevelItem(rowIndex - 1)
+    if not item then
+        return
+    end
+    local targetColor = color or transparentColor
+    item.BackgroundColor[3] = targetColor
+    if color then
+        state.highlightedRows[rowIndex] = true
+    else
+        state.highlightedRows[rowIndex] = nil
+    end
+end
+
 if mainTabs then
     local initialTabs = uiText.cn.tabs or { "字幕编辑", "配置" }
     for _, title in ipairs(initialTabs) do
@@ -1049,43 +1088,42 @@ local function setEditorText(text)
 end
 
 local function clearFindHighlights(preserveIfStillMatch)
-    if not state.currentMatchHighlight then return end
-    local row = state.currentMatchHighlight - 1
-    local item = tree:TopLevelItem(row)
+    local current = state.currentMatchHighlight
+    if not current then return end
     state.currentMatchHighlight = nil
-    if not item then return end
 
-    -- 用透明色显式清空每一列的背景
-    for col = 0, (tree.ColumnCount or 4) - 1 do
-        item.BackgroundColor[col] = transparentColor
+    local preserve = false
+    if preserveIfStillMatch and state.findQuery and state.findQuery ~= "" then
+        local entry = state.entries[current]
+        local text = entry and entry.text or ""
+        preserve = text:find(state.findQuery, 1, true) ~= nil
     end
 
-    if preserveIfStillMatch and state.findQuery and state.findQuery ~= "" then
-        local text = item.Text[3] or ""
-        if text:find(state.findQuery, 1, true) then
-            item.BackgroundColor[3] = findHighlightColor
-        end
+    if preserve or state.stickyHighlights[current] then
+        setRowHighlight(current, findHighlightColor)
+    else
+        setRowHighlight(current, nil)
     end
 end
 
 -- ✅ 新增：每次开始新查询前，清掉“所有行”的查找高亮
 --（替换后的条目也使用 findHighlightColor，这里通过颜色判断来识别并清理）
 local function clearAllFindHighlights()
-    local rows = tree:TopLevelItemCount()
-    for r = 0, rows - 1 do
-        local it = tree:TopLevelItem(r)
-        if it then
-            local rowIndex = r + 1   -- Tree 行号改为 1-based 方便与 state 索引一致
-            if not state.stickyHighlights[rowIndex] then  -- ✅ 关键：粘性行不清
-                local bg = it.BackgroundColor[3]
-                local isFindColor = bg
-                    and math.abs((bg.R or 0) - findHighlightColor.R) < 1e-6
-                    and math.abs((bg.G or 0) - findHighlightColor.G) < 1e-6
-                    and math.abs((bg.B or 0) - findHighlightColor.B) < 1e-6
-                if isFindColor then
-                    it.BackgroundColor[3] = transparentColor
-                end
+    local toClear = {}
+    for index in pairs(state.highlightedRows or {}) do
+        if not state.stickyHighlights[index] then
+            table.insert(toClear, index)
+        end
+    end
+    if tree then
+        withUpdatesSuspended(tree, function()
+            for _, index in ipairs(toClear) do
+                setRowHighlight(index, nil)
             end
+        end)
+    else
+        for _, index in ipairs(toClear) do
+            setRowHighlight(index, nil)
         end
     end
     state.currentMatchHighlight = nil
@@ -1173,18 +1211,15 @@ local function refreshFindMatches()
 
     local matches = {}
     local rowsMatched, occTotal = 0, 0
-    local rows = tree:TopLevelItemCount()
-    for row = 0, rows - 1 do
-        local item = tree:TopLevelItem(row)
-        if item then
-            local text = item.Text[3] or ""
-            local c = countOccurrences(text, query)
-            if c > 0 then
-                item.BackgroundColor[3] = findHighlightColor
-                table.insert(matches, row + 1)  -- 仍按“行”来导航
-                rowsMatched = rowsMatched + 1
-                occTotal = occTotal + c
-            end
+    for index, entry in ipairs(state.entries) do
+        local text = entry.text or ""
+        local c = countOccurrences(text, query)
+        if c > 0 then
+            rowsMatched = rowsMatched + 1
+            occTotal = occTotal + c
+            matches[#matches + 1] = index
+        elseif not state.stickyHighlights[index] and state.highlightedRows[index] then
+            setRowHighlight(index, nil)
         end
     end
 
@@ -1193,6 +1228,18 @@ local function refreshFindMatches()
         state.findMatches = {}
         state.findRows, state.findOcc = 0, 0
         return false
+    end
+
+    if tree then
+        withUpdatesSuspended(tree, function()
+            for _, index in ipairs(matches) do
+                setRowHighlight(index, findHighlightColor)
+            end
+        end)
+    else
+        for _, index in ipairs(matches) do
+            setRowHighlight(index, findHighlightColor)
+        end
     end
 
     state.findMatches = matches
@@ -1233,11 +1280,8 @@ local function gotoNextMatch()
     clearFindHighlights(true)
     jumpToEntry(entryIndex, true)
 
-    local item = tree:TopLevelItem(entryIndex - 1)
-    if item then
-        item.BackgroundColor[3] = findHighlightColor
-        state.currentMatchHighlight = entryIndex
-    end
+    setRowHighlight(entryIndex, findHighlightColor)
+    state.currentMatchHighlight = entryIndex
     updateStatus("match_progress", idx, #matches)
     return entryIndex
 end
@@ -1323,39 +1367,53 @@ local function setLanguage(lang)
 end
 
 local function clearHighlights()
-    local rows = tree:TopLevelItemCount()
-    for row = 0, rows - 1 do
-        local item = tree:TopLevelItem(row)
-        if item then
-            for col = 0, 3 do
-                item.BackgroundColor[col] = nil
+    if tree then
+        local toClear = {}
+        for index in pairs(state.highlightedRows or {}) do
+            table.insert(toClear, index)
+        end
+        withUpdatesSuspended(tree, function()
+            for _, index in ipairs(toClear) do
+                setRowHighlight(index, nil)
             end
+        end)
+    else
+        for index in pairs(state.highlightedRows or {}) do
+            setRowHighlight(index, nil)
         end
     end
     state.currentMatchHighlight = nil
     state.stickyHighlights = {}   -- ✅ 新增：完全清屏时重置粘性集合
+    state.highlightedRows = {}
 end
 
 local function populateTree(suppressStatus)
-    tree:Clear()
     state.selectedIndex = nil
     state.findMatches = nil
     state.findIndex = nil
     state.currentMatchHighlight = nil
-    state.stickyHighlights = {} 
+    state.stickyHighlights = {}
+    state.highlightedRows = {}
     setEditorText("")
-    tree:SetHeaderLabels(currentHeaders())
-    tree.ColumnWidth[0] = 50
-    tree.ColumnWidth[1] = 50
-    tree.ColumnWidth[2] = 50
-    for index, entry in ipairs(state.entries) do
-        local item = tree:NewItem()
-        item.Text[0] = tostring(index)
-        item.Text[1] = framesToTimecode(entry.startFrame, state.fps)
-        item.Text[2] = framesToTimecode(entry.endFrame, state.fps)
-        item.Text[3] = entry.text or ""
-        tree:AddTopLevelItem(item)
+
+    if tree then
+        withUpdatesSuspended(tree, function()
+            tree:Clear()
+            tree:SetHeaderLabels(currentHeaders())
+            tree.ColumnWidth[0] = 50
+            tree.ColumnWidth[1] = 50
+            tree.ColumnWidth[2] = 50
+            for index, entry in ipairs(state.entries) do
+                local item = tree:NewItem()
+                item.Text[0] = tostring(index)
+                item.Text[1] = entry.startText or framesToTimecode(entry.startFrame, state.fps)
+                item.Text[2] = entry.endText or framesToTimecode(entry.endFrame, state.fps)
+                item.Text[3] = entry.text or ""
+                tree:AddTopLevelItem(item)
+            end
+        end)
     end
+
     if not suppressStatus then
         updateStatus("current_total", #state.entries)
     end
@@ -1366,7 +1424,17 @@ local function refreshFromTimeline()
     if not ok then
         updateStatus(err or "cannot_read_subtitles")
         state.entries = {}
-        populateTree(true)
+        if tree then
+            withUpdatesSuspended(tree, function()
+                tree:Clear()
+            end)
+        end
+        state.highlightedRows = {}
+        state.stickyHighlights = {}
+        state.findMatches = nil
+        state.findIndex = nil
+        state.currentMatchHighlight = nil
+        setEditorText("")
         return false
     end
     populateTree()
@@ -1393,8 +1461,8 @@ local function applyReplace()
             local item = tree:TopLevelItem(index - 1)
             if item then
                 item.Text[3] = newText
-                item.BackgroundColor[3] = findHighlightColor
             end
+            setRowHighlight(index, findHighlightColor)
             if state.selectedIndex == index then
                 setEditorText(newText)
             end
@@ -1450,8 +1518,8 @@ local function replaceSingle()
     local item = tree:TopLevelItem(index - 1)
     if item then
         item.Text[3] = newText
-        item.BackgroundColor[3] = findHighlightColor
     end
+    setRowHighlight(index, findHighlightColor)
     setEditorText(newText)
 
     -- ✅ 标记该行“粘性高亮”，后续 refreshFindMatches() 的全表清理将跳过它
@@ -1474,7 +1542,7 @@ local function replaceSingle()
         if i == #updatedMatches then nextIdx = 1 end
     end
     state.findIndex = nextIdx
-    gotoNextMatch()
+    --gotoNextMatch()
 end
 
 

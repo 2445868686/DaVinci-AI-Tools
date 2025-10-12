@@ -3,7 +3,7 @@
 .env
 .vscode/
 Encrypt.py
-
+加密lua文件.py
 # Generated at 2025-09-09 13:34:23
 
 # === Begin DaVinci-I2V/.gitignore ===

@@ -3,7 +3,7 @@ SCRIPT_VERSION = " 1.3" # Updated version
 SCRIPT_AUTHOR  = "HEIBA"
 
 SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
-WINDOW_WIDTH, WINDOW_HEIGHT = 700, 410
+WINDOW_WIDTH, WINDOW_HEIGHT = 725, 425
 X_CENTER = (SCREEN_WIDTH  - WINDOW_WIDTH ) // 2
 Y_CENTER = (SCREEN_HEIGHT - WINDOW_HEIGHT) // 2
 
@@ -1534,7 +1534,7 @@ translations = {
         "MatchTextCheckBox":"文稿匹配",
         "TreeTitleLabel":"字幕编辑",
         "UpdateSubtitleButton": "更新字幕",
-        "FindButton": "查找",
+        "FindButton": "查找下一个",
         "AllReplaceButton": "全部替换",
         "SingleReplaceButton": "替换",
         "MatchInfoLabel":"请在下方粘贴完整文稿（将按该文本对齐）：",
@@ -1563,7 +1563,7 @@ translations = {
         "MatchCancelBtn":"Cancel",
         "TreeTitleLabel":"Subtitle Editor",
         "UpdateSubtitleButton": "Update SRT",
-        "FindButton": "Find",
+        "FindButton": "Find Next",
         "AllReplaceButton": "Replace All",
         "SingleReplaceButton": "Replace",
         "CopyrightButton":f"More Features © 2025 by {SCRIPT_AUTHOR}",
@@ -2301,7 +2301,7 @@ def _replace_single():
             else:
                 next_index = 1
             _find_index = next_index
-            _goto_next_match()
+            #_goto_next_match()
     else:
         update_status("match_progress", 0, 0)
 
