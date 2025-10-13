@@ -1,6 +1,6 @@
 # ================= 用户配置 =================
 SCRIPT_NAME = "DaVinci TTS"
-SCRIPT_VERSION = " 3.4"
+SCRIPT_VERSION = " 3.5"
 SCRIPT_AUTHOR = "HEIBA"
 
 SCREEN_WIDTH = 1920
@@ -167,9 +167,11 @@ import json
 import threading
 import webbrowser
 import uuid, base64
+import random
 from xml.dom import minidom
 import xml.etree.ElementTree as ET
 from typing import Dict, Any, List, Optional
+from urllib.parse import quote_plus
 SCRIPT_PATH = os.path.dirname(os.path.abspath(sys.argv[0]))
 TEMP_DIR         = os.path.join(SCRIPT_PATH, "temp")
 AUDIO_TEMP_DIR = os.path.join(SCRIPT_PATH, "audio_temp")
@@ -189,13 +191,40 @@ loading_win = dispatcher.AddWindow(
     [
         ui.VGroup(                                  
             [
+                ui.Label(
+                    {
+                        "ID": "UpdateLabel",
+                        "Text": "",
+                        "Alignment": {"AlignHCenter": True, "AlignVCenter": True},
+                        "WordWrap": True,
+                        "Visible": False,
+                        "StyleSheet": "color:#bbb; font-size:20px;",
+                    }
+                ),
                 ui.Label(                          
                     {
                         "ID": "LoadLabel", 
                         "Text": "Loading...",
                         "Alignment": {"AlignHCenter": True, "AlignVCenter": True},
                     }
-                )
+                ),
+                ui.HGroup(
+                    [
+                        ui.Button(
+                            {
+                                "ID": "ConfirmButton",
+                                "Text": "OK",
+                                "Visible": False,
+                                "Enabled": False,
+                                "MinimumSize": [80, 28],
+                            }
+                        )
+                    ],
+                    {
+                        "Weight": 0,
+                        "Alignment": {"AlignHCenter": True, "AlignVCenter": True},
+                    }
+                ),
             ]
         )
     ]
@@ -204,17 +233,185 @@ loading_win.Show()
 _loading_items = loading_win.GetItems()
 _loading_start_ts = time.time()
 _loading_timer_stop = False
+_loading_confirmation_pending = False
+_loading_notice_text = ""
+# ================== Supabase 客户端 ==================
+SUPABASE_URL = "https://tbjlsielfxmkxldzmokc.supabase.co"
+SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRiamxzaWVsZnhta3hsZHptb2tjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgxMDc3MDIsImV4cCI6MjA3MzY4MzcwMn0.FTgYJJ-GlMcQKOSWu63TufD6Q_5qC_M4cvcd3zpcFJo"
+
+
+class SupabaseClient:
+    def __init__(self, *, base_url: str, anon_key: str, default_timeout: int = 10):
+        self.base_url = base_url.rstrip("/")
+        self.anon_key = anon_key
+        self.default_timeout = default_timeout
+
+    @property
+    def _functions_base(self) -> str:
+        return f"{self.base_url}/functions/v1"
+
+    def fetch_provider_secret(
+        self,
+        provider: str,
+        *,
+        user_id: str,
+        timeout: Optional[int] = None,
+        max_retry: int = 3,
+    ) -> str:
+        headers = {
+            "Authorization": f"Bearer {self.anon_key}",
+            "Content-Type": "application/json",
+        }
+        function_url = f"{self._functions_base}/getApiKey?provider={provider}"
+        request_timeout = timeout or self.default_timeout
+
+        for attempt in range(max_retry):
+            try:
+                resp = requests.get(function_url, headers=headers, timeout=request_timeout)
+                if resp.status_code == 200:
+                    api_key = resp.json().get("api_key")
+                    if api_key:
+                        return api_key
+                    raise ValueError("API key not found in the response.")
+                if resp.status_code == 429:
+                    retry_after = resp.headers.get("Retry-After")
+                    wait = float(retry_after) if retry_after else min(2 ** attempt, 30)
+                    print(f"[{attempt+1}/{max_retry}] 429 rate limited, sleeping {wait}s")
+                    time.sleep(wait)
+                    continue
+                if 500 <= resp.status_code < 600:
+                    wait = min(2 ** attempt, 30)
+                    print(f"[{attempt+1}/{max_retry}] server {resp.status_code}, sleeping {wait}s")
+                    time.sleep(wait)
+                    continue
+                try:
+                    err = resp.json()
+                except Exception:
+                    err = {"error": resp.text[:200]}
+                raise RuntimeError(f"HTTP {resp.status_code}: {err}")
+
+            except requests.exceptions.RequestException as e:
+                jitter = random.random()
+                wait = min(2 ** attempt + jitter, 30)
+                print(f"[{attempt+1}/{max_retry}] network error: {e}; sleeping {wait:.2f}s")
+                time.sleep(wait)
+
+        raise RuntimeError("Failed to fetch API key after multiple attempts.")
+
+    def check_update(
+        self,
+        plugin_id: str,
+        *,
+        timeout: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not plugin_id:
+            raise ValueError("plugin_id is required")
+
+        request_timeout = timeout or self.default_timeout
+        function_url = f"{self._functions_base}/check_update?pid={quote_plus(plugin_id)}"
+        headers = {
+            "Authorization": f"Bearer {self.anon_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            resp = requests.get(function_url, headers=headers, timeout=request_timeout)
+        except requests.exceptions.RequestException as exc:
+            print(f"Failed to contact Supabase update endpoint: {exc}")
+            return None
+
+        if resp.status_code == 200:
+            try:
+                payload = resp.json()
+            except ValueError as exc:
+                print(f"Invalid update response: {exc}")
+                return None
+            if isinstance(payload, dict):
+                return payload
+            print(f"Unexpected update payload type: {type(payload)}")
+            return None
+
+        if resp.status_code in {400, 404}:
+            return None
+
+        print(f"Unexpected status from update endpoint: {resp.status_code} -> {resp.text[:200]}")
+        return None
+
+
+supabase_client = SupabaseClient(base_url=SUPABASE_URL, anon_key=SUPABASE_ANON_KEY)
+
+def _on_loading_confirm(ev):
+    global _loading_confirmation_pending
+    if not _loading_confirmation_pending:
+        return
+    _loading_confirmation_pending = False
+    try:
+        _loading_items["ConfirmButton"].Enabled = False
+        _loading_items["ConfirmButton"].Visible = False
+    except Exception:
+        pass
+    dispatcher.ExitLoop()
 
 def _loading_timer_worker():
     while not _loading_timer_stop:
         try:
             elapsed = int(time.time() - _loading_start_ts)
-            _loading_items["LoadLabel"].Text = f"Please wait , loading... \n( {elapsed}s elapsed )"
+            base_text = f"Please wait , loading... \n( {elapsed}s elapsed )"
+            notice = _loading_notice_text.strip()
+            if notice:
+                base_text = f"{notice}\n\n{base_text}"
+            _loading_items["LoadLabel"].Text = base_text
         except Exception:
             pass
         time.sleep(1.0)
 
+loading_win.On.ConfirmButton.Clicked = _on_loading_confirm
 threading.Thread(target=_loading_timer_worker, daemon=True).start()
+
+def _check_for_updates():
+    global _loading_confirmation_pending, _loading_notice_text
+    current_version = (SCRIPT_VERSION or "").strip()
+    result = supabase_client.check_update(SCRIPT_NAME)
+    if not result:
+        return
+
+    latest_version = (result.get("latest") or "").strip()
+    if not latest_version or latest_version == current_version:
+        return
+
+    messages: List[str] = []
+    for key in ("cn", "en"):
+        text = (result.get(key) or "").strip()
+        if text:
+            messages.append(text)
+
+    readable_current = current_version or "未知"
+    version_line = (
+        f"Update available: {latest_version} (current: {readable_current})\n"
+        "Please download the latest version from your purchase page."
+    )
+    messages.append(version_line)
+    notice_text = "\n".join(messages).strip()
+
+    try:
+        _loading_items["UpdateLabel"].Text = notice_text
+        _loading_items["UpdateLabel"].Visible = True
+    except Exception:
+        pass
+
+    _loading_notice_text = notice_text
+    try:
+        _loading_items["ConfirmButton"].Visible = True
+        _loading_items["ConfirmButton"].Enabled = True
+    except Exception:
+        pass
+
+    print(f"[Update] Latest version {latest_version} available (current {readable_current}).")
+    _loading_confirmation_pending = True
+    try:
+        dispatcher.RunLoop()
+    finally:
+        _loading_confirmation_pending = False
 
 # ---------- Resolve/Fusion 连接,外部环境使用（先保存起来） ----------
 try:
@@ -288,6 +485,11 @@ except ImportError:
     except ImportError as e:
         print("Dependency import failed—please make sure all dependencies are bundled into the Lib directory:", lib_dir, "\nError message:", e)
 
+
+try:
+    _check_for_updates()
+except Exception as exc:
+    print(f"Version check encountered an unexpected error: {exc}")
 
 
 # 创建带重试机制的 session（放在模块初始化，整个脚本共享）

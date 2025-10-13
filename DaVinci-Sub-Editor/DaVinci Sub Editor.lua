@@ -2,7 +2,7 @@
 -- 获取当前时间线字幕，在界面中支持查找和替换，然后回写到时间线
 
 local SCRIPT_NAME = "DaVinci Sub Editor"
-local SCRIPT_VERSION = "1.0.2"
+local SCRIPT_VERSION = "1.0.3"
 local SCRIPT_AUTHOR = "HEIBA"
 local SCRIPT_KOFI_URL = "https://ko-fi.com/heiba"
 local SCRIPT_BILIBILI_URL = "https://space.bilibili.com/385619394"
@@ -29,187 +29,7 @@ end
 
 local ui = fusion.UIManager
 local disp = bmd.UIDispatcher(ui)
--- ===================================================================
--- >> 纯 Lua 实现的 JSON 解析库 开始 <<
--- 将此代码块添加到您的脚本顶部
--- ===================================================================
-local json = {}
-local CJSON_SUPPORT = false -- 如果有CJSON模块则优先使用，这里默认关闭
-
-local function is_array(t)
-    local n = 0
-    for k, v in pairs(t) do
-        n = n + 1
-    end
-    for i = 1, n do
-        if t[i] == nil then
-            return false
-        end
-    end
-    return true
-end
-
-local function escape_char(c)
-    return '\\' .. ({
-        ['"'] = '"',
-        ['\\'] = '\\',
-        ['/'] = '/',
-        ['\b'] = 'b',
-        ['\f'] = 'f',
-        ['\n'] = 'n',
-        ['\r'] = 'r',
-        ['\t'] = 't',
-    })[c]
-end
-
-local function encode_string(s)
-    s = s:gsub('[%c"/\\]', escape_char)
-    return '"' .. s .. '"'
-end
-
-local function encode_table(t, stack)
-    stack = stack or {}
-    stack[t] = true
-
-    local b = {}
-    if is_array(t) then
-        for i = 1, #t do
-            local v = t[i]
-            if type(v) == "table" then
-                if stack[v] then
-                    error("circular reference")
-                end
-                b[i] = encode_table(v, stack)
-            elseif type(v) == "string" then
-                b[i] = encode_string(v)
-            elseif type(v) == "number" then
-                b[i] = tostring(v)
-            elseif type(v) == "boolean" then
-                b[i] = tostring(v)
-            else
-                b[i] = "null"
-            end
-        end
-        return '[' .. table.concat(b, ',') .. ']'
-    else
-        for k, v in pairs(t) do
-            if type(k) ~= "string" then
-                error("invalid key type")
-            end
-            if type(v) == "table" then
-                if stack[v] then
-                    error("circular reference")
-                end
-                table.insert(b, encode_string(k) .. ':' .. encode_table(v, stack))
-            elseif type(v) == "string" then
-                table.insert(b, encode_string(k) .. ':' .. encode_string(v))
-            elseif type(v) == "number" then
-                table.insert(b, encode_string(k) .. ':' .. tostring(v))
-            elseif type(v) == "boolean" then
-                table.insert(b, encode_string(k) .. ':' .. tostring(v))
-            elseif v ~= nil then
-                table.insert(b, encode_string(k) .. ':' .. "null")
-            end
-        end
-        return '{' .. table.concat(b, ',') .. '}'
-    end
-end
-
-function json.encode(o)
-    if type(o) == "table" then
-        return encode_table(o)
-    elseif type(o) == "string" then
-        return encode_string(o)
-    elseif type(o) == "number" or type(o) == "boolean" then
-        return tostring(o)
-    elseif o == nil then
-        return "null"
-    else
-        error("unsupported type")
-    end
-end
-
-local function decode_value(s, pos)
-    pos = pos or 1
-    pos = s:find('%S', pos)
-    if not pos then return nil, nil end
-
-    local c = s:sub(pos, pos)
-    if c == '{' then
-        local obj = {}
-        pos = pos + 1
-        while true do
-            pos = s:find('%S', pos)
-            local key, new_pos = decode_value(s, pos)
-            if not key then break end
-            pos = s:find('%S', new_pos)
-            if s:sub(pos, pos) ~= ':' then error("expected ':'") end
-            pos = pos + 1
-            local val
-            val, new_pos = decode_value(s, pos)
-            if val == nil then error("expected value") end
-            obj[key] = val
-            pos = s:find('%S', new_pos)
-            c = s:sub(pos, pos)
-            if c == '}' then return obj, pos + 1 end
-            if c ~= ',' then error("expected ',' or '}'") end
-            pos = pos + 1
-        end
-        error("unclosed object")
-    elseif c == '[' then
-        local arr = {}
-        pos = pos + 1
-        while true do
-            local val, new_pos = decode_value(s, pos)
-            if not val then break end
-            table.insert(arr, val)
-            pos = s:find('%S', new_pos)
-            c = s:sub(pos, pos)
-            if c == ']' then return arr, pos + 1 end
-            if c ~= ',' then error("expected ',' or ']'") end
-            pos = pos + 1
-        end
-        error("unclosed array")
-    elseif c == '"' then
-        local i = pos + 1
-        while i <= #s do
-            local nc = s:sub(i, i)
-            if nc == '"' then
-                return s:sub(pos + 1, i - 1):gsub('\\(.)', {
-                    b = '\b', f = '\f', n = '\n', r = '\r', t = '\t'
-                }), i + 1
-            end
-            if nc ~= '\\' then
-                i = i + 1
-            else
-                i = i + 2
-            end
-        end
-        error("unclosed string")
-    elseif c == 't' and s:sub(pos, pos + 3) == 'true' then
-        return true, pos + 4
-    elseif c == 'f' and s:sub(pos, pos + 4) == 'false' then
-        return false, pos + 5
-    elseif c == 'n' and s:sub(pos, pos + 3) == 'null' then
-        return nil, pos + 4
-    else
-        local num_str = s:match('^%-?%d+%.?%d*([eE][%-+]?%d+)?', pos)
-        if num_str then
-            return tonumber(num_str), pos + #num_str
-        end
-    end
-end
-
-function json.decode(s)
-    local obj, pos = decode_value(s)
-    pos = s:find('%S', pos)
-    if pos then error("trailing garbage") end
-    return obj
-end
-
--- ===================================================================
--- >> JSON 库 结束 <<
--- ===================================================================
+local json = require('dkjson')
 local state = {
     entries = {},
     fps = 24.0,
@@ -224,6 +44,7 @@ local state = {
     findQuery = "",
     findMatches = nil,
     findIndex = nil,
+    currentMatchPos = nil,
     suppressTreeSelection = false,
     currentMatchHighlight = nil,
     stickyHighlights = {},
@@ -242,7 +63,8 @@ local settingsFile
 
 local uiText = {
     cn = {
-        find_button = "查找下一个",
+        find_next_button = "下一个",
+        find_previous_button = "上一个",
         all_replace_button = "全部替换",
         single_replace_button = "替换",
         refresh_button = "加载当前字幕",
@@ -250,7 +72,7 @@ local uiText = {
         find_placeholder = "查找文本",
         replace_placeholder = "替换文本",
         editor_placeholder = "在此编辑选中的字幕",
-        tree_headers = { "#", "开始", "结束", "字幕" },
+        tree_headers = { "#", "开始/结束", "字幕" },
         lang_cn = "简体中文",
         lang_en = "EN",
         tabs = { "字幕编辑", "设置" },
@@ -258,7 +80,8 @@ local uiText = {
         copyright = " © 2025, 版权所有 " .. SCRIPT_AUTHOR
     },
     en = {
-        find_button = "Find Next",
+        find_next_button = "Next",
+        find_previous_button = "Previous",
         all_replace_button = "All Replace",
         single_replace_button = "Replace",
         refresh_button = "Load Timeline Subtitles",
@@ -266,7 +89,7 @@ local uiText = {
         find_placeholder = "Find text",
         replace_placeholder = "Replace with",
         editor_placeholder = "Edit selected subtitle here",
-        tree_headers = { "#", "Start", "End", "Subtitle" },
+        tree_headers = { "#", "Start/End", "Subtitle" },
         lang_cn = "简体中文",
         lang_en = "EN",
         tabs = { "Subtitle Editing", "Settings" },
@@ -299,6 +122,155 @@ local messages = {
 
 }
 local SEP = package.config:sub(1, 1)
+
+local IS_WINDOWS = (SEP == "\\")
+local runHiddenWindowsCommand
+
+if IS_WINDOWS then
+    local ok, ffi = pcall(require, "ffi")
+    if ok then
+        local kernel32 = ffi.load("kernel32")
+        local CP_UTF8 = 65001
+        local CREATE_NO_WINDOW = 0x08000000
+        local STARTF_USESHOWWINDOW = 0x00000001
+        local INFINITE = 0xFFFFFFFF
+
+        ffi.cdef[[
+            typedef unsigned short WORD;
+            typedef unsigned long DWORD;
+            typedef int BOOL;
+            typedef void* HANDLE;
+            typedef wchar_t* LPWSTR;
+            typedef const wchar_t* LPCWSTR;
+            typedef void* LPVOID;
+            typedef unsigned char BYTE;
+
+            typedef struct _STARTUPINFOW {
+                DWORD cb;
+                LPWSTR lpReserved;
+                LPWSTR lpDesktop;
+                LPWSTR lpTitle;
+                DWORD dwX;
+                DWORD dwY;
+                DWORD dwXSize;
+                DWORD dwYSize;
+                DWORD dwXCountChars;
+                DWORD dwYCountChars;
+                DWORD dwFillAttribute;
+                DWORD dwFlags;
+                WORD wShowWindow;
+                WORD cbReserved2;
+                BYTE *lpReserved2;
+                HANDLE hStdInput;
+                HANDLE hStdOutput;
+                HANDLE hStdError;
+            } STARTUPINFOW;
+
+            typedef struct _PROCESS_INFORMATION {
+                HANDLE hProcess;
+                HANDLE hThread;
+                DWORD dwProcessId;
+                DWORD dwThreadId;
+            } PROCESS_INFORMATION;
+
+            BOOL CreateProcessW(
+                LPCWSTR lpApplicationName,
+                LPWSTR lpCommandLine,
+                LPVOID lpProcessAttributes,
+                LPVOID lpThreadAttributes,
+                BOOL bInheritHandles,
+                DWORD dwCreationFlags,
+                LPVOID lpEnvironment,
+                LPCWSTR lpCurrentDirectory,
+                STARTUPINFOW *lpStartupInfo,
+                PROCESS_INFORMATION *lpProcessInformation
+            );
+
+            DWORD WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds);
+            BOOL GetExitCodeProcess(HANDLE hProcess, DWORD *lpExitCode);
+            BOOL CloseHandle(HANDLE hObject);
+            DWORD GetLastError(void);
+            int MultiByteToWideChar(unsigned int CodePage, DWORD dwFlags,
+                                    const char *lpMultiByteStr, int cbMultiByte,
+                                    wchar_t *lpWideCharStr, int cchWideChar);
+        ]]
+
+        local function utf8ToWideBuffer(str)
+            local required = kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, nil, 0)
+            if required == 0 then
+                return nil
+            end
+            local buffer = ffi.new("wchar_t[?]", required)
+            if kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, buffer, required) == 0 then
+                return nil
+            end
+            return buffer
+        end
+
+        runHiddenWindowsCommand = function(command)
+            local comspec = os.getenv("COMSPEC") or "C:\\Windows\\System32\\cmd.exe"
+            local fullCommand = string.format('"%s" /c %s', comspec, command)
+            local cmdBuffer = utf8ToWideBuffer(fullCommand)
+            if not cmdBuffer then
+                return false, "command_encoding_failed"
+            end
+
+            local startupInfo = ffi.new("STARTUPINFOW")
+            startupInfo.cb = ffi.sizeof(startupInfo)
+            startupInfo.dwFlags = STARTF_USESHOWWINDOW
+            startupInfo.wShowWindow = 0 -- SW_HIDE
+
+            local processInfo = ffi.new("PROCESS_INFORMATION")
+            local created = kernel32.CreateProcessW(
+                nil,
+                cmdBuffer,
+                nil,
+                nil,
+                false,
+                CREATE_NO_WINDOW,
+                nil,
+                nil,
+                startupInfo,
+                processInfo
+            )
+
+            if created == 0 then
+                return false, kernel32.GetLastError()
+            end
+
+            kernel32.WaitForSingleObject(processInfo.hProcess, INFINITE)
+
+            local exitCodeArr = ffi.new("DWORD[1]", 0)
+            kernel32.GetExitCodeProcess(processInfo.hProcess, exitCodeArr)
+            kernel32.CloseHandle(processInfo.hProcess)
+            kernel32.CloseHandle(processInfo.hThread)
+
+            return exitCodeArr[0] == 0, exitCodeArr[0]
+        end
+    end
+end
+
+local function runShellCommand(command)
+    if IS_WINDOWS and type(runHiddenWindowsCommand) == "function" then
+        local ok, code = runHiddenWindowsCommand(command)
+        if not ok then
+            print(string.format("Command failed (%s): %s", tostring(code), command))
+        end
+        return ok == true
+    end
+
+    local res, how, code = os.execute(command)
+    if type(res) == "number" then
+        return res == 0
+    end
+    if res == true then
+        if how == "exit" then
+            return (code or 0) == 0
+        end
+        return true
+    end
+    return false
+end
 
 local function scriptDir()
     local source = debug.getinfo(1, "S").source
@@ -368,11 +340,17 @@ local function ensureDir(path)
     if bmd and bmd.fileexists and bmd.fileexists(path) then
         return true
     end
-    local sep = package.config:sub(1, 1)
-    if sep == "\\" then
-        os.execute(string.format('if not exist "%s" mkdir "%s"', path, path))
+    if IS_WINDOWS then
+        if not runShellCommand(string.format('if not exist "%s" mkdir "%s"', path, path)) then
+            print("Failed to create directory: " .. path)
+            return false
+        end
     else
-        os.execute("mkdir -p '" .. path:gsub("'", "'\\''") .. "'")
+        local escaped = path:gsub("'", "'\\''")
+        if not runShellCommand("mkdir -p '" .. escaped .. "'") then
+            print("Failed to create directory: " .. path)
+            return false
+        end
     end
     return true
 end
@@ -416,11 +394,15 @@ local function removeDir(path)
     if not path or path == "" then
         return
     end
-    local sep = package.config:sub(1, 1)
-    if sep == "\\" then
-        os.execute(string.format('rmdir /S /Q "%s"', path))
+    if IS_WINDOWS then
+        if not runShellCommand(string.format('rmdir /S /Q "%s"', path)) then
+            print("Failed to remove directory: " .. path)
+        end
     else
-        os.execute("rm -rf '" .. path:gsub("'", "'\\''") .. "'")
+        local escaped = path:gsub("'", "'\\''")
+        if not runShellCommand("rm -rf '" .. escaped .. "'") then
+            print("Failed to remove directory: " .. path)
+        end
     end
 end
 
@@ -553,15 +535,14 @@ local function openExternalUrl(url)
         end
         return
     end
-    local sep = package.config:sub(1, 1)
-    if sep == "\\" then
-        os.execute(string.format('start "" "%s"', url))
+    if IS_WINDOWS then
+        runShellCommand(string.format('start "" "%s"', url))
         return
     end
     local escaped = url:gsub("'", "'\\''")
-    local ok = os.execute("open '" .. escaped .. "'")
+    local ok = runShellCommand("open '" .. escaped .. "'")
     if not ok then
-        os.execute("xdg-open '" .. escaped .. "'")
+        runShellCommand("xdg-open '" .. escaped .. "'")
     end
 end
 
@@ -936,9 +917,10 @@ local win = disp:AddWindow({
             Weight = 1,
             ui:VGap(10),
             ui:HGroup{
-                Weight = 0.1,
+                Weight = 0,
                 ui:LineEdit{ ID = "FindInput", PlaceholderText = uiString("find_placeholder"), Weight = 1, Events = { TextChanged = true, EditingFinished = true } },
-                ui:Button{ ID = "FindButton", Text = uiString("find_button"), Weight = 0 },
+                ui:Button{ ID = "FindPreviousButton", Text = uiString("find_previous_button"), Weight = 0 },
+                ui:Button{ ID = "FindNextButton", Text = uiString("find_next_button"), Weight = 0 },
                 ui:LineEdit{ ID = "ReplaceInput", PlaceholderText = uiString("replace_placeholder"), Weight = 1 },
                 ui:Button{ ID = "AllReplaceButton", Text = uiString("all_replace_button"), Weight = 0 },
                 ui:Button{ ID = "SingleReplaceButton", Text = uiString("single_replace_button"), Weight = 0 },
@@ -950,9 +932,9 @@ local win = disp:AddWindow({
                 UniformRowHeights = false,
                 HorizontalScrollMode = true,
                 FrameStyle = 1,
-                ColumnCount = 4,
+                ColumnCount = 3,
                 SelectionMode = "SingleSelection",
-                Weight = 0.7,
+                Weight = 1,
             },
             ui:TextEdit{
                 ID = "SubtitleEditor",
@@ -961,15 +943,15 @@ local win = disp:AddWindow({
                 WordWrap = true,
             },
             ui:HGroup{
-                Weight = 0.1,
+                Weight = 0,
                 ui:Label{ ID = "StatusLabel", Text = "", Weight = 1, Alignment = { AlignHCenter = true, AlignVCenter = true } },
             },
             ui:HGroup{
-                Weight = 0.1,
+                Weight = 0,
                 ui:Button{ ID = "RefreshButton", Text = uiString("refresh_button"), Weight = 1 },
                 ui:Button{ ID = "UpdateSubtitleButton", Text = uiString("update_button"), Weight = 1 },
             },
-            ui:VGap(10),
+            ui:VGap(5),
             ui:Button{
                 ID = "DonationButton",
                 Text = uiString("donation"),
@@ -1040,7 +1022,7 @@ local function setRowHighlight(rowIndex, color)
         return
     end
     local targetColor = color or transparentColor
-    item.BackgroundColor[3] = targetColor
+    item.BackgroundColor[2] = targetColor
     if color then
         state.highlightedRows[rowIndex] = true
     else
@@ -1127,6 +1109,7 @@ local function clearAllFindHighlights()
         end
     end
     state.currentMatchHighlight = nil
+    state.currentMatchPos = nil
 end
 
 
@@ -1203,6 +1186,7 @@ local function refreshFindMatches()
 
     clearAllFindHighlights()
     state.findMatches, state.findIndex = nil, nil
+    state.currentMatchPos = nil
 
     if query == "" then
         updateStatus("enter_find_text")
@@ -1227,6 +1211,7 @@ local function refreshFindMatches()
         updateStatus("no_find_results")
         state.findMatches = {}
         state.findRows, state.findOcc = 0, 0
+        state.currentMatchPos = nil
         return false
     end
 
@@ -1244,7 +1229,7 @@ local function refreshFindMatches()
 
     state.findMatches = matches
     state.findRows, state.findOcc = rowsMatched, occTotal
-    state.findIndex = 1
+    state.currentMatchPos = nil
     updateStatus("matches_rows_occ", rowsMatched, occTotal)
     return true
 end
@@ -1268,21 +1253,44 @@ end
 local function gotoNextMatch()
     if not ensureFindMatches() then return nil end
     local matches = state.findMatches or {}
-    if #matches == 0 then
+    local count = #matches
+    if count == 0 then
         updateStatus("no_find_results")
         return nil
     end
-    local idx = state.findIndex or 1
-    if idx > #matches then idx = 1 end
+    local idx = (state.currentMatchPos or 0) + 1
+    if idx > count then idx = 1 end
+    state.currentMatchPos = idx
     local entryIndex = matches[idx]
-    state.findIndex = (idx % #matches) + 1
 
     clearFindHighlights(true)
     jumpToEntry(entryIndex, true)
 
     setRowHighlight(entryIndex, findHighlightColor)
     state.currentMatchHighlight = entryIndex
-    updateStatus("match_progress", idx, #matches)
+    updateStatus("match_progress", idx, count)
+    return entryIndex
+end
+
+local function gotoPreviousMatch()
+    if not ensureFindMatches() then return nil end
+    local matches = state.findMatches or {}
+    local count = #matches
+    if count == 0 then
+        updateStatus("no_find_results")
+        return nil
+    end
+    local idx = (state.currentMatchPos or 1) - 1
+    if idx < 1 then idx = count end
+    state.currentMatchPos = idx
+    local entryIndex = matches[idx]
+
+    clearFindHighlights(true)
+    jumpToEntry(entryIndex, true)
+
+    setRowHighlight(entryIndex, findHighlightColor)
+    state.currentMatchHighlight = entryIndex
+    updateStatus("match_progress", idx, count)
     return entryIndex
 end
 
@@ -1320,8 +1328,11 @@ local function applyLanguage(lang)
 
     updateTabBarTexts()
 
-    if it.FindButton then
-        it.FindButton.Text = uiString("find_button")
+    if it.FindNextButton then
+        it.FindNextButton.Text = uiString("find_next_button")
+    end
+    if it.FindPreviousButton then
+        it.FindPreviousButton.Text = uiString("find_previous_button")
     end
     if it.AllReplaceButton then
         it.AllReplaceButton.Text = uiString("all_replace_button")
@@ -1354,8 +1365,8 @@ local function applyLanguage(lang)
     if tree then
         tree:SetHeaderLabels(currentHeaders())
         tree.ColumnWidth[0] = 50
-        tree.ColumnWidth[1] = 50
-        tree.ColumnWidth[2] = 50
+        tree.ColumnWidth[1] = 110
+        tree.ColumnWidth[2] = 360
     end
 
     local args = state.lastStatusArgs or {}
@@ -1385,12 +1396,14 @@ local function clearHighlights()
     state.currentMatchHighlight = nil
     state.stickyHighlights = {}   -- ✅ 新增：完全清屏时重置粘性集合
     state.highlightedRows = {}
+    state.currentMatchPos = nil
 end
 
 local function populateTree(suppressStatus)
     state.selectedIndex = nil
     state.findMatches = nil
     state.findIndex = nil
+    state.currentMatchPos = nil
     state.currentMatchHighlight = nil
     state.stickyHighlights = {}
     state.highlightedRows = {}
@@ -1401,14 +1414,15 @@ local function populateTree(suppressStatus)
             tree:Clear()
             tree:SetHeaderLabels(currentHeaders())
             tree.ColumnWidth[0] = 50
-            tree.ColumnWidth[1] = 50
-            tree.ColumnWidth[2] = 50
+            tree.ColumnWidth[1] = 110
+            tree.ColumnWidth[2] = 360
             for index, entry in ipairs(state.entries) do
                 local item = tree:NewItem()
                 item.Text[0] = tostring(index)
-                item.Text[1] = entry.startText or framesToTimecode(entry.startFrame, state.fps)
-                item.Text[2] = entry.endText or framesToTimecode(entry.endFrame, state.fps)
-                item.Text[3] = entry.text or ""
+                local startDisplay = entry.startText or framesToTimecode(entry.startFrame, state.fps) or ""
+                local endDisplay = entry.endText or framesToTimecode(entry.endFrame, state.fps) or ""
+                item.Text[1] = string.format("▸ %s\n◂ %s", startDisplay, endDisplay)
+                item.Text[2] = entry.text or ""
                 tree:AddTopLevelItem(item)
             end
         end)
@@ -1433,6 +1447,7 @@ local function refreshFromTimeline()
         state.stickyHighlights = {}
         state.findMatches = nil
         state.findIndex = nil
+        state.currentMatchPos = nil
         state.currentMatchHighlight = nil
         setEditorText("")
         return false
@@ -1460,7 +1475,7 @@ local function applyReplace()
             replaced = replaced + changes
             local item = tree:TopLevelItem(index - 1)
             if item then
-                item.Text[3] = newText
+                item.Text[2] = newText
             end
             setRowHighlight(index, findHighlightColor)
             if state.selectedIndex == index then
@@ -1475,6 +1490,7 @@ local function applyReplace()
     end
     state.findMatches = nil
     state.findIndex = nil
+    state.currentMatchPos = nil
 end
 
 local function replaceSingle()
@@ -1517,7 +1533,7 @@ local function replaceSingle()
     entry.text = newText
     local item = tree:TopLevelItem(index - 1)
     if item then
-        item.Text[3] = newText
+        item.Text[2] = newText
     end
     setRowHighlight(index, findHighlightColor)
     setEditorText(newText)
@@ -1541,8 +1557,7 @@ local function replaceSingle()
         end
         if i == #updatedMatches then nextIdx = 1 end
     end
-    state.findIndex = nextIdx
-    --gotoNextMatch()
+    state.currentMatchPos = nextIdx - 1
 end
 
 
@@ -1594,6 +1609,7 @@ function win.On.FindInput.TextChanged(ev)
     clearAllFindHighlights()      -- ← 改成清全表
     state.findMatches = nil
     state.findIndex = nil
+    state.currentMatchPos = nil
     state.stickyHighlights = {} 
     state.findQuery = it.FindInput.Text or ""
 end
@@ -1605,8 +1621,12 @@ function win.On.FindInput.EditingFinished(ev)
 end
 
 
-function win.On.FindButton.Clicked(ev)
+function win.On.FindNextButton.Clicked(ev)
     gotoNextMatch()
+end
+
+function win.On.FindPreviousButton.Clicked(ev)
+    gotoPreviousMatch()
 end
 
 function win.On.AllReplaceButton.Clicked(ev)
@@ -1621,6 +1641,7 @@ function win.On.RefreshButton.Clicked(ev)
     clearHighlights()
     state.findMatches = nil
     state.findIndex = nil
+    state.currentMatchPos = nil
     refreshFromTimeline()
 end
 
@@ -1663,7 +1684,7 @@ function win.On.SubtitleEditor.TextChanged(ev)
     entry.text = newText
     local item = tree:TopLevelItem(index - 1)
     if item then
-        item.Text[3] = newText
+        item.Text[2] = newText
     end
 end
 
@@ -1697,5 +1718,4 @@ applyLanguage(state.language)
 refreshFromTimeline()
 win:Show()
 disp:RunLoop()
-
 win:Hide()
