@@ -2,7 +2,7 @@
 SCRIPT_NAME = "DaVinci TTS"
 SCRIPT_VERSION = " 3.5"
 SCRIPT_AUTHOR = "HEIBA"
-
+print(f"{SCRIPT_NAME} | {SCRIPT_VERSION.strip()} | {SCRIPT_AUTHOR}")
 SCREEN_WIDTH = 1920
 SCREEN_HEIGHT = 1080
 WINDOW_WIDTH = 800
@@ -241,7 +241,7 @@ SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS
 
 
 class SupabaseClient:
-    def __init__(self, *, base_url: str, anon_key: str, default_timeout: int = 10):
+    def __init__(self, *, base_url: str, anon_key: str, default_timeout: int = 5):
         self.base_url = base_url.rstrip("/")
         self.anon_key = anon_key
         self.default_timeout = default_timeout
@@ -386,10 +386,7 @@ def _check_for_updates():
             messages.append(text)
 
     readable_current = current_version or "未知"
-    version_line = (
-        f"Update available: {latest_version} (current: {readable_current})\n"
-        "Please download the latest version from your purchase page."
-    )
+    version_line = f"Update: {readable_current} → {latest_version}\nDownload on your purchase page."
     messages.append(version_line)
     notice_text = "\n".join(messages).strip()
 
