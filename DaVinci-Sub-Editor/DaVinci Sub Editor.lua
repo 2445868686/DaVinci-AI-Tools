@@ -1,16 +1,42 @@
--- SubtitleFindReplace.lua
--- 获取当前时间线字幕，在界面中支持查找和替换，然后回写到时间线
 
 local SCRIPT_NAME = "DaVinci Sub Editor"
-local SCRIPT_VERSION = "1.0.4"
+local SCRIPT_VERSION = "1.0.5"
 local SCRIPT_AUTHOR = "HEIBA"
 print(string.format("%s | %s | %s", SCRIPT_NAME, SCRIPT_VERSION, SCRIPT_AUTHOR))
 local SCRIPT_KOFI_URL = "https://ko-fi.com/heiba"
 local SCRIPT_BILIBILI_URL = "https://space.bilibili.com/385619394"
 local SCRIPT_PAYPAL_URL ="https://paypal.me/heibashop"
 
+local App = {
+    Utils = {},
+    Storage = {},
+    Services = {
+        Azure = {},
+        OpenAIFormat = {},
+        GLM = {},
+        Parallel = {},
+    },
+    Subtitle = {},
+    Translate = {},
+    UI = {
+        Events = {},
+        Windows = {},
+    },
+    Cache = {},
+}
+
+local Utils = App.Utils
+local Storage = App.Storage
+local Services = App.Services
+local Subtitle = App.Subtitle
+local Translate = App.Translate
+local UI = App.UI
+local Azure = Services.Azure
+local OpenAIService = Services.OpenAIFormat
+local GLMService = Services.GLM
+local ParallelServices = Services.Parallel
 local SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
-local WINDOW_WIDTH, WINDOW_HEIGHT = 600, 500
+local WINDOW_WIDTH, WINDOW_HEIGHT = 550, 600
 local X_CENTER = math.floor((SCREEN_WIDTH - WINDOW_WIDTH ) / 2)
 local Y_CENTER = math.floor((SCREEN_HEIGHT - WINDOW_HEIGHT) / 2)
 local LOADING_WINDOW_WIDTH, LOADING_WINDOW_HEIGHT = 220, 120
@@ -32,10 +58,130 @@ if not fusion then
     return
 end
 
+function Utils.deepCopy(value)
+    if type(value) ~= "table" then
+        return value
+    end
+    local copy = {}
+    for k, v in pairs(value) do
+        copy[k] = Utils.deepCopy(v)
+    end
+    return copy
+end
+
 local ui = fusion.UIManager
 local disp = bmd.UIDispatcher(ui)
 local json = require('dkjson')
-local state = {
+
+local TRANSLATE_PROVIDER_AZURE_LABEL = "Microsoft"
+local TRANSLATE_PROVIDER_GL_LABEL = "GLM-4-Flash       ( Free AI  )"
+local TRANSLATE_PROVIDER_OPENAI_LABEL = "OpenAI Format  ( API Key )"
+local TRANSLATE_PROVIDER_LIST = {
+    TRANSLATE_PROVIDER_AZURE_LABEL,
+    TRANSLATE_PROVIDER_GL_LABEL,
+    TRANSLATE_PROVIDER_OPENAI_LABEL,
+}
+function Translate.isSupportedProvider(label)
+    for _, value in ipairs(TRANSLATE_PROVIDER_LIST) do
+        if value == label then
+            return true
+        end
+    end
+    return false
+end
+local DEFAULT_TRANSLATE_CONCURRENCY = 5
+local TRANSLATE_CONCURRENCY_OPTIONS = {
+    { labelKey = "concurrency_option_low", value = 1 },
+    { labelKey = "concurrency_option_standard", value = 5 },
+    { labelKey = "concurrency_option_high", value = 15 },
+}
+local TRANSLATE_CONTEXT_WINDOW = 1
+local AZURE_DEFAULT_BASE_URL = "https://api.cognitive.microsofttranslator.com"
+local AZURE_DEFAULT_REGION = ""
+local AZURE_FALLBACK_REGION = "eastus"
+local AZURE_TIMEOUT = 15
+local AZURE_REGISTER_URL = "https://azure.microsoft.com/"
+local GLM_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+local GLM_MODEL = "GLM-4-Flash"
+local GLM_MAX_RETRY = 3
+local GLM_TIMEOUT = 30
+local AZURE_SUPABASE_PROVIDER = "AZURE"
+local GLM_SUPABASE_PROVIDER = "BIGMODEL"
+local OPENAI_FORMAT_DEFAULT_BASE_URL = "https://api.openai.com"
+local OPENAI_FORMAT_DEFAULT_TEMPERATURE = 0.3
+local OPENAI_FORMAT_TIMEOUT = 30
+local DEFAULT_OPENAI_MODELS = {}
+
+local TRANSLATE_PREFIX_PROMPT = [[
+You are a professional {target_lang} subtitle translation engine.
+Task: Translate ONLY the sentence shown after the tag <<< Sentence >>> into {target_lang}.
+---
+]]
+
+local TRANSLATE_SYSTEM_PROMPT = [[Strict rules you MUST follow:
+
+1. Keep every proper noun, personal name, brand, product name, code snippet, file path, URL, and any other non-translatable element EXACTLY as it appears. Do NOT transliterate or translate these.
+
+2. Follow subtitle style: short, concise, natural, and easy to read.
+
+3. Output ONLY the translated sentence. No tags, no explanations, no extra spaces.
+]]
+
+local TRANSLATE_SUFFIX_PROMPT = [[
+---
+Note:
+- The messages with role=assistant are only CONTEXT; do NOT translate them or include them in your output.
+- Translate ONLY the line after <<< Sentence >>>
+]]
+
+local OPENAI_DEFAULT_SYSTEM_PROMPT = TRANSLATE_SYSTEM_PROMPT
+
+local LANG_CODE_MAP = {
+    ["中文（普通话）"] = "zh-Hans",
+    ["中文（粤语）"] = "yue",
+    ["English"] = "en",
+    ["Japanese"] = "ja",
+    ["Korean"] = "ko",
+    ["Spanish"] = "es",
+    ["Portuguese"] = "pt",
+    ["French"] = "fr",
+    ["Indonesian"] = "id",
+    ["German"] = "de",
+    ["Russian"] = "ru",
+    ["Italian"] = "it",
+    ["Arabic"] = "ar",
+    ["Turkish"] = "tr",
+    ["Ukrainian"] = "uk",
+    ["Vietnamese"] = "vi",
+    ["Uzbek"] = "uz",
+    ["Dutch"] = "nl",
+}
+
+local LANG_LABELS = {
+    "中文（普通话）",
+    "中文（粤语）",
+    "English",
+    "Japanese",
+    "Korean",
+    "Spanish",
+    "Portuguese",
+    "French",
+    "Indonesian",
+    "German",
+    "Russian",
+    "Italian",
+    "Arabic",
+    "Turkish",
+    "Ukrainian",
+    "Vietnamese",
+    "Uzbek",
+    "Dutch",
+}
+
+Translate.secretCache = {}
+
+
+App.State = {
     entries = {},
     fps = 24.0,
     startFrame = 0,
@@ -55,6 +201,35 @@ local state = {
     stickyHighlights = {},
     highlightedRows = {},
     updateInfo = nil,
+    translate = {
+        entries = {},
+        populated = false,
+        busy = false,
+        selectedIndex = nil,
+        provider = TRANSLATE_PROVIDER_AZURE_LABEL,
+        targetLabel = nil,
+        concurrency = DEFAULT_TRANSLATE_CONCURRENCY,
+        totalTokens = 0,
+        lastStatusKey = "idle",
+        lastStatusArgs = nil,
+    },
+}
+
+local state = App.State
+
+state.openaiFormat = {
+    baseUrl = OPENAI_FORMAT_DEFAULT_BASE_URL,
+    apiKey = "",
+    temperature = OPENAI_FORMAT_DEFAULT_TEMPERATURE,
+    models = Utils.deepCopy(DEFAULT_OPENAI_MODELS),
+    customModels = {},
+    selectedIndex = 1,
+    systemPrompt = OPENAI_DEFAULT_SYSTEM_PROMPT,
+}
+state.azure = {
+    apiKey = "",
+    region = AZURE_DEFAULT_REGION,
+    baseUrl = AZURE_DEFAULT_BASE_URL,
 }
 math.randomseed(os.time() + tonumber(tostring({}):sub(8), 16))
 state.sessionCode = string.format("%04X", math.random(0, 0xFFFF))
@@ -62,6 +237,7 @@ state.sessionCode = string.format("%04X", math.random(0, 0xFFFF))
 local findHighlightColor = { R = 0.40, G = 0.40, B = 0.40, A = 0.60 } -- 查找命中 / 替换后标记
 local transparentColor = { R = 0.0, G = 0.0, B = 0.0, A = 0.0 } -- 透明，真正清空
 local editorProgrammatic = false
+local translateEditorProgrammatic = false
 local languageProgrammatic = false
 local unpack = table.unpack or unpack
 local configDir
@@ -73,17 +249,63 @@ local uiText = {
         find_previous_button = "上一个",
         all_replace_button = "全部替换",
         single_replace_button = "替换",
-        refresh_button = "加载当前字幕",
-        update_button = "更新当前字幕",
+        refresh_button = "加载时间线字幕",
+        update_button = "更新时间线字幕",
         find_placeholder = "查找文本",
         replace_placeholder = "替换文本",
         editor_placeholder = "在此编辑选中的字幕",
         tree_headers = { "#", "开始/结束", "字幕" },
+        translate_tree_headers = { "#", "开始/结束", "字幕", "翻译" },
         lang_cn = "简体中文",
         lang_en = "EN",
-        tabs = { "字幕编辑", "设置" },
+        tabs = { "编辑", "翻译", "设置" },
         donation = "☕用一杯咖啡为创意充电☕",
-        copyright = " © 2025, 版权所有 " .. SCRIPT_AUTHOR
+        copyright = " © 2025, 版权所有 " .. SCRIPT_AUTHOR,
+        translate_provider_label = "服务商",
+        translate_target_label = "目标语言",
+        translate_provider_placeholder = "选择服务商",
+        translate_target_placeholder = "选择目标语言",
+        translate_trans_button = "开始翻译",
+        translate_update_button = "译文导入时间线",
+        translate_selected_button = "翻译选中行",
+        translate_editor_placeholder = "在此编辑译文内容",
+        openai_config_label = "OpenAI Format",
+        openai_config_button = "配置",
+        azure_config_label = "Azure API",
+        azure_config_button = "配置",
+        azure_config_window_title = "Azure API",
+        azure_config_header = "填写 Azure API 信息",
+        azure_region_label = "区域",
+        azure_api_key_label = "密钥",
+        azure_confirm_button = "确定",
+        azure_register_button = "注册",
+        concurrency_label = "模式",
+        concurrency_option_low = "低速",
+        concurrency_option_standard = "标准",
+        concurrency_option_high = "高速",
+        openai_config_window_title = "AI Translator API",
+        openai_config_header = "填写AI Translator 信息",
+        openai_model_label = "模型",
+        openai_model_name_label = "模型名称",
+        openai_base_url_label = "* Base URL",
+        openai_api_key_label = "* API Key",
+        openai_temperature_label = "温度",
+        system_prompt_label = "* 系统提示词",
+        openai_verify_button = "验证",
+        openai_add_button = "新增模型",
+        openai_delete_button = "删除模型",
+        openai_close_button = "关闭",
+        openai_new_model_display_label = "* 显示名称",
+        openai_new_model_name_label = "* 模型 ID",
+        openai_add_model_title = "添加 OpenAI 兼容模型",
+        openai_status_ready = "",
+        openai_delete_builtin_warning = "系统默认模型不可删除",
+        openai_verify_success = "模型验证成功",
+        openai_verify_failed = "模型验证失败：%s",
+        openai_add_success = "模型已添加",
+        openai_add_duplicate = "模型已存在",
+        openai_missing_fields = "请填写全部必填项",
+        openai_delete_success = "模型已删除",
     },
     en = {
         find_next_button = "Next",
@@ -96,11 +318,57 @@ local uiText = {
         replace_placeholder = "Replace with",
         editor_placeholder = "Edit selected subtitle here",
         tree_headers = { "#", "Start/End", "Subtitle" },
+        translate_tree_headers = { "#", "Start/End", "Original", "Translation" },
         lang_cn = "简体中文",
         lang_en = "EN",
-        tabs = { "Subtitle Editing", "Settings" },
+        tabs = { "Edit", "Translate", "Settings" },
         donation = "☕ Fuel creativity with a coffee ☕",
-        copyright = " © 2025, copyright by " .. SCRIPT_AUTHOR
+        copyright = " © 2025, copyright by " .. SCRIPT_AUTHOR,
+        translate_provider_label = "Provider",
+        translate_target_label = "To",
+        translate_provider_placeholder = "Select provider",
+        translate_target_placeholder = "Select target language",
+        translate_trans_button = "Translate",
+        translate_update_button = "Import Translation to Timeline",
+        translate_selected_button = "Translate Selected",
+        translate_editor_placeholder = "Edit translation here",
+        openai_config_label = "OpenAI Format",
+        openai_config_button = "Config",
+        azure_config_label = "Azure API",
+        azure_config_button = "Config",
+        azure_config_window_title = "Azure API",
+        azure_config_header = "Azure API",
+        azure_region_label = "Region",
+        azure_api_key_label = "Key",
+        azure_confirm_button = "OK",
+        azure_register_button = "Register",
+        concurrency_label = "Mode",
+        concurrency_option_low = "Low",
+        concurrency_option_standard = "Medium",
+        concurrency_option_high = "High",
+        openai_config_window_title = "AI Translator API",
+        openai_config_header = "Fill AI Translator Info",
+        openai_model_label = "Model",
+        openai_model_name_label = "Model ID",
+        openai_base_url_label = "* Base URL",
+        openai_api_key_label = "* API Key",
+        openai_temperature_label = "* Temperature",
+        system_prompt_label = "* System Prompt",
+        openai_verify_button = "Verify",
+        openai_add_button = "Add Model",
+        openai_delete_button = "Delete Model",
+        openai_close_button = "Close",
+        openai_new_model_display_label = "* Display Name",
+        openai_new_model_name_label = "* Model Name",
+        openai_add_model_title = "Add OpenAI Format Model",
+        openai_status_ready = "",
+        openai_delete_builtin_warning = "Built-in models cannot be removed",
+        openai_verify_success = "Model verified successfully",
+        openai_verify_failed = "Model verification failed: %s",
+        openai_add_success = "Model added",
+        openai_add_duplicate = "Model already exists",
+        openai_missing_fields = "Fill in all required fields",
+        openai_delete_success = "Model removed",
     }
 }
 
@@ -128,20 +396,48 @@ local messages = {
 
 }
 
-local runHiddenWindowsCommand, runShellCommand
+local translateStatusTemplates = {
+    idle = { cn = "等待翻译任务", en = "Ready to translate" },
+    copying = { cn = "正在复制字幕...", en = "Copying subtitles..." },
+    no_entries = { cn = "没有可翻译的字幕", en = "No subtitles to translate" },
+    fetching_key = { cn = "正在获取翻译密钥...", en = "Fetching translator credential..." },
+    progress = { cn = "翻译中 %d/%d  令牌:%d", en = "Translating %d/%d  Tokens:%d" },
+    success = { cn = "翻译完成，共 %d 条字幕。令牌:%d", en = "Translation finished: %d lines. Tokens:%d" },
+    failed = { cn = "翻译失败：%s", en = "Translation failed: %s" },
+    updating = { cn = "正在生成并导入 SRT...", en = "Generating and importing SRT..." },
+    updated = { cn = "译文已导入时间线", en = "Translated subtitles imported" },
+}
+
+local translateErrorMessages = {
+    missing_key = { cn = "无法获取服务密钥，请稍后重试", en = "Unable to fetch service credential. Please try again later." },
+    request_failed = { cn = "网络请求失败，请检查网络", en = "Network request failed. Please check your connection." },
+    decode_failed = { cn = "服务响应解析失败", en = "Failed to decode service response." },
+    translation_failed = { cn = "翻译失败，请稍后重试", en = "Translation failed. Please try again." },
+    empty_translation = { cn = "服务返回空结果", en = "The service returned an empty result." },
+    provider_not_supported = { cn = "当前服务商暂不支持", en = "The selected provider is not supported yet." },
+    no_timeline = { cn = "未找到有效的时间线", en = "No active timeline available." },
+    invalid_response = { cn = "服务响应内容无效", en = "Service returned an invalid payload." },
+    no_selection = { cn = "请先在列表中选择需要翻译的行", en = "Select a row to translate first." },
+    openai_missing_key = { cn = "请在设置中填写 OpenAI API Key", en = "Enter the OpenAI API key in settings." },
+    openai_missing_base = { cn = "请在设置中填写 OpenAI Base URL", en = "Enter the OpenAI Base URL in settings." },
+    openai_missing_model = { cn = "请选择有效的 OpenAI 模型", en = "Select a valid OpenAI model." },
+    openai_parallel_failed = { cn = "并发请求失败，已退回串行模式", en = "Parallel requests failed; falling back to sequential mode." },
+}
+
+
 
 local SUPABASE_URL = "https://tbjlsielfxmkxldzmokc.supabase.co"
 local SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRiamxzaWVsZnhta3hsZHptb2tjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgxMDc3MDIsImV4cCI6MjA3MzY4MzcwMn0.FTgYJJ-GlMcQKOSWu63TufD6Q_5qC_M4cvcd3zpcFJo"
 local SUPABASE_TIMEOUT = 5
 
-local function trim(s)
+function Utils.trim(s)
     if type(s) ~= "string" then
         return ""
     end
     return (s:gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
-local function urlEncode(str)
+function Utils.urlEncode(str)
     if not str then
         return ""
     end
@@ -150,7 +446,130 @@ local function urlEncode(str)
     end)
 end
 
-local httpClient = {}
+Services.HttpClient = Services.HttpClient or {}
+local httpClient = Services.HttpClient
+
+function Storage.sanitizeOpenAIModelEntry(entry)
+    if type(entry) ~= "table" then
+        return nil
+    end
+    local name = Utils.trim(entry.name or entry.model or "")
+    if name == "" then
+        return nil
+    end
+    local display = Utils.trim(entry.display or entry.title or entry.label or name)
+    local cleaned = {
+        name = name,
+        display = display ~= "" and display or name,
+        builtin = entry.builtin == true,
+    }
+    return cleaned
+end
+
+function Storage.sortModelList(list)
+    table.sort(list, function(a, b)
+        local ad = a.display or a.name or ""
+        local bd = b.display or b.name or ""
+        if (a.builtin and not b.builtin) then
+            return true
+        end
+        if (b.builtin and not a.builtin) then
+            return false
+        end
+        if ad == bd then
+            return (a.name or "") < (b.name or "")
+        end
+        return ad < bd
+    end)
+end
+
+function Storage.ensureOpenAIModelList(config)
+    if type(config) ~= "table" then
+        return
+    end
+    local models = {}
+    local indexByName = {}
+
+    local function append(entry, builtinFlag)
+        local sanitized = Storage.sanitizeOpenAIModelEntry(entry)
+        if not sanitized then
+            return
+        end
+        if indexByName[sanitized.name] then
+            return
+        end
+        sanitized.builtin = builtinFlag or sanitized.builtin == true
+        table.insert(models, sanitized)
+        indexByName[sanitized.name] = sanitized
+    end
+
+    for _, entry in ipairs(DEFAULT_OPENAI_MODELS or {}) do
+        append(entry, true)
+    end
+    if type(config.customModels) == "table" then
+        for _, entry in ipairs(config.customModels) do
+            append(entry, false)
+        end
+    end
+    if type(config.models) == "table" then
+        for _, entry in ipairs(config.models) do
+            append(entry, entry.builtin)
+        end
+    end
+
+    Storage.sortModelList(models)
+    config.models = models
+    if type(config.selectedIndex) ~= "number" or config.selectedIndex < 1 or config.selectedIndex > #models then
+        config.selectedIndex = (#models > 0) and 1 or nil
+    end
+end
+
+function Storage.getOpenAISelectedModel(config)
+    if type(config) ~= "table" then
+        return nil
+    end
+    Storage.ensureOpenAIModelList(config)
+    if type(config.selectedIndex) ~= "number" then
+        return nil
+    end
+    return config.models and config.models[config.selectedIndex]
+end
+
+function Storage.serializeOpenAIConfig(config)
+    if type(config) ~= "table" then
+        return nil
+    end
+    Storage.ensureOpenAIModelList(config)
+    local payload = {
+        baseUrl = Utils.trim(config.baseUrl or ""),
+        apiKey = config.apiKey or "",
+        temperature = tonumber(config.temperature) or OPENAI_FORMAT_DEFAULT_TEMPERATURE,
+        selectedIndex = config.selectedIndex or 1,
+        systemPrompt = config.systemPrompt or OPENAI_DEFAULT_SYSTEM_PROMPT,
+        models = {},
+    }
+    if type(config.models) == "table" then
+        for _, entry in ipairs(config.models) do
+            table.insert(payload.models, {
+                name = entry.name,
+                display = entry.display,
+                builtin = entry.builtin == true,
+            })
+        end
+    end
+    if type(config.customModels) == "table" then
+        payload.customModels = {}
+        for _, entry in ipairs(config.customModels) do
+            table.insert(payload.customModels, {
+                name = entry.name,
+                display = entry.display,
+            })
+        end
+    end
+    return payload
+end
+
+Storage.ensureOpenAIModelList(state.openaiFormat)
 
 do
     local okHttps, https = pcall(require, "ssl.https")
@@ -181,12 +600,40 @@ do
                 local body = table.concat(sinkTable)
                 local code = tonumber(statusCode) or tonumber(respHeaders and respHeaders.status) or statusCode
                 return body, code
+            end,
+            postJson = function(url, payload, headers, timeout)
+                local sinkTable = {}
+                local requestHeaders = {}
+                if headers then
+                    for k, v in pairs(headers) do
+                        requestHeaders[k] = v
+                    end
+                end
+                local bodyStr = payload or ""
+                requestHeaders["content-type"] = "application/json"
+                requestHeaders["content-length"] = tostring(#bodyStr)
+                local ok, statusCode, respHeaders, statusLine = https.request({
+                    url = url,
+                    method = "POST",
+                    headers = requestHeaders,
+                    source = ltn12.source.string(bodyStr),
+                    sink = ltn12.sink.table(sinkTable),
+                    protocol = "tlsv1_2",
+                    verify = "none",
+                    timeout = timeout or SUPABASE_TIMEOUT,
+                })
+                if not ok then
+                    return nil, statusCode or statusLine or "request_failed"
+                end
+                local body = table.concat(sinkTable)
+                local code = tonumber(statusCode) or tonumber(respHeaders and respHeaders.status) or statusCode
+                return body, code
             end
         }
     end
 end
 
-local function httpGet(url, headers, timeout)
+function Services.httpGet(url, headers, timeout)
     if httpClient.https then
         local body, code = httpClient.https.get(url, headers, timeout)
         if body then
@@ -253,18 +700,120 @@ local function httpGet(url, headers, timeout)
     return body, nil
 end
 
-local function supabaseCheckUpdate(pluginId)
+function Services.httpPostJson(url, payload, headers, timeout)
+    local bodyStr = payload or ""
+    if httpClient.https and httpClient.https.postJson then
+        local body, code = httpClient.https.postJson(url, bodyStr, headers, timeout)
+        if body then
+            return body, code
+        end
+    end
+
+    local headerParts = {}
+    local hasContentType = false
+    if headers then
+        for k, v in pairs(headers) do
+            local cleanValue = tostring(v):gsub('"', '\\"')
+            table.insert(headerParts, string.format('-H "%s: %s"', k, cleanValue))
+            if not hasContentType and type(k) == "string" and k:lower() == "content-type" then
+                hasContentType = true
+            end
+        end
+    end
+    if not hasContentType then
+        table.insert(headerParts, '-H "Content-Type: application/json"')
+    end
+
+    local maxTime = timeout or SUPABASE_TIMEOUT
+    local sep = package.config:sub(1, 1)
+
+    local tempPayload = os.tmpname()
+    if not tempPayload then
+        return nil, "tmpname_failed"
+    end
+    if sep == "\\" and tempPayload:sub(1, 1) == "\\" then
+        local tempDir = os.getenv("TEMP") or os.getenv("TMP") or "."
+        local needsSep = tempDir:match('[\\/]$') and "" or "\\"
+        tempPayload = tempDir .. needsSep .. tempPayload:sub(2)
+    end
+
+    local payloadFile, err = io.open(tempPayload, "wb")
+    if not payloadFile then
+        return nil, "payload_tmp_open_failed: " .. tostring(err)
+    end
+    payloadFile:write(bodyStr)
+    payloadFile:close()
+
+    if sep == "\\" then
+        tempPayload = tempPayload:gsub('/', '\\')
+        local outputPath = os.tmpname()
+        if outputPath:sub(1, 1) == "\\" then
+            local tempDir = os.getenv("TEMP") or os.getenv("TMP") or "."
+            local needsSep = tempDir:match('[\\/]$') and "" or "\\"
+            outputPath = tempDir .. needsSep .. outputPath:sub(2)
+        end
+        outputPath = outputPath:gsub('/', '\\')
+
+        local curlCommand = string.format(
+            'curl -sS -m %d -X POST %s --data-binary "@%s" "%s"',
+            maxTime,
+            table.concat(headerParts, " "),
+            tempPayload,
+            url
+        )
+        local redirected = string.format('%s > "%s" 2>nul', curlCommand, outputPath)
+        local ok = runShellCommand and runShellCommand(redirected)
+
+        local outputFile = io.open(outputPath, "rb")
+        local body = outputFile and outputFile:read("*a") or ""
+        if outputFile then
+            outputFile:close()
+        end
+        os.remove(outputPath)
+        os.remove(tempPayload)
+
+        if not ok then
+            return nil, "curl_hidden_failed"
+        end
+        if body == "" then
+            return nil, "empty_response"
+        end
+        return body, nil
+    else
+        local curlCommand = string.format(
+            'curl -sS -m %d -X POST %s --data-binary @%q "%s" 2>/dev/null',
+            maxTime,
+            table.concat(headerParts, " "),
+            tempPayload,
+            url
+        )
+        local pipe = io.popen(curlCommand, "r")
+        if not pipe then
+            os.remove(tempPayload)
+            return nil, "curl_popen_failed"
+        end
+        local body = pipe:read("*a") or ""
+        pipe:close()
+        os.remove(tempPayload)
+        if body == "" then
+            return nil, "empty_response"
+        end
+        return body, nil
+    end
+end
+
+function Services.supabaseCheckUpdate(pluginId)
     if not pluginId or pluginId == "" then
         return nil
     end
-    local url = string.format("%s/functions/v1/check_update?pid=%s", SUPABASE_URL, urlEncode(pluginId))
+    local url = string.format("%s/functions/v1/check_update?pid=%s", SUPABASE_URL, Utils.urlEncode(pluginId))
     local headers = {
         Authorization = "Bearer " .. SUPABASE_ANON_KEY,
         apikey = SUPABASE_ANON_KEY,
         ["Content-Type"] = "application/json",
         ["User-Agent"] = string.format("%s/%s", SCRIPT_NAME, SCRIPT_VERSION),
     }
-    local body, status = httpGet(url, headers, SUPABASE_TIMEOUT)
+    local body, status = Services.httpGet(url, headers, SUPABASE_TIMEOUT)
     if not body then
         if status then
             print(string.format("[Update] Supabase request failed: %s", tostring(status)))
@@ -285,7 +834,7 @@ local function supabaseCheckUpdate(pluginId)
     return decoded
 end
 
-local function runWithLoading(action)
+function UI.runWithLoading(action)
     if type(action) ~= "function" then
         return
     end
@@ -336,6 +885,10 @@ local function runWithLoading(action)
     end
     return result
 end
+------------------------------------------------------------------
+-- runShellCommand
+------------------------------------------------------------------
+local runHiddenWindowsCommand, runShellCommand
 
 local SEP = package.config:sub(1, 1)
 
@@ -469,7 +1022,7 @@ function runShellCommand(command)
     if IS_WINDOWS and type(runHiddenWindowsCommand) == "function" then
         local ok, code = runHiddenWindowsCommand(command)
         if not ok then
-            print(string.format("Command failed (%s): %s", tostring(code), command))
+            print(string.format("Command failed (%s)", tostring(code)))
         end
         return ok == true
     end
@@ -486,8 +1039,11 @@ function runShellCommand(command)
     end
     return false
 end
+------------------------------------------------------------------
+-- runShellCommand
+------------------------------------------------------------------
 
-local function scriptDir()
+function Utils.scriptDir()
     local source = debug.getinfo(1, "S").source
     if source:sub(1, 1) == "@" then
         source = source:sub(2)
@@ -499,7 +1055,7 @@ local function scriptDir()
     return source:match(pattern) or ""
 end
 
-local function joinPath(a, b)
+function Utils.joinPath(a, b)
     if a == "" then
         return b
     end
@@ -509,11 +1065,12 @@ local function joinPath(a, b)
     return a .. SEP .. b
 end
 
-local function getTempDir()
-    return joinPath(scriptDir(), "temp")
+function Utils.getTempDir()
+    return Utils.joinPath(Utils.scriptDir(), "temp")
 end
+
 -- 将时间线名称转为文件名安全格式
-local function sanitizeFilename(name)
+function Utils.sanitizeFilename(name)
     name = tostring(name or "timeline")
     name = name:gsub("[%c%z]", "")
     name = name:gsub("[/\\:%*%?%\"]", "_")
@@ -525,7 +1082,7 @@ local function sanitizeFilename(name)
 end
 
 -- 简易目录列举（跨平台）
-local function listFiles(dir)
+function Utils.listFiles(dir)
     local sep = package.config:sub(1,1)
     local cmd
     if sep == "\\" then
@@ -544,11 +1101,11 @@ local function listFiles(dir)
 end
 
 
-local function escapePattern(s)
+function Utils.escapePattern(s)
     return (s:gsub("(%W)","%%%1"))
 end
 
-local function ensureDir(path)
+function Utils.ensureDir(path)
     if path == "" then
         return true
     end
@@ -570,28 +1127,154 @@ local function ensureDir(path)
     return true
 end
 
-configDir = joinPath(scriptDir(), "config")
-ensureDir(configDir)
-settingsFile = joinPath(configDir, "subedit_settings.json")
+configDir = Utils.joinPath(Utils.scriptDir(), "config")
+Utils.ensureDir(configDir)
+settingsFile = Utils.joinPath(configDir, "subedit_settings.json")
 local storedSettings
+local modelsFile = Utils.joinPath(configDir, "models.json")
+local openAIModelStore = { builtin = {}, custom = {} }
+Storage.settingsKeyOrder = {
+    "TranslateProviderCombo",
+    "TranslateTargetCombo",
+    "TranslateConcurrencyCombo",
+    "AzureRegion",
+    "AzureApiKey",
+    "OpenAIFormatModelCombo",
+    "OpenAIFormatBaseURL",
+    "OpenAIFormatApiKey",
+    "OpenAIFormatTemperatureSpinBox",
+    "SystemPromptTxt",
+    "LangCnCheckBox",
+    "LangEnCheckBox",
+}
 
-local function nextSrtPathForTimeline(timeline)
-    local tempDir = getTempDir()
-    ensureDir(tempDir)
+function Utils.fileExists(path)
+    local f = io.open(path, "r")
+    if f then
+        f:close()
+        return true
+    end
+    return false
+end
+
+
+
+function Storage.refreshDefaultModelsFromStore()
+    DEFAULT_OPENAI_MODELS = {}
+    if type(openAIModelStore.builtin) ~= "table" then
+        openAIModelStore.builtin = {}
+    end
+    for display, info in pairs(openAIModelStore.builtin) do
+        table.insert(DEFAULT_OPENAI_MODELS, {
+            display = display,
+            name = (info and info.model) or display,
+            builtin = true,
+        })
+    end
+    Storage.sortModelList(DEFAULT_OPENAI_MODELS)
+end
+
+function Storage.rebuildCustomModelListFromStore()
+    state.openaiFormat.customModels = {}
+    for display, info in pairs(openAIModelStore.custom or {}) do
+        table.insert(state.openaiFormat.customModels, {
+            display = display,
+            name = (info and info.model) or display,
+            builtin = false,
+        })
+    end
+    Storage.sortModelList(state.openaiFormat.customModels)
+end
+
+function Storage.saveSettings(path, values, keyorder)
+    if not values then
+        return
+    end
+    Utils.ensureDir(configDir)
+    local file, err = io.open(path, "w")
+    if not file then
+        print(string.format("无法写入设置文件 %s: %s", tostring(path), tostring(err)))
+        return
+    end
+    
+    -- 使用 JSON 编码函数将表转换为字符串
+    local content
+    if type(keyorder) == "table" then
+        content = json.encode(values, { keyorder = keyorder })
+    else
+        content = json.encode(values)
+    end
+
+    file:write(content)
+    file:close()
+end
+
+function Storage.saveOpenAIModelStore()
+    Storage.saveSettings(modelsFile, {
+        models = openAIModelStore.builtin or {},
+        custom_models = openAIModelStore.custom or {},
+    })
+end
+
+function Storage.loadSettings(path)
+    local file = io.open(path, "r")
+    if not file then
+        return nil
+    end
+    local content = file:read("*a")
+    file:close()
+    if not content or content == "" then
+        return nil
+    end
+    
+    -- 使用 pcall 安全地调用 JSON 解码函数
+    local ok, settings_table = pcall(json.decode, content)
+    
+    -- 如果解码失败或返回的不是一个表，则认为配置无效
+    if not ok or type(settings_table) ~= "table" then
+        print("JSON settings decode failed. Using default.")
+        return nil
+    end
+
+    return settings_table
+end
+
+function Storage.loadOpenAIModelStore()
+    Utils.ensureDir(configDir)
+    if not Utils.fileExists(modelsFile) then
+        Storage.saveSettings(modelsFile, { models = {}, custom_models = {} })
+    end
+    local config = Storage.loadSettings(modelsFile)
+    if type(config) ~= "table" then
+        config = {}
+    end
+    openAIModelStore.builtin = config.models or openAIModelStore.builtin or {}
+    openAIModelStore.custom = config.custom_models or openAIModelStore.custom or {}
+    Storage.refreshDefaultModelsFromStore()
+    Storage.rebuildCustomModelListFromStore()
+    state.openaiFormat.models = Utils.deepCopy(DEFAULT_OPENAI_MODELS)
+    Storage.ensureOpenAIModelList(state.openaiFormat)
+end
+
+Storage.loadOpenAIModelStore()
+
+function Subtitle.nextSrtPathForTimeline(timeline)
+    local tempDir = Utils.getTempDir()
+    Utils.ensureDir(tempDir)
 
     local tlName = "timeline"
     if timeline and timeline.GetName then
         tlName = timeline:GetName() or tlName
     end
-    local safeName = sanitizeFilename(tlName)
+    local safeName = Utils.sanitizeFilename(tlName)
     local rand = state.sessionCode or "0000"
 
     local prefix = string.format("%s_subtitle_update_%s_", safeName, rand)
-    local files = listFiles(tempDir)
+    local files = Utils.listFiles(tempDir)
 
     -- 在 tempDir 中寻找相同前缀且后缀为数字的 .srt，取最大值
     local maxN = 0
-    local pat = "^" .. escapePattern(prefix) .. "(%d+)%.srt$"
+    local pat = "^" .. Utils.escapePattern(prefix) .. "(%d+)%.srt$"
     for _, f in ipairs(files) do
         local n = f:match(pat)
         if n then
@@ -602,10 +1285,10 @@ local function nextSrtPathForTimeline(timeline)
 
     local nextIdx = maxN + 1
     local filename = string.format("%s%03d.srt", prefix, nextIdx)
-    return joinPath(tempDir, filename)
+    return Utils.joinPath(tempDir, filename)
 end
 
-local function removeDir(path)
+function Utils.removeDir(path)
     if not path or path == "" then
         return
     end
@@ -624,7 +1307,7 @@ end
 -- ================= 新增功能函数区 开始 =================
 
 -- 纯 Lua Base64 解码函数
-local function base64_decode(data)
+function Utils.base64Decode(data)
     data = data:gsub("[^%w%+%/%=]", "")
     local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     local t = {}
@@ -650,8 +1333,8 @@ local function base64_decode(data)
 end
 
 -- 将 Base64 解码并写入临时文件
-local function createImageFromBase64(base64Data, destinationPath)
-    local ok, bytes = pcall(base64_decode, base64Data)
+function Utils.createImageFromBase64(base64Data, destinationPath)
+    local ok, bytes = pcall(Utils.base64Decode, base64Data)
     if not ok or not bytes then
         print("Base64 解码失败: " .. tostring(bytes))
         return false
@@ -669,12 +1352,12 @@ local function createImageFromBase64(base64Data, destinationPath)
 end
 
 -- 创建并显示赞赏窗口
-local function showDonationWindow()
-    local tempDir = getTempDir()
-    ensureDir(tempDir)
-    local tempImagePath = joinPath(tempDir, "donation_qr_" .. state.sessionCode .. ".png")
+function UI.showDonationWindow()
+    local tempDir = Utils.getTempDir()
+    Utils.ensureDir(tempDir)
+    local tempImagePath = Utils.joinPath(tempDir, "donation_qr_" .. state.sessionCode .. ".png")
 
-    local success = createImageFromBase64(DONATION_QR_BASE64, tempImagePath)
+    local success = Utils.createImageFromBase64(DONATION_QR_BASE64, tempImagePath)
     if not success then
         print("无法创建赞赏码图片，流程中止。")
         return
@@ -708,17 +1391,15 @@ local function showDonationWindow()
     donationWin:Show()
 end
 
--- ================= 新增功能函数区 结束 =================
-
-local function currentLanguage()
+function UI.currentLanguage()
     if state.language == "en" then
         return "en"
     end
     return "cn"
 end
 
-local function uiString(key)
-    local lang = currentLanguage()
+function UI.uiString(key)
+    local lang = UI.currentLanguage()
     local pack = uiText[lang]
     if pack and pack[key] ~= nil then
         return pack[key]
@@ -730,16 +1411,16 @@ local function uiString(key)
     return ""
 end
 
-local function messageString(key)
+function UI.messageString(key)
     local bucket = messages[key]
     if not bucket then
         return nil
     end
-    local lang = currentLanguage()
+    local lang = UI.currentLanguage()
     return bucket[lang] or bucket.cn
 end
 
-local function openExternalUrl(url)
+function Utils.openExternalUrl(url)
     if not url or url == "" then
         return
     end
@@ -761,63 +1442,137 @@ local function openExternalUrl(url)
     end
 end
 
-local function currentHeaders()
-    local lang = currentLanguage()
+function UI.currentHeaders()
+    local lang = UI.currentLanguage()
+   local pack = uiText[lang]
+   return (pack and pack.tree_headers) or uiText.cn.tree_headers
+end
+
+function UI.currentTranslateHeaders()
+    local lang = UI.currentLanguage()
     local pack = uiText[lang]
-    return (pack and pack.tree_headers) or uiText.cn.tree_headers
+    return (pack and pack.translate_tree_headers) or uiText.cn.translate_tree_headers
 end
 
-local function loadSettings(path)
-    local file = io.open(path, "r")
-    if not file then
-        return nil
+function Translate.getGoogleLangLabels()
+    local copy = {}
+    for idx, label in ipairs(LANG_LABELS) do
+        copy[idx] = label
     end
-    local content = file:read("*a")
-    file:close()
-    if not content or content == "" then
-        return nil
-    end
-    
-    -- 使用 pcall 安全地调用 JSON 解码函数
-    local ok, settings_table = pcall(json.decode, content)
-    
-    -- 如果解码失败或返回的不是一个表，则认为配置无效
-    if not ok or type(settings_table) ~= "table" then
-        print("JSON settings decode failed. Using default.")
-        return nil
-    end
-
-    return settings_table
+    return copy
 end
 
-local function saveSettings(path, values)
-    if not values then
-        return
-    end
-    ensureDir(configDir)
-    local file, err = io.open(path, "w")
-    if not file then
-        print(string.format("无法写入设置文件 %s: %s", tostring(path), tostring(err)))
-        return
-    end
-    
-    -- 使用 JSON 编码函数将表转换为字符串
-    local content = json.encode(values)
 
-    file:write(content)
-    file:close()
-end
 
-    storedSettings = loadSettings(settingsFile)
+
+    storedSettings = Storage.loadSettings(settingsFile)
 if storedSettings then
-    if storedSettings.lang_en then
+    if storedSettings.LangEnCheckBox == true  then
         state.language = "en"
-    elseif storedSettings.lang_cn then
+    elseif storedSettings.LangCnCheckBox == true  then
         state.language = "cn"
     end
-end
 
-local function parseFps(raw)
+    local provider = storedSettings.TranslateProviderCombo 
+    if type(provider) == "string" and Translate.isSupportedProvider(provider) then
+        state.translate.provider = provider
+    end
+
+    local targetLabel = storedSettings.TranslateTargetCombo 
+    if type(targetLabel) == "string" and targetLabel ~= "" then
+        state.translate.targetLabel = targetLabel
+    end
+
+    local concurrencyValue = tonumber(storedSettings.TranslateConcurrencyCombo)
+    if concurrencyValue and concurrencyValue >= 1 then
+        state.translate.concurrency = math.floor(concurrencyValue)
+    end
+
+    local azureKey = storedSettings.AzureApiKey
+    if type(azureKey) == "string" and Utils.trim(azureKey) ~= "" then
+        state.azure.apiKey = Utils.trim(azureKey)
+    end
+
+    local azureRegion = storedSettings.AzureRegion 
+    if type(azureRegion) == "string" and Utils.trim(azureRegion) ~= "" then
+        state.azure.region = Utils.trim(azureRegion)
+    end
+
+    local baseUrl = storedSettings.OpenAIFormatBaseURL
+    if type(baseUrl) == "string" then
+        baseUrl = Utils.trim(baseUrl)
+        if baseUrl ~= "" then
+            state.openaiFormat.baseUrl = baseUrl
+        end
+    end
+
+    local apiKey = storedSettings.OpenAIFormatApiKey
+    if type(apiKey) == "string" and apiKey ~= "" then
+        state.openaiFormat.apiKey = apiKey
+    end
+
+    local temperatureValue = tonumber(storedSettings.OpenAIFormatTemperatureSpinBox)
+    if temperatureValue then
+        state.openaiFormat.temperature = temperatureValue
+    end
+
+    local systemPrompt = storedSettings.SystemPromptTxt
+    if type(systemPrompt) == "string" and Utils.trim(systemPrompt) ~= "" then
+        state.openaiFormat.systemPrompt = systemPrompt 
+    end
+
+    local selectedDisplay = storedSettings.OpenAIFormatModelCombo
+    if type(selectedDisplay) == "string" and selectedDisplay ~= "" then
+        Storage.ensureOpenAIModelList(state.openaiFormat)
+        local models = state.openaiFormat.models or {}
+        for idx, entry in ipairs(models) do
+            if entry.display == selectedDisplay or entry.name == selectedDisplay then
+                state.openaiFormat.selectedIndex = idx
+                break
+            end
+        end
+    end
+
+    local openaiStored = storedSettings.openai_format or storedSettings.openaiFormat
+    if type(openaiStored) == "table" then
+        if openaiStored.baseUrl or openaiStored.base_url then
+            local legacyBase = Utils.trim(openaiStored.baseUrl or openaiStored.base_url or "")
+            if legacyBase ~= "" then
+                state.openaiFormat.baseUrl = legacyBase
+            end
+        end
+        if openaiStored.apiKey or openaiStored.api_key then
+            local legacyKey = openaiStored.apiKey or openaiStored.api_key
+            if type(legacyKey) == "string" and legacyKey ~= "" then
+                state.openaiFormat.apiKey = legacyKey
+            end
+        end
+        if openaiStored.temperature or openaiStored.temp then
+            local legacyTemp = tonumber(openaiStored.temperature or openaiStored.temp)
+            if legacyTemp then
+                state.openaiFormat.temperature = legacyTemp
+            end
+        end
+        if openaiStored.systemPrompt and type(openaiStored.systemPrompt) == "string" and Utils.trim(openaiStored.systemPrompt) ~= "" then
+            state.openaiFormat.systemPrompt = openaiStored.systemPrompt
+        end
+        if openaiStored.selectedIndex or openaiStored.selected_index then
+            local legacyIndex = tonumber(openaiStored.selectedIndex or openaiStored.selected_index)
+            if legacyIndex then
+                state.openaiFormat.selectedIndex = legacyIndex
+            end
+        end
+    end
+
+    Storage.ensureOpenAIModelList(state.openaiFormat)
+    Storage.saveOpenAIModelStore()
+end
+if not Translate.isSupportedProvider(state.translate.provider) then
+    state.translate.provider = TRANSLATE_PROVIDER_AZURE_LABEL
+end
+Storage.ensureOpenAIModelList(state.openaiFormat)
+
+function Subtitle.parseFps(raw)
     if not raw then
         return 24.0
     end
@@ -841,7 +1596,7 @@ local function parseFps(raw)
     return 24.0
 end
 
-local function framesToTimecode(frames, fps)
+function Subtitle.framesToTimecode(frames, fps)
     frames = math.floor(frames + 0.5)
     if fps <= 0 then
         fps = 24.0
@@ -857,7 +1612,7 @@ local function framesToTimecode(frames, fps)
     return string.format("%02d:%02d:%02d:%02d", hours, minutes, seconds, remainFrames)
 end
 
-local function framesToSrtTimestamp(frames, fps)
+function Subtitle.framesToSrtTimestamp(frames, fps)
     if fps <= 0 then
         fps = 24.0
     end
@@ -886,7 +1641,7 @@ local function framesToSrtTimestamp(frames, fps)
     return string.format("%02d:%02d:%02d,%03d", hours, minutes, seconds, milliseconds)
 end
 
-local function getTimelineContext()
+function Subtitle.getTimelineContext()
     local pm = resolve:GetProjectManager()
     if not pm then
         return nil
@@ -912,7 +1667,7 @@ local function getTimelineContext()
     }
 end
 
-local function sortEntries(entries)
+function Subtitle.sortEntries(entries)
     table.sort(entries, function(a, b)
         if a.startFrame == b.startFrame then
             return a.endFrame < b.endFrame
@@ -921,8 +1676,8 @@ local function sortEntries(entries)
     end)
 end
 
-local function collectSubtitles()
-    local ctx = getTimelineContext()
+function Subtitle.collectSubtitles()
+    local ctx = Subtitle.getTimelineContext()
     if not ctx then
         return false, "no_timeline"
     end
@@ -932,7 +1687,7 @@ local function collectSubtitles()
     if not fpsSetting then
         fpsSetting = ctx.project:GetSetting("timelineFrameRate")
     end
-    state.fps = parseFps(fpsSetting)
+    state.fps = Subtitle.parseFps(fpsSetting)
     local startFrame = timeline:GetStartFrame()
     state.startFrame = startFrame or 0
 
@@ -955,8 +1710,8 @@ local function collectSubtitles()
                         table.insert(entries, {
                             startFrame = startFrame,
                             endFrame = endFrame,
-                            startText = framesToTimecode(startFrame, state.fps),
-                            endText = framesToTimecode(endFrame, state.fps),
+                            startText = Subtitle.framesToTimecode(startFrame, state.fps),
+                            endText = Subtitle.framesToTimecode(endFrame, state.fps),
                             text = name,
                         })
                     end
@@ -965,28 +1720,28 @@ local function collectSubtitles()
             end
         end
 
-    sortEntries(entries)
+    Subtitle.sortEntries(entries)
     state.entries = entries
     return true
 end
 
 
 
-local function cleanupTempDir()
-    local tempDir = getTempDir()
+function Subtitle.cleanupTempDir()
+    local tempDir = Utils.getTempDir()
     if tempDir == "" then
         return
     end
-    removeDir(tempDir)
+    Utils.removeDir(tempDir)
 end
 
-local function writeSrt(entries, path, startFrame, fps)
+function Subtitle.writeSrt(entries, path, startFrame, fps)
     if not entries or #entries == 0 then
         return false, "no_entries_update"
     end
     local dir = path:match("^(.*)[/\\][^/\\]+$")
     if dir and dir ~= "" then
-        ensureDir(dir)
+        Utils.ensureDir(dir)
     end
     local fh, err = io.open(path, "w")
     if not fh then
@@ -1001,8 +1756,8 @@ local function writeSrt(entries, path, startFrame, fps)
         if e <= s then
             e = s + 1
         end
-        local sText = framesToSrtTimestamp(s, fps)
-        local eText = framesToSrtTimestamp(e, fps)
+        local sText = Subtitle.framesToSrtTimestamp(s, fps)
+        local eText = Subtitle.framesToSrtTimestamp(e, fps)
         fh:write(string.format("%d\n", idx))
         fh:write(string.format("%s --> %s\n", sText, eText))
         fh:write((entry.text or "") .. "\n\n")
@@ -1011,7 +1766,7 @@ local function writeSrt(entries, path, startFrame, fps)
     return true
 end
 
-local function findClipByName(clips, name)
+function Subtitle.findClipByName(clips, name)
     if not clips then
         return nil
     end
@@ -1023,8 +1778,8 @@ local function findClipByName(clips, name)
     return nil
 end
 
-local function importSrtToTimeline(path)
-    local ctx = getTimelineContext()
+function Subtitle.importSrtToTimeline(path)
+    local ctx = Subtitle.getTimelineContext()
     if not ctx then
         return false, "no_timeline"
     end
@@ -1085,7 +1840,7 @@ local function importSrtToTimeline(path)
     if not mediaItem then
         local baseName = path:match("[^/\\]+$")
         local clips = srtFolder:GetClipList()
-        mediaItem = findClipByName(clips, baseName)
+        mediaItem = Subtitle.findClipByName(clips, baseName)
     end
     if not mediaItem then
         return false, "import_failed"
@@ -1108,123 +1863,678 @@ local function importSrtToTimeline(path)
     return true
 end
 
-local function escapePlainPattern(text)
+function Utils.escapePlainPattern(text)
     return text:gsub("([^%w])", "%%%1")
 end
 
-local win = disp:AddWindow({
-    ID = "SubtitleUtilityWin",
+--[[
+  SubtitleUtilityWin UI
+]]
+
+local win = disp:AddWindow(
+  {
+    ID          = "SubtitleUtilityWin",
     WindowTitle = string.format("%s %s", SCRIPT_NAME, SCRIPT_VERSION),
-    Geometry = { X_CENTER, Y_CENTER, WINDOW_WIDTH, WINDOW_HEIGHT },
-    StyleSheet = "*{font-size:14px;}"
-}, ui:VGroup{
-    ID = "root",
+    Geometry    = { X_CENTER, Y_CENTER, WINDOW_WIDTH, WINDOW_HEIGHT },
+    StyleSheet  = "*{font-size:14px;}",
+  },
+  ui:VGroup{
+    ID     = "root",
     Weight = 1,
     ui:TabBar{
-        ID = "MainTabs",
-        Weight = 0,
+      ID     = "MainTabs",
+      Weight = 0,
     },
     ui:Stack{
-        ID = "MainStack",
+      ID     = "MainStack",
+      Weight = 1,
+
+      ------------------------------------------------------------------
+      -- Edit Tab
+      ------------------------------------------------------------------
+      ui:VGroup{
+        ID     = "EditTab",
         Weight = 1,
-        ui:VGroup{
-            ID = "EditTab",
-            Weight = 1,
-            ui:VGap(10),
-            ui:HGroup{
-                Weight = 0,
-                ui:LineEdit{ ID = "FindInput", PlaceholderText = uiString("find_placeholder"), Weight = 1, Events = { TextChanged = true, EditingFinished = true } },
-                ui:Button{ ID = "FindPreviousButton", Text = uiString("find_previous_button"), Weight = 0 },
-                ui:Button{ ID = "FindNextButton", Text = uiString("find_next_button"), Weight = 0 },
-                ui:LineEdit{ ID = "ReplaceInput", PlaceholderText = uiString("replace_placeholder"), Weight = 1 },
-                ui:Button{ ID = "AllReplaceButton", Text = uiString("all_replace_button"), Weight = 0 },
-                ui:Button{ ID = "SingleReplaceButton", Text = uiString("single_replace_button"), Weight = 0 },
-            },
-            ui:Tree{
-                ID = "SubtitleTree",
-                AlternatingRowColors = true,
-                WordWrap = true,
-                UniformRowHeights = false,
-                HorizontalScrollMode = true,
-                FrameStyle = 1,
-                ColumnCount = 3,
-                SelectionMode = "SingleSelection",
-                Weight = 1,
-            },
-            ui:TextEdit{
-                ID = "SubtitleEditor",
-                Weight = 0,
-                PlaceholderText = uiString("editor_placeholder"),
-                WordWrap = true,
-            },
-            ui:HGroup{
-                Weight = 0,
-                ui:Label{ ID = "StatusLabel", Text = "", Weight = 1, Alignment = { AlignHCenter = true, AlignVCenter = true } },
-            },
-            ui:HGroup{
-                Weight = 0,
-                ui:Label{
-                    ID = "UpdateLabel",
-                    Text = "",
-                    Weight = 1,
-                    Alignment = { AlignHCenter = true, AlignVCenter = true },
-                    WordWrap = true,
-                    Visible = false,
-                    StyleSheet = "color:#d9534f; font-weight:bold;",
-                },
-            },
-            ui:HGroup{
-                Weight = 0,
-                ui:Button{ ID = "RefreshButton", Text = uiString("refresh_button"), Weight = 1 },
-                ui:Button{ ID = "UpdateSubtitleButton", Text = uiString("update_button"), Weight = 1 },
-            },
-            ui:VGap(5),
-            ui:Button{
-                ID = "DonationButton",
-                Text = uiString("donation"),
-                Alignment = { AlignHCenter = true, AlignVCenter = true },
-                Font = ui.Font({ PixelSize = 12, StyleName = "Bold" }),
-                Flat = true,
-                TextColor = {1, 1, 1, 1 },
-                BackgroundColor = { 1, 1, 1, 0 },
-                Weight = 0,
-            },
-            
+
+        ui:VGap(10),
+
+        ui:HGroup{
+          Weight = 0,
+          ui:LineEdit{
+            ID              = "FindInput",
+            PlaceholderText = UI.uiString("find_placeholder"),
+            Weight          = 1,
+            Events          = { TextChanged = true, EditingFinished = true },
+          },
+          ui:Button{ ID = "FindPreviousButton", Text = UI.uiString("find_previous_button"), Weight = 0 },
+          ui:Button{ ID = "FindNextButton",     Text = UI.uiString("find_next_button"),     Weight = 0 },
+          ui:LineEdit{
+            ID              = "ReplaceInput",
+            PlaceholderText = UI.uiString("replace_placeholder"),
+            Weight          = 1,
+          },
+          ui:Button{ ID = "AllReplaceButton",    Text = UI.uiString("all_replace_button"),    Weight = 0 },
+          ui:Button{ ID = "SingleReplaceButton", Text = UI.uiString("single_replace_button"), Weight = 0 },
         },
-        ui:VGroup{
-            ID = "ConfigTab",
+
+        ui:Tree{
+          ID                   = "SubtitleTree",
+          AlternatingRowColors = true,
+          WordWrap             = true,
+          UniformRowHeights    = false,
+          HorizontalScrollMode = true,
+          FrameStyle           = 1,
+          ColumnCount          = 3,
+          SelectionMode        = "SingleSelection",
+          Weight               = 1,
+        },
+
+        ui:TextEdit{
+          ID              = "SubtitleEditor",
+          Weight          = 0,
+          PlaceholderText = UI.uiString("editor_placeholder"),
+          WordWrap        = true,
+        },
+
+        ui:HGroup{
+          Weight = 0,
+          ui:Label{
+            ID        = "StatusLabel",
+            Text      = "",
+            Weight    = 1,
+            Alignment = { AlignHCenter = true, AlignVCenter = true },
+          },
+        },
+
+        ui:HGroup{
+          Weight = 0,
+          ui:Label{
+            ID          = "UpdateLabel",
+            Text        = "",
+            Weight      = 1,
+            Alignment   = { AlignHCenter = true, AlignVCenter = true },
+            WordWrap    = true,
+            Visible     = false,
+            StyleSheet  = "color:#d9534f; font-weight:bold;",
+          },
+        },
+
+        ui:HGroup{
+          Weight = 0.1,
+          ui:Button{ ID = "RefreshButton",            Text = UI.uiString("refresh_button"),  Weight = 1 },
+          ui:Button{ ID = "UpdateSubtitleButton",     Text = UI.uiString("update_button"),   Weight = 1 },
+        },
+
+        ui:VGap(5),
+
+        ui:Button{
+          ID               = "DonationButton",
+          Text             = UI.uiString("donation"),
+          Alignment        = { AlignHCenter = true, AlignVCenter = true },
+          Font             = ui.Font({ PixelSize = 12, StyleName = "Bold" }),
+          Flat             = true,
+          TextColor        = { 1, 1, 1, 1 },
+          BackgroundColor  = { 1, 1, 1, 0 },
+          Weight           = 0,
+        },
+      },
+
+      ------------------------------------------------------------------
+      -- Translate Tab
+      ------------------------------------------------------------------
+      ui:VGroup{
+        ID     = "TranslateTab",
+        Weight = 1,
+
+        ui:VGap(10),
+
+        ui:HGroup{
+          Weight = 0,
+
+          ui:Label{   ID = "TranslateProviderLabel", Text = UI.uiString("translate_provider_label"), Weight = 0, Alignment = { AlignVCenter = true } },
+          ui:ComboBox{ ID = "TranslateProviderCombo", Weight = 1, Editable = false },
+          ui:Label{   ID = "TranslateTargetLabel",   Text = UI.uiString("translate_target_label"),   Weight = 0, Alignment = { AlignVCenter = true } },
+          ui:ComboBox{ ID = "TranslateTargetCombo",   Weight = 1, Editable = false },
+          ui:HGroup{
+            Weight = 0,
+            ui:Label{
+              ID        = "TranslateConcurrencyLabel",
+              Text      = UI.uiString("concurrency_label"),
+              Alignment = { AlignVCenter = true },
+              Weight    = 1,
+            },
+            ui:ComboBox{
+              ID      = "TranslateConcurrencyCombo",
+              Weight  = 0,
+              Editable = false,
+              Events  = { CurrentIndexChanged = true },
+            },
+          },
+        },
+
+        ui:Tree{
+          ID                   = "TranslateSubtitleTree",
+          AlternatingRowColors = true,
+          WordWrap             = true,
+          UniformRowHeights    = false,
+          HorizontalScrollMode = true,
+          FrameStyle           = 1,
+          ColumnCount          = 4,
+          SelectionMode        = "SingleSelection",
+          Weight               = 1,
+        },
+
+        ui:TextEdit{
+          ID              = "TranslateSubtitleEditor",
+          Weight          = 0,
+          PlaceholderText = UI.uiString("translate_editor_placeholder"),
+          WordWrap        = true,
+        },
+
+        ui:HGroup{
+          Weight = 0,
+          ui:Label{
+            ID        = "TranslateStatusLabel",
+            Text      = "",
+            Weight    = 1,
+            Alignment = { AlignHCenter = true, AlignVCenter = true },
+            WordWrap  = true,
+          },
+        },
+
+        ui:HGroup{
+          Weight = 0.1,
+          ui:Button{ ID = "TranslateTransButton",     Text = UI.uiString("translate_trans_button"),     Weight = 1 },
+          ui:Button{ ID = "TranslateSelectedButton",  Text = UI.uiString("translate_selected_button"),  Weight = 1 },
+        },
+
+        ui:HGroup{
+          Weight = 0.1,
+          ui:Button{ ID = "TranslateUpdateSubtitleButton", Text = UI.uiString("translate_update_button"), Weight = 1 },
+        },
+
+        ui:VGap(5),
+      },
+
+      ------------------------------------------------------------------
+      -- Config Tab
+      ------------------------------------------------------------------
+      ui:VGroup{
+        ID     = "ConfigTab",
+        Weight = 1,
+
+        ui:VGap(20),
+
+        ui:HGroup{
+          Weight = 0,
+          ui:Label{
+            ID        = "AzureConfigLabel",
+            Text      = UI.uiString("azure_config_label"),
+            Alignment = { AlignVCenter = true },
+            Weight    = 1,
+          },
+          ui:Button{
+            ID     = "AzureConfigButton",
+            Text   = UI.uiString("azure_config_button"),
+            Weight = 0,
+          },
+        },
+
+        ui:HGroup{
+          Weight = 0,
+          ui:Label{
+            ID        = "OpenAIFormatConfigLabel",
+            Text      = UI.uiString("openai_config_label"),
+            Alignment = { AlignVCenter = true },
+            Weight    = 1,
+          },
+          ui:Button{
+            ID     = "OpenAIFormatConfigButton",
+            Text   = UI.uiString("openai_config_button"),
+            Weight = 0,
+          },
+        },
+
+        ui:HGroup{
+          Weight = 0,
+          ui:CheckBox{ ID = "LangCnCheckBox", Text = UI.uiString("lang_cn"), Checked = false, Weight = 0 },
+          ui:CheckBox{ ID = "LangEnCheckBox", Text = UI.uiString("lang_en"), Checked = true,  Weight = 0 },
+        },
+
+        ui:Button{
+          ID              = "CopyrightButton",
+          Text            = UI.uiString("copyright"),
+          Alignment       = { AlignHCenter = true, AlignVCenter = true },
+          Font            = ui.Font({ PixelSize = 12, StyleName = "Bold" }),
+          Flat            = true,
+          TextColor       = { 0.1, 0.3, 0.9, 1 },
+          BackgroundColor = { 1, 1, 1, 0 },
+          Weight          = 0,
+        },
+      },
+    },
+  }
+)
+
+
+local it = win:GetItems()
+local controls = {
+    tree = it.SubtitleTree,
+    editor = it.SubtitleEditor,
+    langCn = it.LangCnCheckBox,
+    langEn = it.LangEnCheckBox,
+    mainTabs = it.MainTabs,
+    mainStack = it.MainStack,
+    updateLabel = it.UpdateLabel,
+    translateTree = it.TranslateSubtitleTree,
+    translateEditor = it.TranslateSubtitleEditor,
+    translateStatusLabel = it.TranslateStatusLabel,
+    translateProviderCombo = it.TranslateProviderCombo,
+    translateTargetCombo = it.TranslateTargetCombo,
+    translateTransButton = it.TranslateTransButton,
+    translateSelectedButton = it.TranslateSelectedButton,
+    translateUpdateButton = it.TranslateUpdateSubtitleButton,
+    translateProviderLabel = it.TranslateProviderLabel,
+    translateTargetLabel = it.TranslateTargetLabel,
+    translateConcurrencyLabel = it.TranslateConcurrencyLabel,
+    translateConcurrencyCombo = it.TranslateConcurrencyCombo,
+    azureConfigLabel = it.AzureConfigLabel,
+    azureConfigButton = it.AzureConfigButton,
+    openAIConfigLabel = it.OpenAIFormatConfigLabel,
+    openAIConfigButton = it.OpenAIFormatConfigButton,
+    donationButton = it.DonationButton,
+    findInput = it.FindInput,
+    replaceInput = it.ReplaceInput,
+    statusLabel = it.StatusLabel,
+    refreshButton = it.RefreshButton,
+    updateButton = it.UpdateSubtitleButton,
+}
+
+
+local function findConcurrencyOptionIndexByValue(value)
+    local numeric = tonumber(value) or DEFAULT_TRANSLATE_CONCURRENCY
+    local bestIndex = 1
+    local bestDiff = math.huge
+    for idx, option in ipairs(TRANSLATE_CONCURRENCY_OPTIONS) do
+        if option.value == numeric then
+            return idx, option.value
+        end
+        local diff = math.abs(option.value - numeric)
+        if diff < bestDiff then
+            bestDiff = diff
+            bestIndex = idx
+        end
+    end
+    local matched = TRANSLATE_CONCURRENCY_OPTIONS[bestIndex] and TRANSLATE_CONCURRENCY_OPTIONS[bestIndex].value or DEFAULT_TRANSLATE_CONCURRENCY
+    return bestIndex, matched
+end
+
+local function setConcurrencyComboSelection(value)
+    if not controls.translateConcurrencyCombo then
+        return
+    end
+    local idx, matchedValue = findConcurrencyOptionIndexByValue(value)
+    controls.translateConcurrencyCombo.CurrentIndex = (idx or 1) - 1
+    if matchedValue and state.translate.concurrency ~= matchedValue then
+        state.translate.concurrency = matchedValue
+    end
+end
+
+local function populateConcurrencyCombo(value)
+    if not controls.translateConcurrencyCombo then
+        return
+    end
+    local combo = controls.translateConcurrencyCombo
+    combo:Clear()
+    for _, option in ipairs(TRANSLATE_CONCURRENCY_OPTIONS) do
+        combo:AddItem(UI.uiString(option.labelKey))
+    end
+    setConcurrencyComboSelection(value)
+end
+
+populateConcurrencyCombo(state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY)
+
+
+local azureConfigWin = disp:AddWindow({
+    ID = "AzureConfigWin",
+    WindowTitle = UI.uiString("azure_config_window_title"),
+    Geometry = { X_CENTER + 30, Y_CENTER + 30, 300, 150 },
+    Hidden = true,
+    StyleSheet = "*{font-size:14px;}",
+}, ui:VGroup{
+    ui:Label{
+        ID = "AzureLabel",
+        Text = UI.uiString("azure_config_header"),
+        Alignment = { AlignHCenter = true, AlignVCenter = true },
+        Weight = 0,
+    },
+    ui:HGroup{
+        Weight = 0,
+        ui:Label{
+            ID = "AzureRegionLabel",
+            Text = UI.uiString("azure_region_label"),
+            Alignment = { AlignVCenter = true },
+            Weight = 0.3,
+        },
+        ui:LineEdit{
+            ID = "AzureRegion",
+            Text = state.azure.region or "",
+            Weight = 0.7,
+        },
+    },
+    ui:HGroup{
+        Weight = 0,
+        ui:Label{
+            ID = "AzureApiKeyLabel",
+            Text = UI.uiString("azure_api_key_label"),
+            Alignment = { AlignVCenter = true },
+            Weight = 0.3,
+        },
+        ui:LineEdit{
+            ID = "AzureApiKey",
+            Text = state.azure.apiKey or "",
+            EchoMode = "Password",
+            Weight = 0.7,
+        },
+    },
+    ui:HGroup{
+        Weight = 0,
+        ui:Button{
+            ID = "AzureConfirm",
+            Text = UI.uiString("azure_confirm_button"),
             Weight = 1,
-            ui:VGap(20),
-            ui:HGroup{
-                Weight = 0,
-                ui:CheckBox{ ID = "LangCnCheckBox", Text = uiString("lang_cn"), Checked = false, Weight = 0 },
-                ui:CheckBox{ ID = "LangEnCheckBox", Text = uiString("lang_en"), Checked = true, Weight = 0 },
-            },
-            ui:Button{
-                ID = "CopyrightButton",
-                Text = uiString("copyright"),
-                Alignment = { AlignHCenter = true, AlignVCenter = true },
-                Font = ui.Font({ PixelSize = 12, StyleName = "Bold" }),
-                Flat = true,
-                TextColor = { 0.1, 0.3, 0.9, 1 },
-                BackgroundColor = { 1, 1, 1, 0 },
-                Weight = 0,
-            },
-            
+        },
+        ui:Button{
+            ID = "AzureRegisterButton",
+            Text = UI.uiString("azure_register_button"),
+            Weight = 1,
+        },
+    },
+})
+local azureConfigItems = azureConfigWin and azureConfigWin:GetItems() or {}
+
+function Azure.refreshConfigTexts()
+    if not azureConfigItems then
+        return
+    end
+    if azureConfigWin then
+        azureConfigWin.WindowTitle = UI.uiString("azure_config_window_title")
+    end
+    local textMap = {
+        AzureLabel = "azure_config_header",
+        AzureRegionLabel = "azure_region_label",
+        AzureApiKeyLabel = "azure_api_key_label",
+        AzureConfirm = "azure_confirm_button",
+        AzureRegisterButton = "azure_register_button",
+    }
+    for id, key in pairs(textMap) do
+        local widget = azureConfigItems[id]
+        if widget and widget.Text ~= nil then
+            widget.Text = UI.uiString(key)
+        end
+    end
+    if controls.azureConfigLabel then
+        controls.azureConfigLabel.Text = UI.uiString("azure_config_label")
+    end
+    if controls.azureConfigButton then
+        controls.azureConfigButton.Text = UI.uiString("azure_config_button")
+    end
+end
+
+function Azure.syncConfigControls()
+    if not azureConfigItems then
+        return
+    end
+    if azureConfigItems.AzureRegion then
+        azureConfigItems.AzureRegion.Text = state.azure.region or ""
+    end
+    if azureConfigItems.AzureApiKey then
+        azureConfigItems.AzureApiKey.Text = state.azure.apiKey or ""
+    end
+end
+
+function Azure.applyConfigFromControls()
+    if not azureConfigItems then
+        return
+    end
+    if azureConfigItems.AzureRegion then
+        state.azure.region = Utils.trim(azureConfigItems.AzureRegion.Text or "")
+    end
+    if azureConfigItems.AzureApiKey then
+        state.azure.apiKey = Utils.trim(azureConfigItems.AzureApiKey.Text or "")
+    end
+end
+
+function Azure.openConfigWindow()
+    if not azureConfigWin then
+        return
+    end
+    Azure.refreshConfigTexts()
+    Azure.syncConfigControls()
+    azureConfigWin:Show()
+end
+
+function Azure.closeConfigWindow()
+    if not azureConfigWin then
+        return
+    end
+    Azure.applyConfigFromControls()
+    azureConfigWin:Hide()
+end
+
+
+local openAIConfigWin = disp:AddWindow({
+    ID = "OpenAIFormatConfigWin",
+    WindowTitle = UI.uiString("openai_config_window_title"),
+    Geometry = { X_CENTER + 40, Y_CENTER + 40, 350, 450 },
+    --WindowFlags = { Window = true },
+    Hidden = true,
+    StyleSheet = "*{font-size:14px;}",
+}, ui:VGroup{
+    ui:Label{
+        ID = "OpenAIFormatLabel",
+        Text = UI.uiString("openai_config_header"),
+        Alignment = { AlignHCenter = true, AlignVCenter = true },
+        Weight = 0,
+    },
+    ui:Label{
+        ID = "OpenAIFormatModelLabel",
+        Text = UI.uiString("openai_model_label"),
+        Weight = 0,
+    },
+    ui:HGroup{
+        Weight = 0,
+        ui:ComboBox{
+            ID = "OpenAIFormatModelCombo",
+            Weight = 0.6,
+            Editable = false,
+            Events = { CurrentIndexChanged = true },
+        },
+        ui:LineEdit{
+            ID = "OpenAIFormatModelName",
+            ReadOnly = true,
+            Weight = 0.4,
+        },
+    },
+    ui:Label{
+        ID = "OpenAIFormatBaseURLLabel",
+        Text = UI.uiString("openai_base_url_label"),
+        Weight = 0,
+    },
+    ui:LineEdit{
+        ID = "OpenAIFormatBaseURL",
+        Text = "",
+        PlaceholderText = OPENAI_FORMAT_DEFAULT_BASE_URL,
+        Weight = 0,
+    },
+    ui:Label{
+        ID = "OpenAIFormatApiKeyLabel",
+        Text = UI.uiString("openai_api_key_label"),
+        Weight = 0,
+    },
+    ui:LineEdit{
+        ID = "OpenAIFormatApiKey",
+        Text = state.openaiFormat.apiKey or "",
+        EchoMode = "Password",
+        Weight = 0,
+    },
+    ui:HGroup{
+        Weight = 0,
+        ui:Label{
+            ID = "OpenAIFormatTemperatureLabel",
+            Text = UI.uiString("openai_temperature_label"),
+            Weight = 1,
+        },
+        ui:DoubleSpinBox{
+            ID = "OpenAIFormatTemperatureSpinBox",
+            Minimum = 0.0,
+            Maximum = 1.0,
+            SingleStep = 0.01,
+            Value = state.openaiFormat.temperature or OPENAI_FORMAT_DEFAULT_TEMPERATURE,
+            Weight = 0,
+        },
+    },
+    ui:Label{
+        ID = "SystemPromptLabel",
+        Text = UI.uiString("system_prompt_label"),
+        Weight = 0,
+    },
+    ui:TextEdit{
+        ID = "SystemPromptTxt",
+        Text = state.openaiFormat.systemPrompt or OPENAI_DEFAULT_SYSTEM_PROMPT,
+        Weight = 1,
+    },
+    ui:HGroup{
+        Weight = 0,
+        ui:Button{
+            ID = "VerifyModel",
+            Text = UI.uiString("openai_verify_button"),
+            Weight = 1,
+        },
+        ui:Button{
+            ID = "ShowAddModel",
+            Text = UI.uiString("openai_add_button"),
+            Weight = 1,
+        },
+        ui:Button{
+            ID = "DeleteModel",
+            Text = UI.uiString("openai_delete_button"),
+            Weight = 1,
+        },
+    },
+})
+local openAIConfigItems = openAIConfigWin and openAIConfigWin:GetItems() or {}
+
+local addModelWin = disp:AddWindow({
+    ID = "AddModelWin",
+    WindowTitle = "Add OpenAI Format Model",
+    Geometry = { X_CENTER + 60, Y_CENTER + 60, 300, 200 },
+    --WindowFlags = { Window = true },
+    Hidden = true,
+    StyleSheet = "*{font-size:14px;}",
+}, ui:VGroup{
+    ui:Label{
+        ID = "AddModelTitle",
+        Text = "Add OpenAI Format Model",
+        Alignment = { AlignHCenter = true, AlignVCenter = true },
+        Weight = 0,
+    },
+    ui:Label{
+        ID = "NewModelDisplayLabel",
+        Text = "Display name",
+        Weight = 0,
+    },
+    ui:LineEdit{
+        ID = "addOpenAIFormatModelDisplay",
+        Weight = 0,
+    },
+    ui:Label{
+        ID = "OpenAIFormatModelNameLabel",
+        Text = "Model name",
+        Weight = 0,
+    },
+    ui:LineEdit{
+        ID = "addOpenAIFormatModelName",
+        Weight = 0,
+    },
+    ui:HGroup{
+        Weight = 0,
+        ui:Button{
+            ID = "AddModelBtn",
+            Text = "Add",
+            Weight = 1,
+        },
+    },
+})
+local addModelItems = addModelWin and addModelWin:GetItems() or {}
+
+local messageWin = disp:AddWindow({
+    ID = "MessageBoxWin",
+    WindowTitle = "Info",
+    Geometry = { X_CENTER + 60, Y_CENTER + 80, 360, 160 },
+    Hidden = true,
+    StyleSheet = "*{font-size:14px;}",
+}, ui:VGroup{
+    ID = "MessageBoxLayout",
+    Weight = 1,
+    ui:Label{
+        ID = "MessageLabel",
+        Weight = 1,
+        WordWrap = true,
+        Alignment = { AlignHCenter = true, AlignVCenter = true },
+        Text = "",
+    },
+    ui:HGroup{
+        Weight = 0,
+        ui:Button{
+            ID = "MessageBoxOk",
+            Text = "OK",
+            Weight = 1,
+            MinimumSize = { 80, 28 },
         },
     },
 })
 
-local it = win:GetItems()
-local tree = it.SubtitleTree
-local editor = it.SubtitleEditor
-local langCn = it.LangCnCheckBox
-local langEn = it.LangEnCheckBox
-local mainTabs = it.MainTabs
-local mainStack = it.MainStack
-local updateLabel = it.UpdateLabel
+local messageItems = messageWin and messageWin:GetItems() or {}
 
-local function withUpdatesSuspended(widget, fn)
+local function hide_dynamic_message()
+    if not messageWin then
+        return
+    end
+    messageWin:Hide()
+end
+
+local function show_dynamic_message(en_text, zh_text)
+    if not messageWin or not messageItems then
+        return
+    end
+    local lang = UI.currentLanguage()
+    local display = en_text or ""
+    if lang == "cn" then
+        display = zh_text or en_text or ""
+    end
+    if display == "" then
+        display = en_text or zh_text or ""
+    end
+    if messageItems.MessageLabel then
+        messageItems.MessageLabel.Text = display or ""
+    end
+    if messageItems.MessageBoxOk then
+        messageItems.MessageBoxOk.Text = UI.uiString("azure_confirm_button")
+    end
+    messageWin:Show()
+end
+
+if messageWin then
+    function messageWin.On.MessageBoxWin.Close(ev)
+        hide_dynamic_message()
+    end
+    function messageWin.On.MessageBoxOk.Clicked(ev)
+        hide_dynamic_message()
+    end
+end
+
+function UI.withUpdatesSuspended(widget, fn)
     if not widget or type(fn) ~= "function" then
         return
     end
@@ -1241,11 +2551,1813 @@ local function withUpdatesSuspended(widget, fn)
     end
 end
 
-local function setRowHighlight(rowIndex, color)
-    if not tree then
+function OpenAIService.refreshConfigTexts()
+    if not openAIConfigItems then
         return
     end
-    local item = tree:TopLevelItem(rowIndex - 1)
+    if openAIConfigWin then
+        openAIConfigWin.WindowTitle = UI.uiString("openai_config_window_title")
+    end
+    local textMap = {
+        OpenAIFormatLabel = "openai_config_header",
+        OpenAIFormatModelLabel = "openai_model_label",
+        OpenAIFormatBaseURLLabel = "openai_base_url_label",
+        OpenAIFormatApiKeyLabel = "openai_api_key_label",
+        OpenAIFormatTemperatureLabel = "openai_temperature_label",
+        SystemPromptLabel = "system_prompt_label",
+        VerifyModel = "openai_verify_button",
+        ShowAddModel = "openai_add_button",
+        DeleteModel = "openai_delete_button",
+    }
+    for id, key in pairs(textMap) do
+        local widget = openAIConfigItems[id]
+        if widget and widget.Text ~= nil then
+            widget.Text = UI.uiString(key)
+        end
+    end
+    if addModelItems then
+        local addTextMap = {
+            AddModelTitle = "openai_add_model_title",
+            NewModelDisplayLabel = "openai_new_model_display_label",
+            OpenAIFormatModelNameLabel = "openai_new_model_name_label",
+            AddModelBtn = "openai_add_button",
+        }
+        for id, key in pairs(addTextMap) do
+            local widget = addModelItems[id]
+            if widget and widget.Text ~= nil then
+                widget.Text = UI.uiString(key)
+            end
+        end
+    end
+    if controls.openAIConfigLabel then
+        controls.openAIConfigLabel.Text = UI.uiString("openai_config_label")
+    end
+    if controls.openAIConfigButton then
+        controls.openAIConfigButton.Text = UI.uiString("openai_config_button")
+    end
+    if controls.translateConcurrencyLabel then
+        controls.translateConcurrencyLabel.Text = UI.uiString("concurrency_label")
+    end
+    populateConcurrencyCombo(state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY)
+    if openAIConfigItems.OpenAIFormatBaseURL then
+        openAIConfigItems.OpenAIFormatBaseURL.PlaceholderText = OPENAI_FORMAT_DEFAULT_BASE_URL
+    end
+end
+
+function OpenAIService.populateOpenAIModelCombo()
+    if not openAIConfigItems or not openAIConfigItems.OpenAIFormatModelCombo then
+        return
+    end
+    Storage.ensureOpenAIModelList(state.openaiFormat)
+    local combo = openAIConfigItems.OpenAIFormatModelCombo
+    combo:Clear()
+    local models = state.openaiFormat.models or {}
+    for _, entry in ipairs(models) do
+        combo:AddItem(entry.display or entry.name or "")
+    end
+    if #models > 0 then
+        local idx = state.openaiFormat.selectedIndex or 1
+        idx = math.max(1, math.min(idx, #models))
+        state.openaiFormat.selectedIndex = idx
+        combo.CurrentIndex = idx - 1
+        if openAIConfigItems.OpenAIFormatModelName then
+            openAIConfigItems.OpenAIFormatModelName.Text = models[idx].name or ""
+        end
+    else
+        combo.CurrentIndex = -1
+        if openAIConfigItems.OpenAIFormatModelName then
+            openAIConfigItems.OpenAIFormatModelName.Text = ""
+        end
+    end
+end
+
+function OpenAIService.applyConfigFromControls()
+    if not openAIConfigItems then
+        return
+    end
+    if openAIConfigItems.OpenAIFormatBaseURL then
+        local baseUrl = Utils.trim(openAIConfigItems.OpenAIFormatBaseURL.Text or "")
+
+        state.openaiFormat.baseUrl = baseUrl
+    end
+    if openAIConfigItems.OpenAIFormatApiKey then
+        state.openaiFormat.apiKey = Utils.trim(openAIConfigItems.OpenAIFormatApiKey.Text or "")
+    end
+    if openAIConfigItems.OpenAIFormatTemperatureSpinBox then
+        local value = tonumber(openAIConfigItems.OpenAIFormatTemperatureSpinBox.Value)
+        if value then
+            if value < 0 then value = 0 end
+            if value > 1 then value = 1 end
+            state.openaiFormat.temperature = value
+        end
+    end
+    if openAIConfigItems.SystemPromptTxt then
+        local promptText = openAIConfigItems.SystemPromptTxt.PlainText or openAIConfigItems.SystemPromptTxt.Text or ""
+        promptText = Utils.trim(promptText)
+        if promptText == "" then
+            promptText = OPENAI_DEFAULT_SYSTEM_PROMPT
+        end
+        state.openaiFormat.systemPrompt = promptText
+    end
+    if openAIConfigItems.OpenAIFormatModelCombo then
+        local idx = openAIConfigItems.OpenAIFormatModelCombo.CurrentIndex
+        if type(idx) == "number" and idx >= 0 then
+            state.openaiFormat.selectedIndex = idx + 1
+        end
+    end
+    Storage.ensureOpenAIModelList(state.openaiFormat)
+end
+
+function OpenAIService.syncOpenAIConfigControls()
+    Storage.ensureOpenAIModelList(state.openaiFormat)
+    if openAIConfigItems.OpenAIFormatBaseURL then
+        local currentBase = Utils.trim(state.openaiFormat.baseUrl or "")
+        if currentBase ~= "" and currentBase ~= OPENAI_FORMAT_DEFAULT_BASE_URL then
+            openAIConfigItems.OpenAIFormatBaseURL.Text = currentBase
+        else
+            openAIConfigItems.OpenAIFormatBaseURL.Text = ""
+        end
+    end
+    if openAIConfigItems.OpenAIFormatApiKey then
+        openAIConfigItems.OpenAIFormatApiKey.Text = state.openaiFormat.apiKey or ""
+    end
+    if openAIConfigItems.OpenAIFormatTemperatureSpinBox then
+        openAIConfigItems.OpenAIFormatTemperatureSpinBox.Value = state.openaiFormat.temperature or OPENAI_FORMAT_DEFAULT_TEMPERATURE
+    end
+    if openAIConfigItems.SystemPromptTxt then
+        local prompt = state.openaiFormat.systemPrompt or OPENAI_DEFAULT_SYSTEM_PROMPT
+        openAIConfigItems.SystemPromptTxt.PlainText = prompt
+        openAIConfigItems.SystemPromptTxt.Text = prompt
+    end
+    OpenAIService.populateOpenAIModelCombo()
+end
+
+function OpenAIService.openConfigWindow()
+    if not openAIConfigWin then
+        return
+    end
+    OpenAIService.refreshConfigTexts()
+    OpenAIService.syncOpenAIConfigControls()
+    if addModelItems.addOpenAIFormatModelDisplay then
+        addModelItems.addOpenAIFormatModelDisplay.Text = ""
+    end
+    if addModelItems.addOpenAIFormatModelName then
+        addModelItems.addOpenAIFormatModelName.Text = ""
+    end
+    if addModelWin then
+        addModelWin:Hide()
+    end
+    openAIConfigWin:Show()
+end
+
+function OpenAIService.closeConfigWindow()
+    if not openAIConfigWin then
+        return
+    end
+    OpenAIService.applyConfigFromControls()
+    openAIConfigWin:Hide()
+    if addModelWin then
+        addModelWin:Hide()
+    end
+end
+
+function OpenAIService.verifyModel(baseUrl, apiKey, model)
+    local cleanBase = Utils.trim(baseUrl or "")
+    if cleanBase == "" then
+        cleanBase = OPENAI_FORMAT_DEFAULT_BASE_URL
+    end
+    local normalizedBase = cleanBase:gsub("/*$", "")
+    local url = normalizedBase .. "/v1/chat/completions"
+    local payload = json.encode({
+        model = model,
+        messages = {
+            { role = "system", content = "You are a health check assistant." },
+            { role = "user", content = "Reply with OK." },
+        },
+        temperature = 0,
+        max_tokens = 5,
+    })
+    local headers = {
+        Authorization = "Bearer " .. apiKey,
+        ["Content-Type"] = "application/json",
+        ["User-Agent"] = string.format("%s/%s", SCRIPT_NAME, SCRIPT_VERSION),
+    }
+    local body, status = Services.httpPostJson(url, payload, headers, OPENAI_FORMAT_TIMEOUT)
+    if not body then
+        return false, status or "request_failed"
+    end
+
+    local code = tonumber(status)
+    local ok, decoded = pcall(json.decode, body)
+    if ok and type(decoded) == "table" then
+        if decoded.error and decoded.error.message then
+            return false, decoded.error.message
+        end
+        local choices = decoded.choices
+        if choices and type(choices) == "table" and choices[1] and choices[1].message then
+            return true, tostring(code or "200")
+        end
+    end
+
+    if code and code >= 200 and code < 300 then
+        return true, tostring(code)
+    end
+    return false, tostring(status or "error")
+end
+
+local translate = {}
+
+    local function formatTranslateStatusForLang(key, args, lang)
+        local template = translateStatusTemplates[key]
+        if not template then
+            return ""
+        end
+        local text = template[lang] or template.cn or ""
+        if text == "" then
+            return text
+        end
+        if args and #args > 0 then
+            local ok, formatted = pcall(string.format, text, table.unpack(args))
+            if ok then
+                return formatted
+            end
+        end
+        return text
+    end
+
+    local function formatTranslateStatus(key, args)
+        return formatTranslateStatusForLang(key, args, UI.currentLanguage())
+    end
+
+    local function notifyTranslateStatus(key, argsEn, argsCn)
+        argsEn = argsEn or {}
+        argsCn = argsCn or argsEn
+        local enText = formatTranslateStatusForLang(key, argsEn, "en")
+        local cnText = formatTranslateStatusForLang(key, argsCn, "cn")
+        if enText == "" and cnText == "" then
+            return
+        end
+        local finalEn = enText ~= "" and enText or cnText
+        local finalCn = cnText ~= "" and cnText or enText
+        show_dynamic_message(finalEn, finalCn)
+    end
+
+    local function applyTranslateStatusInternal(key, args)
+        if controls.translateStatusLabel then
+            controls.translateStatusLabel.Text = formatTranslateStatus(key, args)
+        end
+    end
+
+    local function setTranslateStatus(key, ...)
+        local args = { ... }
+        local tState = state.translate
+        if tState then
+            tState.lastStatusKey = key
+            tState.lastStatusArgs = args
+        end
+        applyTranslateStatusInternal(key, args)
+    end
+
+    local function resolveTranslateErrorForLang(code, lang)
+        if code == nil or code == "" then
+            return ""
+        end
+        local bucket = translateErrorMessages[code]
+        if bucket then
+            if lang == "en" then
+                return bucket.en or bucket.cn or tostring(code)
+            end
+            return bucket.cn or bucket.en or tostring(code)
+        end
+        if type(code) == "string" then
+            return code
+        end
+        return tostring(code)
+    end
+
+    local function resolveTranslateError(code)
+        return resolveTranslateErrorForLang(code, UI.currentLanguage())
+    end
+
+    local function resolveTranslateErrorPair(code)
+        local enText = resolveTranslateErrorForLang(code, "en")
+        local cnText = resolveTranslateErrorForLang(code, "cn")
+        return enText, cnText
+    end
+
+    local function notifyTranslateFailure(reason)
+        if reason == nil then
+            notifyTranslateStatus("failed", { "" }, { "" })
+            return
+        end
+        if type(reason) == "table" then
+            local enReason = reason.en or reason[1] or ""
+            local cnReason = reason.cn or reason[2] or enReason
+            notifyTranslateStatus("failed", { enReason }, { cnReason })
+            return
+        end
+        local enReason, cnReason = resolveTranslateErrorPair(reason)
+        notifyTranslateStatus("failed", { enReason }, { cnReason })
+    end
+
+    local function handleOpenAIVerify()
+        if not openAIConfigItems then
+            return
+        end
+        OpenAIService.applyConfigFromControls()
+        Storage.ensureOpenAIModelList(state.openaiFormat)
+        local selected = Storage.getOpenAISelectedModel(state.openaiFormat)
+        if not selected then
+            setTranslateStatus("failed", resolveTranslateError("openai_missing_model"))
+            local enText, cnText = resolveTranslateErrorPair("openai_missing_model")
+            show_dynamic_message(enText, cnText)
+            return
+        end
+        local baseUrl = Utils.trim(state.openaiFormat.baseUrl or "")
+        if baseUrl == "" then
+            baseUrl = OPENAI_FORMAT_DEFAULT_BASE_URL
+        end
+        local apiKey = Utils.trim(state.openaiFormat.apiKey or "")
+        if apiKey == "" then
+            setTranslateStatus("failed", resolveTranslateError("openai_missing_key"))
+            local enText, cnText = resolveTranslateErrorPair("openai_missing_key")
+            show_dynamic_message(enText, cnText)
+            return
+        end
+        local ok, message = OpenAIService.verifyModel(baseUrl, apiKey, selected.name)
+        if ok then
+            local enMsg = uiText.en.openai_verify_success or "Model verified successfully"
+            local cnMsg = uiText.cn.openai_verify_success or enMsg
+            show_dynamic_message(enMsg, cnMsg)
+            print(string.format("[OpenAI] Verify success: %s (%s)", selected.name, tostring(message or "")))
+        else
+            local templateEn = uiText.en.openai_verify_failed or "Model verification failed: %s"
+            local templateCn = uiText.cn.openai_verify_failed or templateEn
+            local errMsgEn = string.format(templateEn, tostring(message or ""))
+            local errMsgCn = string.format(templateCn, tostring(message or ""))
+            local statusText = UI.currentLanguage() == "cn" and errMsgCn or errMsgEn
+            setTranslateStatus("failed", statusText)
+            show_dynamic_message(errMsgEn, errMsgCn)
+            print(string.format("[OpenAI] Verify failed: %s", errMsgEn))
+        end
+    end
+
+    local function handleOpenAIAddModel()
+        if not addModelItems then
+            return
+        end
+        local displayInput = Utils.trim((addModelItems.addOpenAIFormatModelDisplay and addModelItems.addOpenAIFormatModelDisplay.Text) or "")
+        local modelInput = Utils.trim((addModelItems.addOpenAIFormatModelName and addModelItems.addOpenAIFormatModelName.Text) or "")
+        if modelInput == "" then
+            setTranslateStatus("failed", UI.uiString("openai_missing_fields"))
+            return
+        end
+        if displayInput == "" then
+            displayInput = modelInput
+        end
+        if openAIModelStore.builtin and openAIModelStore.builtin[displayInput] then
+            setTranslateStatus("failed", UI.uiString("openai_add_duplicate"))
+            return
+        end
+        Storage.ensureOpenAIModelList(state.openaiFormat)
+        for _, entry in ipairs(state.openaiFormat.models or {}) do
+            if entry.name == modelInput and entry.builtin then
+                setTranslateStatus("failed", UI.uiString("openai_add_duplicate"))
+                return
+            end
+        end
+        for disp, info in pairs(openAIModelStore.custom or {}) do
+            if info and info.model == modelInput then
+                openAIModelStore.custom[disp] = nil
+            end
+        end
+        openAIModelStore.custom = openAIModelStore.custom or {}
+        openAIModelStore.custom[displayInput] = { model = modelInput }
+        Storage.rebuildCustomModelListFromStore()
+        state.openaiFormat.models = Utils.deepCopy(DEFAULT_OPENAI_MODELS)
+        Storage.ensureOpenAIModelList(state.openaiFormat)
+        state.openaiFormat.selectedIndex = nil
+        for idx, entry in ipairs(state.openaiFormat.models or {}) do
+            if entry.name == modelInput then
+                state.openaiFormat.selectedIndex = idx
+                break
+            end
+        end
+        if not state.openaiFormat.selectedIndex then
+            state.openaiFormat.selectedIndex = (#state.openaiFormat.models > 0) and 1 or nil
+        end
+        Storage.saveOpenAIModelStore()
+        OpenAIService.populateOpenAIModelCombo()
+        if addModelItems.addOpenAIFormatModelDisplay then
+            addModelItems.addOpenAIFormatModelDisplay.Text = ""
+        end
+        if addModelItems.addOpenAIFormatModelName then
+            addModelItems.addOpenAIFormatModelName.Text = ""
+        end
+        if addModelWin then
+            addModelWin:Hide()
+        end
+        if openAIConfigWin then
+            openAIConfigWin:Show()
+        end
+        OpenAIService.syncOpenAIConfigControls()
+        print(string.format("[OpenAI] Model added: %s (%s)", displayInput, modelInput))
+    end
+
+    local function handleOpenAIDeleteModel()
+        OpenAIService.applyConfigFromControls()
+        Storage.ensureOpenAIModelList(state.openaiFormat)
+        local models = state.openaiFormat.models or {}
+        if #models == 0 then
+            local en = (uiText.en.openai_missing_model or "Select a valid OpenAI model.")
+            local cn = (uiText.cn.openai_missing_model or "请选择有效的 OpenAI 模型")
+            show_dynamic_message(en, cn)
+            return
+        end
+        local idx = state.openaiFormat.selectedIndex or 1
+        idx = math.max(1, math.min(idx, #models))
+        local target = models[idx]
+        if target.builtin then
+            local en = (uiText.en.openai_delete_builtin_warning or "Built-in models cannot be removed")
+            local cn = (uiText.cn.openai_delete_builtin_warning or "系统默认模型不可删除")
+            show_dynamic_message(en, cn)
+            return
+        end
+        local displayKey = target.display or target.name
+        if openAIModelStore.custom then
+            openAIModelStore.custom[displayKey] = nil
+        end
+        Storage.rebuildCustomModelListFromStore()
+        state.openaiFormat.models = Utils.deepCopy(DEFAULT_OPENAI_MODELS)
+        Storage.ensureOpenAIModelList(state.openaiFormat)
+        if state.openaiFormat.selectedIndex and state.openaiFormat.selectedIndex > (#state.openaiFormat.models or 0) then
+            state.openaiFormat.selectedIndex = (#state.openaiFormat.models > 0) and #state.openaiFormat.models or nil
+        end
+        Storage.saveOpenAIModelStore()
+        OpenAIService.populateOpenAIModelCombo()
+        OpenAIService.syncOpenAIConfigControls()
+        local en = (uiText.en.openai_delete_success or "Model deleted")
+        local cn = (uiText.cn.openai_delete_success or "模型已删除")
+        show_dynamic_message(en, cn)
+        print(string.format("[OpenAI] Model removed: %s", displayKey))
+    end
+
+    local translateTabInitialized = false
+
+
+
+
+
+    local function refreshTranslateStatus()
+        local tState = state.translate
+        if not tState then
+            return
+        end
+        applyTranslateStatusInternal(tState.lastStatusKey or "idle", tState.lastStatusArgs or {})
+    end
+
+    local function setTranslateControlsEnabled(enabled)
+        local flag = enabled and true or false
+        if controls.translateProviderCombo then
+            controls.translateProviderCombo.Enabled = flag
+        end
+        if controls.translateTargetCombo then
+            controls.translateTargetCombo.Enabled = flag
+        end
+        if controls.translateTransButton then
+            controls.translateTransButton.Enabled = flag
+        end
+        if controls.translateSelectedButton then
+            controls.translateSelectedButton.Enabled = flag and (state.translate.selectedIndex ~= nil)
+        end
+        if controls.translateUpdateButton then
+            controls.translateUpdateButton.Enabled = flag
+        end
+        if controls.translateEditor then
+            controls.translateEditor.Enabled = flag
+        end
+        if controls.translateConcurrencyCombo then
+            controls.translateConcurrencyCombo.Enabled = flag
+        end
+    end
+
+    local function normalizeTranslateTree()
+        if not controls.translateTree then
+            return
+        end
+        UI.withUpdatesSuspended(controls.translateTree, function()
+            controls.translateTree:SetHeaderLabels(UI.currentTranslateHeaders())
+            controls.translateTree.ColumnWidth[0] = 50
+            controls.translateTree.ColumnWidth[1] = 110
+            controls.translateTree.ColumnWidth[2] = 100
+            controls.translateTree.ColumnWidth[3] = 260
+        end)
+    end
+
+    local function resetTranslateState()
+        local tState = state.translate
+        if not tState then
+            return
+        end
+        tState.entries = {}
+        tState.populated = false
+        tState.selectedIndex = nil
+        tState.totalTokens = 0
+        tState.busy = false
+        tState.lastStatusKey = "idle"
+        tState.lastStatusArgs = nil
+        if controls.translateTree then
+            UI.withUpdatesSuspended(controls.translateTree, function()
+                controls.translateTree:Clear()
+            end)
+        end
+        normalizeTranslateTree()
+        if controls.translateEditor then
+            translateEditorProgrammatic = true
+            controls.translateEditor.Text = ""
+            translateEditorProgrammatic = false
+        end
+        if controls.translateSelectedButton then
+            controls.translateSelectedButton.Enabled = false
+        end
+        setTranslateStatus("idle")
+    end
+
+    local function cloneEditEntriesForTranslate()
+        local cloned = {}
+        for index, entry in ipairs(state.entries or {}) do
+            cloned[index] = {
+                index = index,
+                startFrame = entry.startFrame,
+                endFrame = entry.endFrame,
+                startText = entry.startText or "",
+                endText = entry.endText or "",
+                original = entry.text or "",
+                translation = "",
+            }
+        end
+        return cloned
+    end
+
+    local function populateTranslateTree()
+        normalizeTranslateTree()
+        if not controls.translateTree then
+            return
+        end
+        local entries = state.translate.entries or {}
+        UI.withUpdatesSuspended(controls.translateTree, function()
+            controls.translateTree:Clear()
+            for index, entry in ipairs(entries) do
+                local item = controls.translateTree:NewItem()
+                item.Text[0] = tostring(index)
+                local startDisplay = entry.startText or Subtitle.framesToTimecode(entry.startFrame or 0, state.fps or 24.0)
+                local endDisplay = entry.endText or Subtitle.framesToTimecode(entry.endFrame or 0, state.fps or 24.0)
+                item.Text[1] = string.format("▸ %s\n◂ %s", startDisplay or "", endDisplay or "")
+                item.Text[2] = entry.original or ""
+                item.Text[3] = entry.translation or ""
+                controls.translateTree:AddTopLevelItem(item)
+            end
+        end)
+    end
+
+    local function updateTranslateTreeRow(index, text)
+        if not controls.translateTree then
+            return
+        end
+        UI.withUpdatesSuspended(controls.translateTree, function()
+            local item = controls.translateTree:TopLevelItem(index - 1)
+            if item then
+                item.Text[3] = text or ""
+            end
+        end)
+    end
+
+    local function updateTranslateOriginalRow(index, text)
+        if not controls.translateTree then
+            return
+        end
+        UI.withUpdatesSuspended(controls.translateTree, function()
+            local item = controls.translateTree:TopLevelItem(index - 1)
+            if item then
+                item.Text[2] = text or ""
+            end
+        end)
+    end
+
+    local function selectTranslateRow(index)
+        state.translate.selectedIndex = index
+        local entry = state.translate.entries and state.translate.entries[index]
+        if controls.translateTree then
+            local item = controls.translateTree:TopLevelItem(index - 1)
+            if item and controls.translateTree:CurrentItem() ~= item then
+                controls.translateTree:SetCurrentItem(item)
+            end
+        end
+        if controls.translateEditor then
+            translateEditorProgrammatic = true
+            controls.translateEditor.Text = entry and (entry.translation or "") or ""
+            translateEditorProgrammatic = false
+        end
+        if controls.translateSelectedButton then
+            controls.translateSelectedButton.Enabled = not (state.translate.busy) and true
+        end
+    end
+
+    local function ensureTranslateEntries(force)
+        local tState = state.translate
+        if not tState then
+            return
+        end
+        if not force and tState.populated and #tState.entries > 0 then
+            populateTranslateTree()
+            refreshTranslateStatus()
+            return
+        end
+        setTranslateStatus("copying")
+        tState.entries = cloneEditEntriesForTranslate()
+        tState.populated = true
+        tState.selectedIndex = nil
+        tState.totalTokens = 0
+        populateTranslateTree()
+        if controls.translateEditor then
+            translateEditorProgrammatic = true
+            controls.translateEditor.Text = ""
+            translateEditorProgrammatic = false
+        end
+        if controls.translateSelectedButton then
+            controls.translateSelectedButton.Enabled = false
+        end
+        setTranslateStatus("idle")
+    end
+
+    local function initTranslateTab()
+        if translateTabInitialized then
+            normalizeTranslateTree()
+            refreshTranslateStatus()
+            return
+        end
+        translateTabInitialized = true
+        if controls.translateProviderLabel then
+            controls.translateProviderLabel.Text = UI.uiString("translate_provider_label")
+        end
+        if controls.translateTargetLabel then
+            controls.translateTargetLabel.Text = UI.uiString("translate_target_label")
+        end
+        if controls.translateProviderCombo then
+            controls.translateProviderCombo:Clear()
+            controls.translateProviderCombo.PlaceholderText = UI.uiString("translate_provider_placeholder")
+            local selectedIndex = 0
+            for idx, label in ipairs(TRANSLATE_PROVIDER_LIST) do
+                controls.translateProviderCombo:AddItem(label)
+                if state.translate.provider == label then
+                    selectedIndex = idx - 1
+                end
+            end
+            controls.translateProviderCombo.CurrentIndex = selectedIndex
+            state.translate.provider = controls.translateProviderCombo.CurrentText or TRANSLATE_PROVIDER_AZURE_LABEL
+        end
+        if controls.translateTargetCombo then
+            controls.translateTargetCombo:Clear()
+            controls.translateTargetCombo.PlaceholderText = UI.uiString("translate_target_placeholder")
+            local labels = Translate.getGoogleLangLabels()
+            local stored = state.translate.targetLabel
+            local selectedIndex = 0
+            for idx, label in ipairs(labels) do
+                controls.translateTargetCombo:AddItem(label)
+                if stored and stored == label then
+                    selectedIndex = idx - 1
+                end
+            end
+            controls.translateTargetCombo.CurrentIndex = selectedIndex
+            state.translate.targetLabel = controls.translateTargetCombo.CurrentText
+        end
+        if controls.translateTransButton then
+            controls.translateTransButton.Text = UI.uiString("translate_trans_button")
+        end
+        if controls.translateSelectedButton then
+            controls.translateSelectedButton.Text = UI.uiString("translate_selected_button")
+            controls.translateSelectedButton.Enabled = state.translate.selectedIndex ~= nil and not state.translate.busy
+        end
+        if controls.translateUpdateButton then
+            controls.translateUpdateButton.Text = UI.uiString("translate_update_button")
+        end
+        if controls.translateEditor then
+            controls.translateEditor.PlaceholderText = UI.uiString("translate_editor_placeholder")
+        end
+        normalizeTranslateTree()
+        setTranslateStatus("idle")
+    end
+
+    local function getTargetLangCode(label)
+        if label and label ~= "" then
+            return LANG_CODE_MAP[label] or LANG_CODE_MAP["English"] or "en"
+        end
+        return LANG_CODE_MAP["English"] or "en"
+    end
+
+    local function composeTranslatePrompt(targetLabel)
+        local target = targetLabel and Utils.trim(targetLabel) ~= "" and targetLabel or "English"
+        local prefix = TRANSLATE_PREFIX_PROMPT:gsub("{target_lang}", target)
+        local corePrompt = OPENAI_DEFAULT_SYSTEM_PROMPT
+        if state and state.openaiFormat and type(state.openaiFormat.systemPrompt) == "string" then
+            local trimmed = Utils.trim(state.openaiFormat.systemPrompt)
+            if trimmed ~= "" then
+                corePrompt = trimmed
+            end
+        end
+        return table.concat({ prefix, corePrompt, TRANSLATE_SUFFIX_PROMPT }, "\n")
+    end
+
+    local function fetch_provider_secret(provider)
+        local cleanProvider = Utils.trim(provider or "")
+        if cleanProvider == "" then
+            return nil, "missing_provider"
+        end
+        local cached = Translate.secretCache[cleanProvider]
+        if cached and cached ~= "" then
+            return cached
+        end
+        local url = string.format("%s/functions/v1/getApiKey?provider=%s", SUPABASE_URL, Utils.urlEncode(cleanProvider))
+        local headers = {
+            Authorization = "Bearer " .. SUPABASE_ANON_KEY,
+            apikey = SUPABASE_ANON_KEY,
+            ["Content-Type"] = "application/json",
+            ["User-Agent"] = string.format("%s/%s", SCRIPT_NAME, SCRIPT_VERSION),
+        }
+        local body, status = Services.httpGet(url, headers, SUPABASE_TIMEOUT)
+        if not body then
+            return nil, status or "request_failed"
+        end
+        local ok, decoded = pcall(json.decode, body)
+        if not ok or type(decoded) ~= "table" then
+            return nil, "decode_failed"
+        end
+        local apiKey = decoded.api_key or decoded.apiKey or decoded.key
+        if not apiKey or apiKey == "" then
+            return nil, "missing_key"
+        end
+        Translate.secretCache[cleanProvider] = apiKey
+        return apiKey
+    end
+
+    local function buildTranslateContext(entries, index)
+        local beforeParts, afterParts = {}, {}
+        if TRANSLATE_CONTEXT_WINDOW > 0 then
+            for offset = 1, TRANSLATE_CONTEXT_WINDOW do
+                local prev = entries[index - offset]
+                if not prev then break end
+                if prev.original and prev.original ~= "" then
+                    table.insert(beforeParts, 1, prev.original)
+                end
+            end
+            for offset = 1, TRANSLATE_CONTEXT_WINDOW do
+                local nxt = entries[index + offset]
+                if not nxt then break end
+                if nxt.original and nxt.original ~= "" then
+                    table.insert(afterParts, nxt.original)
+                end
+            end
+        end
+        return table.concat(beforeParts, "\n"), table.concat(afterParts, "\n")
+    end
+
+    function GLMService.buildRequestPayload(sentence, prefixText, suffixText, targetLabel)
+        local prompt = composeTranslatePrompt(targetLabel)
+        local messages = {
+            { role = "system", content = prompt },
+        }
+        local ctxParts = {}
+        if prefixText and Utils.trim(prefixText) ~= "" then
+            table.insert(ctxParts, prefixText)
+        end
+        if suffixText and Utils.trim(suffixText) ~= "" then
+            table.insert(ctxParts, suffixText)
+        end
+        if #ctxParts > 0 then
+            table.insert(messages, { role = "assistant", content = table.concat(ctxParts, "\nCONTEXT (do not translate)\n") })
+        end
+        table.insert(messages, { role = "user", content = string.format("<<< Sentence >>>\n%s", sentence or "") })
+
+        local payloadTable = {
+            model = GLM_MODEL,
+            messages = messages,
+            temperature = GLM_TEMPERATURE,
+            thinking = { type = "disabled" },
+        }
+        return json.encode(payloadTable)
+    end
+
+    function GLMService.parseResponseBody(body)
+        if type(body) ~= "string" or body == "" then
+            return nil, 0, "empty_response"
+        end
+
+        local ok, decoded = pcall(json.decode, body)
+        if not ok or type(decoded) ~= "table" then
+            return nil, 0, "decode_failed"
+        end
+
+        local choices = decoded.choices
+        if type(choices) ~= "table" or not choices[1] or not choices[1].message then
+            return nil, 0, "invalid_response"
+        end
+
+        local content = Utils.trim(choices[1].message.content or "")
+        if content == "" then
+            return nil, 0, "empty_translation"
+        end
+
+        local usage = decoded.usage
+        local tokens = 0
+        if type(usage) == "table" then
+            tokens = tonumber(usage.total_tokens or usage.totalTokens or 0) or 0
+        end
+        return content, tokens, nil
+    end
+
+    function GLMService.requestTranslation(sentence, prefixText, suffixText, targetLabel, apiKey)
+        local payload = GLMService.buildRequestPayload(sentence, prefixText, suffixText, targetLabel)
+        local headers = {
+            Authorization = "Bearer " .. apiKey,
+            ["Content-Type"] = "application/json",
+            ["User-Agent"] = string.format("%s/%s", SCRIPT_NAME, SCRIPT_VERSION),
+        }
+
+        local body, status = Services.httpPostJson(GLM_API_URL, payload, headers, GLM_TIMEOUT)
+        if not body then
+            return nil, 0, status or "request_failed"
+        end
+
+        return GLMService.parseResponseBody(body)
+    end
+
+    function Azure.resolveCredential()
+        local key = Utils.trim(state.azure and state.azure.apiKey or "")
+        local region = Utils.trim(state.azure and state.azure.region or "")
+        if key ~= "" and region ~= "" then
+            return key, region
+        end
+        local apiKey, err = fetch_provider_secret(AZURE_SUPABASE_PROVIDER)
+        if not apiKey then
+            return nil, nil, err
+        end
+        return apiKey, AZURE_FALLBACK_REGION
+    end
+
+    function Azure.parseResponseBody(body)
+        local ok, decoded = pcall(json.decode, body or "")
+        if not ok or type(decoded) ~= "table" then
+            return nil, 0, "decode_failed"
+        end
+        local first = decoded[1]
+        if type(first) ~= "table" then
+            return nil, 0, "invalid_response"
+        end
+        local translations = first.translations
+        if type(translations) ~= "table" or type(translations[1]) ~= "table" then
+            return nil, 0, "translation_failed"
+        end
+        local translated = translations[1].text
+        if not translated or Utils.trim(translated) == "" then
+            return nil, 0, "empty_translation"
+        end
+        return translated, 0, nil
+    end
+
+    function Azure.requestTranslation(text, targetCode, baseUrl, apiKey, region)
+        local cleanBase = Utils.trim(baseUrl or "")
+        if cleanBase == "" then
+            cleanBase = AZURE_DEFAULT_BASE_URL
+        end
+        cleanBase = cleanBase:gsub("/+$", "")
+        local query = string.format("?api-version=3.0&to=%s", Utils.urlEncode(targetCode or "en"))
+        local url = cleanBase .. "/translate" .. query
+        local payload = json.encode({
+            { text = text or "" },
+        })
+        local headers = {
+            ["Ocp-Apim-Subscription-Key"] = apiKey,
+            ["Ocp-Apim-Subscription-Region"] = region,
+            ["Content-Type"] = "application/json",
+            ["User-Agent"] = string.format("%s/%s", SCRIPT_NAME, SCRIPT_VERSION),
+        }
+        local body, status = Services.httpPostJson(url, payload, headers, AZURE_TIMEOUT)
+        if not body then
+            return nil, 0, status or "request_failed"
+        end
+        return Azure.parseResponseBody(body)
+    end
+
+function OpenAIService.buildRequestPayload(sentence, prefixText, suffixText, targetLabel, model, temperature)
+        local prompt = composeTranslatePrompt(targetLabel)
+        local messages = {
+            { role = "system", content = prompt },
+        }
+        local ctxParts = {}
+        if prefixText and Utils.trim(prefixText) ~= "" then
+            table.insert(ctxParts, prefixText)
+        end
+        if suffixText and Utils.trim(suffixText) ~= "" then
+            table.insert(ctxParts, suffixText)
+        end
+        if #ctxParts > 0 then
+            table.insert(messages, { role = "assistant", content = table.concat(ctxParts, "\nCONTEXT (do not translate)\n") })
+        end
+        table.insert(messages, { role = "user", content = string.format("<<< Sentence >>>\n%s", sentence or "") })
+
+        local payloadTable = {
+            model = model,
+            messages = messages,
+            temperature = temperature or OPENAI_FORMAT_DEFAULT_TEMPERATURE,
+        }
+        return json.encode(payloadTable)
+end
+
+function OpenAIService.parseResponseBody(body)
+    return GLMService.parseResponseBody(body)
+end
+
+function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targetLabel, config)
+        local model = config and config.model
+        if not model or Utils.trim(model) == "" then
+            return nil, 0, "openai_missing_model"
+        end
+        local baseUrl = Utils.trim(config.baseUrl or "")
+        if baseUrl == "" then
+            baseUrl = OPENAI_FORMAT_DEFAULT_BASE_URL
+        end
+        local apiKey = Utils.trim(config.apiKey or "")
+        if apiKey == "" then
+            return nil, 0, "openai_missing_key"
+        end
+        local temperature = tonumber(config.temperature) or OPENAI_FORMAT_DEFAULT_TEMPERATURE
+        if temperature < 0 then
+            temperature = 0
+        elseif temperature > 1 then
+            temperature = 1
+        end
+
+        local payload = OpenAIService.buildRequestPayload(sentence, prefixText, suffixText, targetLabel, model, temperature)
+        local headers = {
+            Authorization = "Bearer " .. apiKey,
+            ["Content-Type"] = "application/json",
+            ["User-Agent"] = string.format("%s/%s", SCRIPT_NAME, SCRIPT_VERSION),
+        }
+        local apiUrl = baseUrl:gsub("/+$", "") .. "/v1/chat/completions"
+        local body, status = Services.httpPostJson(apiUrl, payload, headers, OPENAI_FORMAT_TIMEOUT)
+        if not body then
+            return nil, 0, status or "request_failed"
+        end
+    local translation, tokens, err = OpenAIService.parseResponseBody(body)
+        if not translation then
+            local ok, decoded = pcall(json.decode, body)
+            if ok and type(decoded) == "table" and decoded.error and decoded.error.message then
+                return nil, 0, decoded.error.message
+            end
+        end
+        return translation, tokens, err
+    end
+
+    local function runParallelChatRequests(tasks, options)
+        if not tasks or #tasks == 0 then
+            return {}, nil
+        end
+
+        local tempDir = Utils.getTempDir()
+        if not Utils.ensureDir(tempDir) then
+            return nil, "temp_dir_failed"
+        end
+
+        options = options or {}
+        local apiUrl = options.apiUrl or GLM_API_URL
+        if not apiUrl or apiUrl == "" then
+            return nil, "invalid_api_url"
+        end
+        local timeout = options.timeout or GLM_TIMEOUT
+        local limit = math.max(1, math.min(options.parallelLimit or #tasks, #tasks))
+        local payloadPrefix = options.payloadPrefix or "chat_payload"
+        local outputPrefix = options.outputPrefix or "chat_output"
+        local headers = {}
+        if type(options.headers) == "table" then
+            for _, header in ipairs(options.headers) do
+                if type(header) == "string" and Utils.trim(header) ~= "" then
+                    table.insert(headers, header)
+                end
+            end
+        end
+        local parser = options.parseResponse
+        if type(parser) ~= "function" then
+            parser = GLMService.parseResponseBody
+        end
+
+        local commandParts = {
+            "curl",
+            "-sS",
+            "--show-error",
+            "--parallel",
+            "--parallel-immediate",
+            string.format("--parallel-max %d", limit),
+            string.format("-m %d", timeout),
+        }
+
+        local artifacts = {}
+        local createdCount = 0
+
+        local function cleanupArtifacts()
+            for _, art in ipairs(artifacts) do
+                if art.output then
+                    os.remove(art.output)
+                end
+                if art.payload then
+                    os.remove(art.payload)
+                end
+            end
+        end
+
+        for idx, task in ipairs(tasks) do
+            local payloadName = string.format("%s_%s_%d_%d.json", payloadPrefix, state.sessionCode or "sess", os.time(), idx + createdCount)
+            local outputName = string.format("%s_%s_%d_%d.json", outputPrefix, state.sessionCode or "sess", os.time(), idx + createdCount)
+            createdCount = createdCount + 1
+
+            local payloadPath = Utils.joinPath(tempDir, payloadName)
+            local outputPath = Utils.joinPath(tempDir, outputName)
+
+            local payloadFile, err = io.open(payloadPath, "wb")
+            if not payloadFile then
+                cleanupArtifacts()
+                return nil, string.format("payload_tmp_open_failed: %s", tostring(err))
+            end
+            payloadFile:write(task.payload or "")
+            payloadFile:close()
+
+            table.insert(artifacts, { index = task.index, payload = payloadPath, output = outputPath })
+
+            table.insert(commandParts, "-X")
+            table.insert(commandParts, "POST")
+            for _, header in ipairs(headers) do
+                table.insert(commandParts, "-H")
+                table.insert(commandParts, string.format("%q", header))
+            end
+            table.insert(commandParts, "--data-binary")
+            table.insert(commandParts, string.format("@%q", payloadPath))
+            table.insert(commandParts, "-o")
+            table.insert(commandParts, string.format("%q", outputPath))
+            table.insert(commandParts, string.format("%q", task.url or apiUrl))
+            if idx < #tasks then
+                table.insert(commandParts, "--next")
+            end
+        end
+
+        local command = table.concat(commandParts, " ")
+        local ok = runShellCommand(command)
+        if not ok then
+            cleanupArtifacts()
+            return nil, "parallel_execution_failed"
+        end
+
+        local results = {}
+        local anyOutput = false
+
+        for _, art in ipairs(artifacts) do
+            local body
+            local file = io.open(art.output, "rb")
+            if file then
+                body = file:read("*a") or ""
+                file:close()
+            end
+            if body and body ~= "" then
+                anyOutput = true
+                local translation, extra, errMsg = parser(body)
+                if translation then
+                    results[art.index] = {
+                        success = true,
+                        translation = translation,
+                        tokens = extra or 0,
+                        meta = extra,
+                    }
+                else
+                    results[art.index] = {
+                        success = false,
+                        err = errMsg or "translation_failed",
+                    }
+                end
+            else
+                results[art.index] = {
+                    success = false,
+                    err = "empty_response",
+                }
+            end
+            if art.output then
+                os.remove(art.output)
+            end
+            if art.payload then
+                os.remove(art.payload)
+            end
+        end
+
+        if not anyOutput then
+            return nil, "parallel_execution_failed"
+        end
+
+        return results, nil
+    end
+
+    function GLMService.translateEntries(entries, targetLabel)
+        if not entries or #entries == 0 then
+            return nil, "no_entries"
+        end
+
+        --setTranslateStatus("fetching_key")
+        local apiKey, fetchErr = fetch_provider_secret(GLM_SUPABASE_PROVIDER)
+        if not apiKey then
+            return nil, fetchErr or "missing_key"
+        end
+
+        local totalTokens = 0
+        local total = #entries
+        local concurrency = math.max(1, state.translate and state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY)
+        local processed = 0
+
+        setTranslateStatus("progress", processed, total, totalTokens)
+
+        local useParallel = concurrency > 1
+
+        if useParallel then
+            local startIndex = 1
+            while startIndex <= total do
+                local batchEnd = math.min(total, startIndex + concurrency - 1)
+                local batchIndices = {}
+                for idx = startIndex, batchEnd do
+                    table.insert(batchIndices, idx)
+                end
+
+                local attempts = {}
+                for _, idx in ipairs(batchIndices) do
+                    attempts[idx] = 0
+                end
+
+                local pending = {}
+                for _, idx in ipairs(batchIndices) do
+                    table.insert(pending, idx)
+                end
+
+                while #pending > 0 do
+                    local tasks = {}
+                    for _, idx in ipairs(pending) do
+                        local entry = entries[idx]
+                        local prefixText, suffixText = buildTranslateContext(entries, idx)
+                        table.insert(tasks, {
+                            index = idx,
+                            payload = GLMService.buildRequestPayload(entry.original or "", prefixText, suffixText, targetLabel),
+                        })
+                    end
+
+                    local results, batchErr = runParallelChatRequests(tasks, {
+                        apiUrl = GLM_API_URL,
+                        timeout = GLM_TIMEOUT,
+                        parallelLimit = concurrency,
+                        headers = {
+                            string.format("Authorization: Bearer %s", apiKey),
+                            "Content-Type: application/json",
+                            string.format("User-Agent: %s/%s", SCRIPT_NAME, SCRIPT_VERSION),
+                        },
+                        payloadPrefix = "glm_payload",
+                        outputPrefix = "glm_output",
+                    })
+                    if not results then
+                        if processed == 0 then
+                            useParallel = false
+                            break
+                        end
+                        local failIdx = pending[1]
+                        local errMsg = batchErr or "parallel_execution_failed"
+                        if failIdx then
+                            processed = processed + 1
+                            local fallback = string.format("[Error: %s]", tostring(errMsg))
+                            entries[failIdx].translation = fallback
+                            updateTranslateTreeRow(failIdx, fallback)
+                            setTranslateStatus("progress", processed, total, totalTokens)
+                        end
+                        return nil, errMsg, totalTokens
+                    end
+
+                    local nextPending = {}
+
+                    for _, task in ipairs(tasks) do
+                        local result = results[task.index]
+                        if result and result.success then
+                            local entry = entries[task.index]
+                            entry.translation = result.translation
+                            updateTranslateTreeRow(task.index, result.translation)
+                            totalTokens = totalTokens + (result.tokens or 0)
+                            processed = processed + 1
+                            setTranslateStatus("progress", processed, total, totalTokens)
+                        else
+                            local errMsg = (result and result.err) or batchErr or "translation_failed"
+                            if errMsg == "parallel_execution_failed" then
+                                errMsg = "openai_parallel_failed"
+                            end
+                            attempts[task.index] = (attempts[task.index] or 0) + 1
+                            if attempts[task.index] < GLM_MAX_RETRY then
+                                table.insert(nextPending, task.index)
+                            else
+                                processed = processed + 1
+                                local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
+                                entries[task.index].translation = fallback
+                                updateTranslateTreeRow(task.index, fallback)
+                                setTranslateStatus("progress", processed, total, totalTokens)
+                                return nil, errMsg or "translation_failed", totalTokens
+                            end
+                        end
+                    end
+
+                    if #nextPending == 0 then
+                        pending = {}
+                    else
+                        pending = nextPending
+                    end
+                end
+
+                if not useParallel then
+                    break
+                end
+
+                startIndex = batchEnd + 1
+            end
+        end
+
+        if not useParallel then
+            totalTokens = 0
+            processed = 0
+            setTranslateStatus("progress", processed, total, totalTokens)
+
+            for startIndex = 1, total, concurrency do
+                local batchEnd = math.min(total, startIndex + concurrency - 1)
+                for index = startIndex, batchEnd do
+                    local entry = entries[index]
+                    local prefixText, suffixText = buildTranslateContext(entries, index)
+                    local success = false
+                    local lastError = nil
+
+                    for attempt = 1, GLM_MAX_RETRY do
+                        local translation, tokens, errMsg = GLMService.requestTranslation(entry.original or "", prefixText, suffixText, targetLabel, apiKey)
+                        if translation then
+                            entry.translation = translation
+                            updateTranslateTreeRow(index, translation)
+                            totalTokens = totalTokens + (tokens or 0)
+                            success = true
+                            break
+                        else
+                            lastError = errMsg
+                        end
+                    end
+
+                    processed = processed + 1
+                    setTranslateStatus("progress", processed, total, totalTokens)
+
+                    if not success then
+                        local fallback = string.format("[Error: %s]", tostring(lastError or "failed"))
+                        entry.translation = fallback
+                        updateTranslateTreeRow(index, fallback)
+                        return nil, lastError or "translation_failed", totalTokens
+                    end
+                end
+            end
+        end
+
+        return totalTokens, nil
+    end
+
+    function Azure.translateEntries(entries, targetLabel)
+        if not entries or #entries == 0 then
+            return nil, "no_entries"
+        end
+
+        local targetCode = getTargetLangCode(targetLabel)
+        if not targetCode or targetCode == "" then
+            targetCode = "en"
+        end
+
+        local userKey = Utils.trim(state.azure and state.azure.apiKey or "")
+        local userRegion = Utils.trim(state.azure and state.azure.region or "")
+        if userKey == "" or userRegion == "" then
+            --setTranslateStatus("fetching_key")
+        end
+        local apiKey, region, fetchErr = Azure.resolveCredential()
+        if not apiKey then
+            return nil, fetchErr or "missing_key"
+        end
+        if not region or region == "" then
+            region = AZURE_FALLBACK_REGION
+        end
+        local baseUrl = state.azure and state.azure.baseUrl or AZURE_DEFAULT_BASE_URL
+
+        local totalTokens = 0
+        local total = #entries
+        local processed = 0
+        local concurrency = math.max(1, state.translate and state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY)
+        local useParallel = concurrency > 1
+
+        local cleanBase = Utils.trim(baseUrl or "")
+        if cleanBase == "" then
+            cleanBase = AZURE_DEFAULT_BASE_URL
+        end
+        cleanBase = cleanBase:gsub("/+$", "")
+        baseUrl = cleanBase
+        local translateUrl = cleanBase .. "/translate" .. string.format("?api-version=3.0&to=%s", Utils.urlEncode(targetCode or "en"))
+        local headers = {
+            string.format("Ocp-Apim-Subscription-Key: %s", apiKey),
+            string.format("Ocp-Apim-Subscription-Region: %s", region),
+            "Content-Type: application/json",
+            string.format("User-Agent: %s/%s", SCRIPT_NAME, SCRIPT_VERSION),
+        }
+
+        setTranslateStatus("progress", processed, total, totalTokens)
+
+        if useParallel then
+            local startIndex = 1
+            while startIndex <= total do
+                local batchEnd = math.min(total, startIndex + concurrency - 1)
+                local tasks = {}
+                for idx = startIndex, batchEnd do
+                    local entry = entries[idx]
+                    table.insert(tasks, {
+                        index = idx,
+                        payload = json.encode({
+                            { text = entry.original or "" },
+                        }),
+                        url = translateUrl,
+                    })
+                end
+
+                local results, batchErr = runParallelChatRequests(tasks, {
+                    timeout = AZURE_TIMEOUT,
+                    parallelLimit = concurrency,
+                    headers = headers,
+                    payloadPrefix = "azure_payload",
+                    outputPrefix = "azure_output",
+                    parseResponse = Azure.parseResponseBody,
+                })
+                if not results then
+                    if processed == 0 then
+                        useParallel = false
+                        break
+                    end
+                    local failIdx = tasks[1] and tasks[1].index or startIndex
+                    local errMsg = batchErr or "parallel_execution_failed"
+                    local fallback = string.format("[Error: %s]", tostring(errMsg))
+                    if failIdx and entries[failIdx] then
+                        entries[failIdx].translation = fallback
+                        updateTranslateTreeRow(failIdx, fallback)
+                        processed = processed + 1
+                        setTranslateStatus("progress", processed, total, totalTokens)
+                    end
+                    return nil, errMsg, totalTokens
+                end
+
+                for _, task in ipairs(tasks) do
+                    local result = results[task.index]
+                    if result and result.success then
+                        local translation = result.translation
+                        entries[task.index].translation = translation
+                        updateTranslateTreeRow(task.index, translation)
+                        processed = processed + 1
+                        setTranslateStatus("progress", processed, total, totalTokens)
+                    else
+                        local errMsg = (result and result.err) or batchErr or "translation_failed"
+                        local fallback = string.format("[Error: %s]", tostring(errMsg))
+                        entries[task.index].translation = fallback
+                        updateTranslateTreeRow(task.index, fallback)
+                        return nil, errMsg, totalTokens
+                    end
+                end
+
+                startIndex = batchEnd + 1
+            end
+        end
+
+        if (not useParallel) or (processed < total) then
+            processed = 0
+            setTranslateStatus("progress", processed, total, totalTokens)
+            for index, entry in ipairs(entries) do
+                local translation, _, errMsg = Azure.requestTranslation(entry.original or "", targetCode, baseUrl, apiKey, region)
+                if translation then
+                    entry.translation = translation
+                    updateTranslateTreeRow(index, translation)
+                else
+                    local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
+                    entry.translation = fallback
+                    updateTranslateTreeRow(index, fallback)
+                    return nil, errMsg or "translation_failed", totalTokens
+                end
+                processed = processed + 1
+                setTranslateStatus("progress", processed, total, totalTokens)
+            end
+        end
+
+        return totalTokens, nil
+    end
+
+    function OpenAIService.translateEntries(entries, targetLabel)
+        if not entries or #entries == 0 then
+            return nil, "no_entries"
+        end
+
+        OpenAIService.applyConfigFromControls()
+        Storage.ensureOpenAIModelList(state.openaiFormat)
+        local selected = Storage.getOpenAISelectedModel(state.openaiFormat)
+        if not selected then
+            return nil, "openai_missing_model"
+        end
+        local apiKey = Utils.trim(state.openaiFormat.apiKey or "")
+        if apiKey == "" then
+            return nil, "openai_missing_key"
+        end
+        local baseUrl = Utils.trim(state.openaiFormat.baseUrl or "")
+        if baseUrl == "" then
+            baseUrl = OPENAI_FORMAT_DEFAULT_BASE_URL
+        end
+        local temperature = tonumber(state.openaiFormat.temperature) or OPENAI_FORMAT_DEFAULT_TEMPERATURE
+        if temperature < 0 then
+            temperature = 0
+        elseif temperature > 1 then
+            temperature = 1
+        end
+
+        local totalTokens = 0
+        local total = #entries
+        local concurrency = math.max(1, state.translate and state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY)
+        local processed = 0
+
+        setTranslateStatus("progress", processed, total, totalTokens)
+
+        local useParallel = concurrency > 1
+        local apiUrl = baseUrl:gsub("/*$", "") .. "/v1/chat/completions"
+
+        if useParallel then
+            local startIndex = 1
+            while startIndex <= total do
+                local batchEnd = math.min(total, startIndex + concurrency - 1)
+                local batchIndices = {}
+                for idx = startIndex, batchEnd do
+                    table.insert(batchIndices, idx)
+                end
+
+                local attempts = {}
+                for _, idx in ipairs(batchIndices) do
+                    attempts[idx] = 0
+                end
+
+                local pending = {}
+                for _, idx in ipairs(batchIndices) do
+                    table.insert(pending, idx)
+                end
+
+                while #pending > 0 do
+                    local tasks = {}
+                    for _, idx in ipairs(pending) do
+                        local entry = entries[idx]
+                        local prefixText, suffixText = buildTranslateContext(entries, idx)
+                        table.insert(tasks, {
+                            index = idx,
+                            payload = OpenAIService.buildRequestPayload(entry.original or "", prefixText, suffixText, targetLabel, selected.name, temperature),
+                        })
+                    end
+
+                    local results, batchErr = runParallelChatRequests(tasks, {
+                        apiUrl = apiUrl,
+                        timeout = OPENAI_FORMAT_TIMEOUT,
+                        parallelLimit = concurrency,
+                        headers = {
+                            string.format("Authorization: Bearer %s", apiKey),
+                            "Content-Type: application/json",
+                            string.format("User-Agent: %s/%s", SCRIPT_NAME, SCRIPT_VERSION),
+                        },
+                        payloadPrefix = "openai_payload",
+                        outputPrefix = "openai_output",
+                        parseResponse = OpenAIService.parseResponseBody,
+                    })
+                    if not results then
+                        if processed == 0 then
+                            useParallel = false
+                            break
+                        end
+                        local failIdx = pending[1]
+                        local errMsg = batchErr or "parallel_execution_failed"
+                        if errMsg == "parallel_execution_failed" then
+                            errMsg = "openai_parallel_failed"
+                        end
+                        if failIdx then
+                            processed = processed + 1
+                            local fallback = string.format("[Error: %s]", tostring(errMsg))
+                            entries[failIdx].translation = fallback
+                            updateTranslateTreeRow(failIdx, fallback)
+                            setTranslateStatus("progress", processed, total, totalTokens)
+                        end
+                        return nil, errMsg, totalTokens
+                    end
+
+                    local nextPending = {}
+
+                    for _, task in ipairs(tasks) do
+                        local result = results[task.index]
+                        if result and result.success then
+                            local entry = entries[task.index]
+                            entry.translation = result.translation
+                            updateTranslateTreeRow(task.index, result.translation)
+                            totalTokens = totalTokens + (result.tokens or 0)
+                            processed = processed + 1
+                            setTranslateStatus("progress", processed, total, totalTokens)
+                        else
+                            local errMsg = (result and result.err) or batchErr or "translation_failed"
+                            attempts[task.index] = (attempts[task.index] or 0) + 1
+                            if attempts[task.index] < GLM_MAX_RETRY then
+                                table.insert(nextPending, task.index)
+                            else
+                                processed = processed + 1
+                                local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
+                                entries[task.index].translation = fallback
+                                updateTranslateTreeRow(task.index, fallback)
+                                setTranslateStatus("progress", processed, total, totalTokens)
+                                return nil, errMsg or "translation_failed", totalTokens
+                            end
+                        end
+                    end
+
+                    if #nextPending == 0 then
+                        pending = {}
+                    else
+                        pending = nextPending
+                    end
+                end
+
+                if not useParallel then
+                    break
+                end
+
+                startIndex = batchEnd + 1
+            end
+        end
+
+        if not useParallel then
+            totalTokens = 0
+            processed = 0
+            setTranslateStatus("progress", processed, total, totalTokens)
+
+            local requestConfig = {
+                baseUrl = baseUrl,
+                apiKey = apiKey,
+                model = selected.name,
+                temperature = temperature,
+            }
+
+            for startIndex = 1, total, concurrency do
+                local batchEnd = math.min(total, startIndex + concurrency - 1)
+                for index = startIndex, batchEnd do
+                    local entry = entries[index]
+                    local prefixText, suffixText = buildTranslateContext(entries, index)
+                    local success = false
+                    local lastError = nil
+
+                    for attempt = 1, GLM_MAX_RETRY do
+                        local translation, tokens, errMsg = OpenAIService.requestTranslation(entry.original or "", prefixText, suffixText, targetLabel, requestConfig)
+                        if translation then
+                            entry.translation = translation
+                            updateTranslateTreeRow(index, translation)
+                            totalTokens = totalTokens + (tokens or 0)
+                            success = true
+                            break
+                        else
+                            lastError = errMsg
+                        end
+                    end
+
+                    processed = processed + 1
+                    setTranslateStatus("progress", processed, total, totalTokens)
+
+                    if not success then
+                        local fallback = string.format("[Error: %s]", tostring(lastError or "failed"))
+                        entry.translation = fallback
+                        updateTranslateTreeRow(index, fallback)
+                        return nil, lastError or "translation_failed", totalTokens
+                    end
+                end
+            end
+        end
+
+        return totalTokens, nil
+    end
+
+    local function performTranslateWorkflow()
+        if state.translate.busy then
+            return false
+        end
+
+        OpenAIService.applyConfigFromControls()
+
+        ensureTranslateEntries(false)
+        local entries = state.translate.entries or {}
+        if #entries == 0 then
+            setTranslateStatus("no_entries")
+            return false
+        end
+
+        local provider = controls.translateProviderCombo and controls.translateProviderCombo.CurrentText or state.translate.provider
+        if not provider or Utils.trim(provider) == "" then
+            provider = TRANSLATE_PROVIDER_AZURE_LABEL
+        end
+        state.translate.provider = provider
+        local translateFunc
+        if provider == TRANSLATE_PROVIDER_AZURE_LABEL then
+            translateFunc = Azure.translateEntries
+        elseif provider == TRANSLATE_PROVIDER_GL_LABEL then
+            translateFunc = GLMService.translateEntries
+        elseif provider == TRANSLATE_PROVIDER_OPENAI_LABEL then
+            translateFunc = OpenAIService.translateEntries
+        else
+            local en, cn = resolveTranslateErrorPair("provider_not_supported")
+            show_dynamic_message(en, cn)
+            setTranslateStatus("failed", resolveTranslateError("provider_not_supported"))
+            return false
+        end
+
+        local targetLabel = controls.translateTargetCombo and controls.translateTargetCombo.CurrentText or state.translate.targetLabel or "English"
+        state.translate.targetLabel = targetLabel
+
+        state.translate.busy = true
+        setTranslateControlsEnabled(false)
+
+        local ok, totalTokens, err = pcall(translateFunc, entries, targetLabel)
+
+        state.translate.busy = false
+        setTranslateControlsEnabled(true)
+
+        if not ok then
+            state.translate.totalTokens = 0
+            local en, cn = resolveTranslateErrorPair(totalTokens or "translation_failed")
+            show_dynamic_message(en, cn)
+            setTranslateStatus("failed", resolveTranslateError(totalTokens) or tostring(totalTokens))
+            return false
+        end
+
+        if not totalTokens then
+            state.translate.totalTokens = 0
+            local en, cn = resolveTranslateErrorPair(err or "translation_failed")
+            show_dynamic_message(en, cn)
+            setTranslateStatus("failed", resolveTranslateError(err or "translation_failed"))
+            return false
+        end
+
+        state.translate.totalTokens = totalTokens
+        setTranslateStatus("success", #entries, totalTokens)
+        notifyTranslateStatus("success", { #entries, totalTokens }, { #entries, totalTokens })
+        return true
+    end
+
+    local function translateSingleEntry(index, targetLabel)
+        OpenAIService.applyConfigFromControls()
+        local entries = state.translate.entries or {}
+        local entry = entries[index]
+        if not entry then
+            setTranslateStatus("failed", resolveTranslateError("no_selection"))
+            return false
+        end
+        local provider = state.translate.provider or TRANSLATE_PROVIDER_AZURE_LABEL
+        if provider == TRANSLATE_PROVIDER_AZURE_LABEL then
+            local targetCode = getTargetLangCode(targetLabel)
+            if not targetCode or targetCode == "" then
+                targetCode = "en"
+            end
+            local userKey = Utils.trim(state.azure and state.azure.apiKey or "")
+            local userRegion = Utils.trim(state.azure and state.azure.region or "")
+            if userKey == "" or userRegion == "" then
+                --setTranslateStatus("fetching_key")
+            end
+            local apiKey, region, fetchErr = Azure.resolveCredential()
+            if not apiKey then
+                setTranslateStatus("failed", resolveTranslateError(fetchErr or "missing_key"))
+                return false
+            end
+            if not region or region == "" then
+                region = AZURE_FALLBACK_REGION
+            end
+            local baseUrl = state.azure and state.azure.baseUrl or AZURE_DEFAULT_BASE_URL
+            setTranslateStatus("progress", 0, 1, state.translate.totalTokens or 0)
+            local translation, _, errMsg = Azure.requestTranslation(entry.original or "", targetCode, baseUrl, apiKey, region)
+            if translation then
+                entry.translation = translation
+                updateTranslateTreeRow(index, translation)
+                state.translate.totalTokens = state.translate.totalTokens or 0
+                setTranslateStatus("success", 1, state.translate.totalTokens)
+                return true
+            end
+            local message = resolveTranslateError(errMsg or "translation_failed")
+            local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
+            entry.translation = fallback
+            updateTranslateTreeRow(index, fallback)
+            setTranslateStatus("failed", message)
+            return false
+        elseif provider == TRANSLATE_PROVIDER_GL_LABEL then
+            --setTranslateStatus("fetching_key")
+            local apiKey, fetchErr = fetch_provider_secret(GLM_SUPABASE_PROVIDER)
+            if not apiKey then
+                setTranslateStatus("failed", resolveTranslateError(fetchErr or "missing_key"))
+                return false
+            end
+
+            local beforeCtx, afterCtx = buildTranslateContext(entries, index)
+            setTranslateStatus("progress", 0, 1, state.translate.totalTokens or 0)
+
+            local translation, tokens, errMsg = GLMService.requestTranslation(entry.original or "", beforeCtx, afterCtx, targetLabel, apiKey)
+            if translation then
+                entry.translation = translation
+                updateTranslateTreeRow(index, translation)
+                state.translate.totalTokens = (state.translate.totalTokens or 0) + (tokens or 0)
+                setTranslateStatus("success", 1, state.translate.totalTokens)
+                return true
+            end
+
+            local message = resolveTranslateError(errMsg or "translation_failed")
+            local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
+            entry.translation = fallback
+            updateTranslateTreeRow(index, fallback)
+            setTranslateStatus("failed", message)
+            return false
+        elseif provider == TRANSLATE_PROVIDER_OPENAI_LABEL then
+            OpenAIService.applyConfigFromControls()
+            Storage.ensureOpenAIModelList(state.openaiFormat)
+            local selected = Storage.getOpenAISelectedModel(state.openaiFormat)
+            if not selected then
+                setTranslateStatus("failed", resolveTranslateError("openai_missing_model"))
+                return false
+            end
+            local apiKey = Utils.trim(state.openaiFormat.apiKey or "")
+            if apiKey == "" then
+                setTranslateStatus("failed", resolveTranslateError("openai_missing_key"))
+                return false
+            end
+            local baseUrl = Utils.trim(state.openaiFormat.baseUrl or "")
+            if baseUrl == "" then
+                baseUrl = OPENAI_FORMAT_DEFAULT_BASE_URL
+            end
+            local temperature = tonumber(state.openaiFormat.temperature) or OPENAI_FORMAT_DEFAULT_TEMPERATURE
+            if temperature < 0 then
+                temperature = 0
+            elseif temperature > 1 then
+                temperature = 1
+            end
+
+            local beforeCtx, afterCtx = buildTranslateContext(entries, index)
+            setTranslateStatus("progress", 0, 1, state.translate.totalTokens or 0)
+
+            local translation, tokens, errMsg = OpenAIService.requestTranslation(entry.original or "", beforeCtx, afterCtx, targetLabel, {
+                baseUrl = baseUrl,
+                apiKey = apiKey,
+                model = selected.name,
+                temperature = temperature,
+            })
+            if translation then
+                entry.translation = translation
+                updateTranslateTreeRow(index, translation)
+                state.translate.totalTokens = (state.translate.totalTokens or 0) + (tokens or 0)
+                setTranslateStatus("success", 1, state.translate.totalTokens)
+                return true
+            end
+
+            local message = resolveTranslateError(errMsg or "translation_failed")
+            local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
+            entry.translation = fallback
+            updateTranslateTreeRow(index, fallback)
+            setTranslateStatus("failed", message)
+            return false
+        end
+
+        setTranslateStatus("failed", resolveTranslateError("provider_not_supported"))
+        return false
+    end
+
+
+translate.setStatus = setTranslateStatus
+translate.resolveError = resolveTranslateError
+translate.handleVerify = handleOpenAIVerify
+translate.handleAddModel = handleOpenAIAddModel
+translate.handleDeleteModel = handleOpenAIDeleteModel
+translate.refreshStatus = refreshTranslateStatus
+translate.setControlsEnabled = setTranslateControlsEnabled
+translate.normalizeTree = normalizeTranslateTree
+translate.resetState = resetTranslateState
+translate.ensureEntries = ensureTranslateEntries
+translate.initTab = initTranslateTab
+translate.performWorkflow = performTranslateWorkflow
+translate.translateSingleEntry = translateSingleEntry
+translate.updateTreeRow = updateTranslateTreeRow
+translate.updateOriginalRow = updateTranslateOriginalRow
+translate.selectRow = selectTranslateRow
+function UI.setRowHighlight(rowIndex, color)
+    if not controls.tree then
+        return
+    end
+    local item = controls.tree:TopLevelItem(rowIndex - 1)
     if not item then
         return
     end
@@ -1258,56 +4370,58 @@ local function setRowHighlight(rowIndex, color)
     end
 end
 
-if mainTabs then
-    local initialTabs = uiText.cn.tabs or { "字幕编辑", "配置" }
+if controls.mainTabs then
+    local initialTabs = uiText.cn.tabs or { "字幕编辑", "翻译", "设置" }
     for _, title in ipairs(initialTabs) do
-        mainTabs:AddTab(title)
+        controls.mainTabs:AddTab(title)
     end
-    if mainStack then
-        mainTabs.CurrentIndex = 0
-        mainStack.CurrentIndex = 0
+    if controls.mainStack then
+        controls.mainTabs.CurrentIndex = 0
+        controls.mainStack.CurrentIndex = 0
     end
 end
 
-local function refreshUpdateNotice()
-    if not updateLabel then
+translate.initTab()
+
+function UI.refreshUpdateNotice()
+    if not controls.updateLabel then
         return
     end
     local info = state.updateInfo
     if type(info) ~= "table" then
-        updateLabel.Text = ""
-        updateLabel.Visible = false
+        controls.updateLabel.Text = ""
+        controls.updateLabel.Visible = false
         return
     end
-    local lang = currentLanguage()
+    local lang = UI.currentLanguage()
     local text
     if lang == "en" then
         text = info.en or info.cn
     else
         text = info.cn or info.en
     end
-    text = trim(text or "")
+    text = Utils.trim(text or "")
     if text ~= "" then
-        updateLabel.Text = text
-        updateLabel.Visible = true
+        controls.updateLabel.Text = text
+        controls.updateLabel.Visible = true
         return
     end
-    updateLabel.Text = ""
-    updateLabel.Visible = false
+    controls.updateLabel.Text = ""
+    controls.updateLabel.Visible = false
 end
 
-local function buildUpdateMessage(payload, lang, latest, current)
+function UI.buildUpdateMessage(payload, lang, latest, current)
     local messageKey = lang == "cn" and "cn" or "en"
     local baseText = nil
     if type(payload) == "table" then
         baseText = payload[messageKey] or payload[lang == "cn" and "zh" or nil]
     end
     local parts = {}
-    baseText = trim(baseText or "")
+    baseText = Utils.trim(baseText or "")
     if baseText ~= "" then
         table.insert(parts, baseText)
     end
-    local readableCurrent = trim(current or "")
+    local readableCurrent = Utils.trim(current or "")
     if readableCurrent == "" then
         readableCurrent = (lang == "cn") and "未知" or "unknown"
     end
@@ -1321,8 +4435,8 @@ local function buildUpdateMessage(payload, lang, latest, current)
     return table.concat(parts, "\n")
 end
 
-local function checkForUpdates()
-    local ok, result = pcall(supabaseCheckUpdate, SCRIPT_NAME)
+function App.checkForUpdates()
+    local ok, result = pcall(Services.supabaseCheckUpdate, SCRIPT_NAME)
     if not ok then
         print(string.format("[Update] Check failed: %s", tostring(result)))
         return
@@ -1330,27 +4444,27 @@ local function checkForUpdates()
     if type(result) ~= "table" then
         return
     end
-    local latest = trim(tostring(result.latest or ""))
+    local latest = Utils.trim(tostring(result.latest or ""))
     if latest == "" then
         return
     end
-    local current = trim(tostring(SCRIPT_VERSION or ""))
+    local current = Utils.trim(tostring(SCRIPT_VERSION or ""))
     if latest == current then
         return
     end
     local info = {
         latest = latest,
         current = current,
-        cn = buildUpdateMessage(result, "cn", latest, current),
-        en = buildUpdateMessage(result, "en", latest, current),
+        cn = UI.buildUpdateMessage(result, "cn", latest, current),
+        en = UI.buildUpdateMessage(result, "en", latest, current),
     }
     state.updateInfo = info
-    refreshUpdateNotice()
+    UI.refreshUpdateNotice()
     local readableCurrent = current ~= "" and current or "unknown"
     print(string.format("[Update] Latest version %s available (current %s).", latest, readableCurrent))
 end
 
-local function updateStatus(key, ...)
+function UI.updateStatus(key, ...)
     state.lastStatusKey = key
     state.lastStatusArgs = { ... }
 
@@ -1359,7 +4473,7 @@ local function updateStatus(key, ...)
         return
     end
 
-    local template = messageString(key)
+    local template = UI.messageString(key)
     if template then
         it.StatusLabel.Text = string.format(template, ...)
         return
@@ -1372,13 +4486,13 @@ local function updateStatus(key, ...)
     it.StatusLabel.Text = text
 end
 
-local function setEditorText(text)
+function UI.setEditorText(text)
     editorProgrammatic = true
-    editor.Text = text or ""
+    controls.editor.Text = text or ""
     editorProgrammatic = false
 end
 
-local function clearFindHighlights(preserveIfStillMatch)
+function UI.clearFindHighlights(preserveIfStillMatch)
     local current = state.currentMatchHighlight
     if not current then return end
     state.currentMatchHighlight = nil
@@ -1391,30 +4505,30 @@ local function clearFindHighlights(preserveIfStillMatch)
     end
 
     if preserve or state.stickyHighlights[current] then
-        setRowHighlight(current, findHighlightColor)
+        UI.setRowHighlight(current, findHighlightColor)
     else
-        setRowHighlight(current, nil)
+        UI.setRowHighlight(current, nil)
     end
 end
 
 -- ✅ 新增：每次开始新查询前，清掉“所有行”的查找高亮
 --（替换后的条目也使用 findHighlightColor，这里通过颜色判断来识别并清理）
-local function clearAllFindHighlights()
+function UI.clearAllFindHighlights()
     local toClear = {}
     for index in pairs(state.highlightedRows or {}) do
         if not state.stickyHighlights[index] then
             table.insert(toClear, index)
         end
     end
-    if tree then
-        withUpdatesSuspended(tree, function()
+    if controls.tree then
+        UI.withUpdatesSuspended(controls.tree, function()
             for _, index in ipairs(toClear) do
-                setRowHighlight(index, nil)
+                UI.setRowHighlight(index, nil)
             end
         end)
     else
         for _, index in ipairs(toClear) do
-            setRowHighlight(index, nil)
+            UI.setRowHighlight(index, nil)
         end
     end
     state.currentMatchHighlight = nil
@@ -1422,7 +4536,7 @@ local function clearAllFindHighlights()
 end
 
 
-local function performTimelineJump(entry)
+function Subtitle.performTimelineJump(entry)
     if not state.timeline then
         return
     end
@@ -1434,19 +4548,19 @@ local function performTimelineJump(entry)
     if currentPage ~= "cut" and currentPage ~= "edit" and currentPage ~= "color" and currentPage ~= "fairlight" and currentPage ~= "deliver" then
         resolve:OpenPage("edit")
     end
-    local timecode = framesToTimecode(entry.startFrame, state.fps or 24.0)
+    local timecode = Subtitle.framesToTimecode(entry.startFrame, state.fps or 24.0)
     local ok = state.timeline:SetCurrentTimecode(timecode)
     if not ok then
-        updateStatus("jump_failed")
+        UI.updateStatus("jump_failed")
     else
-        --updateStatus("jump_success", timecode)
+        --UI.updateStatus("jump_success", timecode)
     end
 end
 
 -- 新增：清空 Tree 现有选择
-local function clearTreeSelection()
-    if not tree then return end
-    local selected = tree:SelectedItems()
+function UI.clearTreeSelection()
+    if not controls.tree then return end
+    local selected = controls.tree:SelectedItems()
     if selected and type(selected) == "table" then
         for _, it in ipairs(selected) do
             it.Selected = false
@@ -1455,30 +4569,30 @@ local function clearTreeSelection()
 end
 
 -- 修改：仅选中当前命中的条目
-local function jumpToEntry(index, doTimeline)
+function UI.jumpToEntry(index, doTimeline)
     local entry = state.entries[index]
     if not entry then return end
-    local item = tree:TopLevelItem(index - 1)
+    local item = controls.tree:TopLevelItem(index - 1)
     if not item then return end
 
     state.suppressTreeSelection = true
 
     -- 关键：先清空旧选择，再选中当前
-    clearTreeSelection()
+    UI.clearTreeSelection()
     item.Selected = true
-    tree:ScrollToItem(item)
+    controls.tree:ScrollToItem(item)
 
     state.suppressTreeSelection = false
 
     state.selectedIndex = index
-    setEditorText(entry.text or "")
+    UI.setEditorText(entry.text or "")
 
     if doTimeline ~= false then
-        performTimelineJump(entry)
+        Subtitle.performTimelineJump(entry)
     end
 end
 
-local function countOccurrences(s, q)
+function UI.countOccurrences(s, q)
     if not s or not q or q == "" then return 0 end
     local i, c = 1, 0
     while true do
@@ -1489,16 +4603,16 @@ local function countOccurrences(s, q)
     return c
 end
 
-local function refreshFindMatches()
+function UI.refreshFindMatches()
     local query = it.FindInput.Text or ""
     state.findQuery = query
 
-    clearAllFindHighlights()
+    UI.clearAllFindHighlights()
     state.findMatches, state.findIndex = nil, nil
     state.currentMatchPos = nil
 
     if query == "" then
-        updateStatus("enter_find_text")
+        UI.updateStatus("enter_find_text")
         return false
     end
 
@@ -1506,65 +4620,65 @@ local function refreshFindMatches()
     local rowsMatched, occTotal = 0, 0
     for index, entry in ipairs(state.entries) do
         local text = entry.text or ""
-        local c = countOccurrences(text, query)
+        local c = UI.countOccurrences(text, query)
         if c > 0 then
             rowsMatched = rowsMatched + 1
             occTotal = occTotal + c
             matches[#matches + 1] = index
         elseif not state.stickyHighlights[index] and state.highlightedRows[index] then
-            setRowHighlight(index, nil)
+            UI.setRowHighlight(index, nil)
         end
     end
 
     if rowsMatched == 0 then
-        updateStatus("no_find_results")
+        UI.updateStatus("no_find_results")
         state.findMatches = {}
         state.findRows, state.findOcc = 0, 0
         state.currentMatchPos = nil
         return false
     end
 
-    if tree then
-        withUpdatesSuspended(tree, function()
+    if controls.tree then
+        UI.withUpdatesSuspended(controls.tree, function()
             for _, index in ipairs(matches) do
-                setRowHighlight(index, findHighlightColor)
+                UI.setRowHighlight(index, findHighlightColor)
             end
         end)
     else
         for _, index in ipairs(matches) do
-            setRowHighlight(index, findHighlightColor)
+            UI.setRowHighlight(index, findHighlightColor)
         end
     end
 
     state.findMatches = matches
     state.findRows, state.findOcc = rowsMatched, occTotal
     state.currentMatchPos = nil
-    updateStatus("matches_rows_occ", rowsMatched, occTotal)
+    UI.updateStatus("matches_rows_occ", rowsMatched, occTotal)
     return true
 end
 
 
-local function ensureFindMatches()
+function UI.ensureFindMatches()
     local query = it.FindInput.Text or ""
     if query == "" then
-        updateStatus("enter_find_text")
+        UI.updateStatus("enter_find_text")
         return false
     end
     if query ~= state.findQuery or not state.findMatches then
-        return refreshFindMatches()
+        return UI.refreshFindMatches()
     end
     if state.findMatches and #state.findMatches > 0 then
         return true
     end
-    return refreshFindMatches()
+    return UI.refreshFindMatches()
 end
 
-local function gotoNextMatch()
-    if not ensureFindMatches() then return nil end
+function UI.gotoNextMatch()
+    if not UI.ensureFindMatches() then return nil end
     local matches = state.findMatches or {}
     local count = #matches
     if count == 0 then
-        updateStatus("no_find_results")
+        UI.updateStatus("no_find_results")
         return nil
     end
     local idx = (state.currentMatchPos or 0) + 1
@@ -1572,21 +4686,21 @@ local function gotoNextMatch()
     state.currentMatchPos = idx
     local entryIndex = matches[idx]
 
-    clearFindHighlights(true)
-    jumpToEntry(entryIndex, true)
+    UI.clearFindHighlights(true)
+    UI.jumpToEntry(entryIndex, true)
 
-    setRowHighlight(entryIndex, findHighlightColor)
+    UI.setRowHighlight(entryIndex, findHighlightColor)
     state.currentMatchHighlight = entryIndex
-    updateStatus("match_progress", idx, count)
+    UI.updateStatus("match_progress", idx, count)
     return entryIndex
 end
 
-local function gotoPreviousMatch()
-    if not ensureFindMatches() then return nil end
+function UI.gotoPreviousMatch()
+    if not UI.ensureFindMatches() then return nil end
     local matches = state.findMatches or {}
     local count = #matches
     if count == 0 then
-        updateStatus("no_find_results")
+        UI.updateStatus("no_find_results")
         return nil
     end
     local idx = (state.currentMatchPos or 1) - 1
@@ -1594,114 +4708,155 @@ local function gotoPreviousMatch()
     state.currentMatchPos = idx
     local entryIndex = matches[idx]
 
-    clearFindHighlights(true)
-    jumpToEntry(entryIndex, true)
+    UI.clearFindHighlights(true)
+    UI.jumpToEntry(entryIndex, true)
 
-    setRowHighlight(entryIndex, findHighlightColor)
+    UI.setRowHighlight(entryIndex, findHighlightColor)
     state.currentMatchHighlight = entryIndex
-    updateStatus("match_progress", idx, count)
+    UI.updateStatus("match_progress", idx, count)
     return entryIndex
 end
 
-local function updateTabBarTexts()
-    if not mainTabs then
+function UI.updateTabBarTexts()
+    if not controls.mainTabs then
         return
     end
-    local lang = currentLanguage()
+    local lang = UI.currentLanguage()
     local pack = uiText[lang]
     local titles = (pack and pack.tabs) or uiText.cn.tabs
     if type(titles) ~= "table" then
         return
     end
     for index, title in ipairs(titles) do
-        mainTabs:SetTabText(index - 1, title)
+        controls.mainTabs:SetTabText(index - 1, title)
     end
 end
 
-local function applyLanguage(lang)
+function UI.applyLanguage(lang)
     if lang ~= "en" then
         lang = "cn"
     end
     state.language = lang
 
     languageProgrammatic = true
-    if langCn then
-        langCn.Checked = (lang == "cn")
-        langCn.Text = uiString("lang_cn")
+    if controls.langCn then
+        controls.langCn.Checked = (lang == "cn")
+        controls.langCn.Text = UI.uiString("lang_cn")
     end
-    if langEn then
-        langEn.Checked = (lang == "en")
-        langEn.Text = uiString("lang_en")
+    if controls.langEn then
+        controls.langEn.Checked = (lang == "en")
+        controls.langEn.Text = UI.uiString("lang_en")
     end
     languageProgrammatic = false
 
-    updateTabBarTexts()
+    UI.updateTabBarTexts()
 
     if it.FindNextButton then
-        it.FindNextButton.Text = uiString("find_next_button")
+        it.FindNextButton.Text = UI.uiString("find_next_button")
     end
     if it.FindPreviousButton then
-        it.FindPreviousButton.Text = uiString("find_previous_button")
+        it.FindPreviousButton.Text = UI.uiString("find_previous_button")
     end
     if it.AllReplaceButton then
-        it.AllReplaceButton.Text = uiString("all_replace_button")
+        it.AllReplaceButton.Text = UI.uiString("all_replace_button")
     end
     if it.SingleReplaceButton then
-        it.SingleReplaceButton.Text = uiString("single_replace_button")
+        it.SingleReplaceButton.Text = UI.uiString("single_replace_button")
     end
     if it.RefreshButton then
-        it.RefreshButton.Text = uiString("refresh_button")
+        it.RefreshButton.Text = UI.uiString("refresh_button")
     end
     if it.UpdateSubtitleButton then
-        it.UpdateSubtitleButton.Text = uiString("update_button")
+        it.UpdateSubtitleButton.Text = UI.uiString("update_button")
     end
     if it.FindInput then
-        it.FindInput.PlaceholderText = uiString("find_placeholder")
+        it.FindInput.PlaceholderText = UI.uiString("find_placeholder")
     end
     if it.ReplaceInput then
-        it.ReplaceInput.PlaceholderText = uiString("replace_placeholder")
+        it.ReplaceInput.PlaceholderText = UI.uiString("replace_placeholder")
     end
-    if editor then
-        editor.PlaceholderText = uiString("editor_placeholder")
+    if controls.editor then
+        controls.editor.PlaceholderText = UI.uiString("editor_placeholder")
     end
     if it.CopyrightButton then
-        it.CopyrightButton.Text = uiString("copyright")
+        it.CopyrightButton.Text = UI.uiString("copyright")
     end
-    if it.DonationButton then
-        it.DonationButton.Text = uiString("donation")
+    if controls.donationButton then
+        controls.donationButton.Text = UI.uiString("donation")
+    end
+    if controls.translateConcurrencyLabel then
+        controls.translateConcurrencyLabel.Text = UI.uiString("concurrency_label")
+    end
+    populateConcurrencyCombo(state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY)
+    if controls.openAIConfigLabel then
+        controls.openAIConfigLabel.Text = UI.uiString("openai_config_label")
+    end
+    if controls.openAIConfigButton then
+        controls.openAIConfigButton.Text = UI.uiString("openai_config_button")
     end
 
-    refreshUpdateNotice()
+    if controls.translateProviderLabel then
+        controls.translateProviderLabel.Text = UI.uiString("translate_provider_label")
+    end
+    if controls.translateTargetLabel then
+        controls.translateTargetLabel.Text = UI.uiString("translate_target_label")
+    end
+    if controls.translateProviderCombo then
+        controls.translateProviderCombo.PlaceholderText = UI.uiString("translate_provider_placeholder")
+    end
+    if controls.translateTargetCombo then
+        controls.translateTargetCombo.PlaceholderText = UI.uiString("translate_target_placeholder")
+    end
+    if controls.translateTransButton then
+        controls.translateTransButton.Text = UI.uiString("translate_trans_button")
+    end
+    if controls.translateSelectedButton then
+        controls.translateSelectedButton.Text = UI.uiString("translate_selected_button")
+        controls.translateSelectedButton.Enabled = state.translate.selectedIndex ~= nil and not state.translate.busy
+    end
+    if controls.translateUpdateButton then
+        controls.translateUpdateButton.Text = UI.uiString("translate_update_button")
+    end
+    if controls.translateEditor then
+        controls.translateEditor.PlaceholderText = UI.uiString("translate_editor_placeholder")
+    end
+    translate.normalizeTree()
+    translate.refreshStatus()
 
-    if tree then
-        tree:SetHeaderLabels(currentHeaders())
-        tree.ColumnWidth[0] = 50
-        tree.ColumnWidth[1] = 110
-        tree.ColumnWidth[2] = 360
+    UI.refreshUpdateNotice()
+
+    Azure.refreshConfigTexts()
+    OpenAIService.refreshConfigTexts()
+
+    if controls.tree then
+        controls.tree:SetHeaderLabels(UI.currentHeaders())
+        controls.tree.ColumnWidth[0] = 50
+        controls.tree.ColumnWidth[1] = 110
+        controls.tree.ColumnWidth[2] = 360
     end
 
     local args = state.lastStatusArgs or {}
-    updateStatus(state.lastStatusKey, unpack(args))
+    UI.updateStatus(state.lastStatusKey, unpack(args))
 end
 
-local function setLanguage(lang)
-    applyLanguage(lang)
+function UI.setLanguage(lang)
+    UI.applyLanguage(lang)
 end
 
-local function clearHighlights()
-    if tree then
+function UI.clearHighlights()
+    if controls.tree then
         local toClear = {}
         for index in pairs(state.highlightedRows or {}) do
             table.insert(toClear, index)
         end
-        withUpdatesSuspended(tree, function()
+        UI.withUpdatesSuspended(controls.tree, function()
             for _, index in ipairs(toClear) do
-                setRowHighlight(index, nil)
+                UI.setRowHighlight(index, nil)
             end
         end)
     else
         for index in pairs(state.highlightedRows or {}) do
-            setRowHighlight(index, nil)
+            UI.setRowHighlight(index, nil)
         end
     end
     state.currentMatchHighlight = nil
@@ -1710,7 +4865,7 @@ local function clearHighlights()
     state.currentMatchPos = nil
 end
 
-local function populateTree(suppressStatus)
+function UI.populateTree(suppressStatus)
     state.selectedIndex = nil
     state.findMatches = nil
     state.findIndex = nil
@@ -1718,40 +4873,40 @@ local function populateTree(suppressStatus)
     state.currentMatchHighlight = nil
     state.stickyHighlights = {}
     state.highlightedRows = {}
-    setEditorText("")
+    UI.setEditorText("")
 
-    if tree then
-        withUpdatesSuspended(tree, function()
-            tree:Clear()
-            tree:SetHeaderLabels(currentHeaders())
-            tree.ColumnWidth[0] = 50
-            tree.ColumnWidth[1] = 110
-            tree.ColumnWidth[2] = 360
+    if controls.tree then
+        UI.withUpdatesSuspended(controls.tree, function()
+            controls.tree:Clear()
+            controls.tree:SetHeaderLabels(UI.currentHeaders())
+            controls.tree.ColumnWidth[0] = 50
+            controls.tree.ColumnWidth[1] = 110
+            controls.tree.ColumnWidth[2] = 360
             for index, entry in ipairs(state.entries) do
-                local item = tree:NewItem()
+                local item = controls.tree:NewItem()
                 item.Text[0] = tostring(index)
-                local startDisplay = entry.startText or framesToTimecode(entry.startFrame, state.fps) or ""
-                local endDisplay = entry.endText or framesToTimecode(entry.endFrame, state.fps) or ""
+                local startDisplay = entry.startText or Subtitle.framesToTimecode(entry.startFrame, state.fps) or ""
+                local endDisplay = entry.endText or Subtitle.framesToTimecode(entry.endFrame, state.fps) or ""
                 item.Text[1] = string.format("▸ %s\n◂ %s", startDisplay, endDisplay)
                 item.Text[2] = entry.text or ""
-                tree:AddTopLevelItem(item)
+                controls.tree:AddTopLevelItem(item)
             end
         end)
     end
 
     if not suppressStatus then
-        updateStatus("current_total", #state.entries)
+        UI.updateStatus("current_total", #state.entries)
     end
 end
 
-local function refreshFromTimeline()
-    local ok, err = collectSubtitles()
+function Subtitle.refreshFromTimeline()
+    local ok, err = Subtitle.collectSubtitles()
     if not ok then
-        updateStatus(err or "cannot_read_subtitles")
+        UI.updateStatus(err or "cannot_read_subtitles")
         state.entries = {}
-        if tree then
-            withUpdatesSuspended(tree, function()
-                tree:Clear()
+        if controls.tree then
+            UI.withUpdatesSuspended(controls.tree, function()
+                controls.tree:Clear()
             end)
         end
         state.highlightedRows = {}
@@ -1760,57 +4915,64 @@ local function refreshFromTimeline()
         state.findIndex = nil
         state.currentMatchPos = nil
         state.currentMatchHighlight = nil
-        setEditorText("")
+        UI.setEditorText("")
+        translate.resetState()
         return false
     end
-    populateTree()
-    updateStatus("loaded_count", #state.entries)
+    translate.resetState()
+    UI.populateTree()
+    UI.updateStatus("loaded_count", #state.entries)
     return true
 end
 
-local function applyReplace()
-    --clearHighlights()
-    clearFindHighlights()
+function Subtitle.applyReplace()
+    --UI.clearHighlights()
+    UI.clearFindHighlights()
     local findText = it.FindInput.Text or ""
     local replaceText = it.ReplaceInput.Text or ""
     if findText == "" then
-        updateStatus("replace_no_find")
+        UI.updateStatus("replace_no_find")
         return
     end
-    local pattern = escapePlainPattern(findText)
+    local pattern = Utils.escapePlainPattern(findText)
     local replaced = 0
     for index, entry in ipairs(state.entries) do
         local newText, changes = (entry.text or ""):gsub(pattern, replaceText)
         if changes > 0 then
             entry.text = newText
             replaced = replaced + changes
-            local item = tree:TopLevelItem(index - 1)
+            local item = controls.tree:TopLevelItem(index - 1)
             if item then
                 item.Text[2] = newText
             end
-            setRowHighlight(index, findHighlightColor)
+            if state.translate and state.translate.entries and state.translate.entries[index] then
+                local tEntry = state.translate.entries[index]
+                tEntry.original = newText
+                translate.updateOriginalRow(index, newText)
+            end
+            UI.setRowHighlight(index, findHighlightColor)
             if state.selectedIndex == index then
-                setEditorText(newText)
+                UI.setEditorText(newText)
             end
         end
     end
     if replaced == 0 then
-        updateStatus("no_replace")
+        UI.updateStatus("no_replace")
     else
-        updateStatus("replace_done", replaced)
+        UI.updateStatus("replace_done", replaced)
     end
     state.findMatches = nil
     state.findIndex = nil
     state.currentMatchPos = nil
 end
 
-local function replaceSingle()
+function Subtitle.replaceSingle()
     local findText = it.FindInput.Text or ""
     if findText == "" then
-        updateStatus("replace_no_find")
+        UI.updateStatus("replace_no_find")
         return
     end
-    if not ensureFindMatches() then return end
+    if not UI.ensureFindMatches() then return end
 
     -- 若当前选中不含匹配，则先跳到下一命中
     local function currentContains()
@@ -1821,43 +4983,48 @@ local function replaceSingle()
     end
     local attempts = 0
     while not currentContains() and attempts < (state.findMatches and #state.findMatches or 0) do
-        local jumped = gotoNextMatch()
+        local jumped = UI.gotoNextMatch()
         attempts = attempts + 1
         if not jumped then break end
     end
     if not currentContains() then
-        updateStatus("no_replace")
+        UI.updateStatus("no_replace")
         return
     end
 
     -- ✅ 执行单条替换
     local replaceText = it.ReplaceInput.Text or ""
-    local pattern = escapePlainPattern(findText)
+    local pattern = Utils.escapePlainPattern(findText)
     local index = state.selectedIndex
     local entry = state.entries[index]
     local newText, count = (entry.text or ""):gsub(pattern, replaceText)
     if count == 0 then
-        updateStatus("no_replace")
+        UI.updateStatus("no_replace")
         return
     end
 
     entry.text = newText
-    local item = tree:TopLevelItem(index - 1)
+    local item = controls.tree and controls.tree:TopLevelItem(index - 1)
     if item then
         item.Text[2] = newText
     end
-    setRowHighlight(index, findHighlightColor)
-    setEditorText(newText)
+    if state.translate and state.translate.entries and state.translate.entries[index] then
+        local tEntry = state.translate.entries[index]
+        tEntry.original = newText
+        translate.updateOriginalRow(index, newText)
+    end
+    UI.setRowHighlight(index, findHighlightColor)
+    UI.setEditorText(newText)
 
-    -- ✅ 标记该行“粘性高亮”，后续 refreshFindMatches() 的全表清理将跳过它
+    -- ✅ 标记该行“粘性高亮”，后续 UI.refreshFindMatches() 的全表清理将跳过它
     state.stickyHighlights[index] = true
 
     -- 刷新匹配并跳到下一条（保持用户原工作流）
     state.currentMatchHighlight = nil
-    refreshFindMatches()
+    UI.refreshFindMatches()
     local updatedMatches = state.findMatches or {}
     if #updatedMatches == 0 then
-        updateStatus("match_progress", 0, 0)
+        UI.updateStatus("match_progress", 0, 0)
         return
     end
     local nextIdx = 1
@@ -1872,52 +5039,103 @@ local function replaceSingle()
 end
 
 
-local function exportAndImport()
+function Subtitle.exportAndImport()
     if not state.entries or #state.entries == 0 then
-        updateStatus("no_entries_update")
+        UI.updateStatus("no_entries_update")
         return
     end
-    local tempDir = getTempDir()
-    ensureDir(tempDir)
-    local tempPath = nextSrtPathForTimeline(state.timeline)
-    local ok, err = writeSrt(state.entries, tempPath, state.startFrame or 0, state.fps or 24.0)
+    local tempDir = Utils.getTempDir()
+    Utils.ensureDir(tempDir)
+    local tempPath = Subtitle.nextSrtPathForTimeline(state.timeline)
+    local ok, err = Subtitle.writeSrt(state.entries, tempPath, state.startFrame or 0, state.fps or 24.0)
     if not ok then
-        updateStatus(err or "write_failed")
+        UI.updateStatus(err or "write_failed")
         return
     end
-    local success, importErr = importSrtToTimeline(tempPath)
+    local success, importErr = Subtitle.importSrtToTimeline(tempPath)
     if not success then
-        updateStatus(importErr or "import_failed")
+        UI.updateStatus(importErr or "import_failed")
         return
     end
-    refreshFromTimeline()
-    updateStatus("updated_success")
+    Subtitle.refreshFromTimeline()
+    UI.updateStatus("updated_success")
+end
+
+function Subtitle.exportTranslatedSubtitles()
+    local entries = state.translate.entries or {}
+    if #entries == 0 then
+        translate.setStatus("no_entries")
+        return false
+    end
+    if not state.timeline then
+        translate.setStatus("failed", translate.resolveError("no_timeline"))
+        UI.updateStatus("no_timeline")
+        return false
+    end
+
+    translate.setStatus("updating")
+    local exportEntries = {}
+    for idx, entry in ipairs(entries) do
+        local translation = Utils.trim(entry.translation or "")
+        if translation == "" then
+            translation = entry.original or ""
+        end
+        exportEntries[idx] = {
+            startFrame = entry.startFrame,
+            endFrame = entry.endFrame,
+            text = translation,
+        }
+    end
+
+    local tempPath = Subtitle.nextSrtPathForTimeline(state.timeline)
+    local ok, err = Subtitle.writeSrt(exportEntries, tempPath, state.startFrame or 0, state.fps or 24.0)
+    if not ok then
+        local message = UI.messageString(err or "write_failed") or translate.resolveError(err or "translation_failed")
+        translate.setStatus("failed", message)
+        UI.updateStatus(err or "write_failed")
+        return false
+    end
+
+    local success, importErr = Subtitle.importSrtToTimeline(tempPath)
+    if not success then
+        local message = UI.messageString(importErr or "import_failed") or translate.resolveError(importErr or "translation_failed")
+        translate.setStatus("failed", message)
+        UI.updateStatus(importErr or "import_failed")
+        return false
+    end
+
+    translate.setStatus("updated")
+    return true
 end
 
 function win.On.LangCnCheckBox.Clicked(ev)
     if languageProgrammatic then
         return
     end
-    setLanguage("cn")
+    UI.setLanguage("cn")
 end
 
 function win.On.LangEnCheckBox.Clicked(ev)
     if languageProgrammatic then
         return
     end
-    setLanguage("en")
+    UI.setLanguage("en")
 end
 
 function win.On.MainTabs.CurrentChanged(ev)
-    if not mainStack then
+    if not controls.mainStack then
         return
     end
     local index = (ev and ev.Index) or 0
-    mainStack.CurrentIndex = index
+    controls.mainStack.CurrentIndex = index
+    if index == 1 then
+        translate.initTab()
+        translate.ensureEntries(false)
+    end
 end
 
 function win.On.FindInput.TextChanged(ev)
-    clearAllFindHighlights()      -- ← 改成清全表
+    UI.clearAllFindHighlights()      -- ← 改成清全表
     state.findMatches = nil
     state.findIndex = nil
     state.currentMatchPos = nil
@@ -1926,57 +5144,57 @@ function win.On.FindInput.TextChanged(ev)
 end
 
 function win.On.FindInput.EditingFinished(ev)
-    if refreshFindMatches() then
-        updateStatus("matches_rows_occ", state.findRows or 0, state.findOcc or 0)
+    if UI.refreshFindMatches() then
+        UI.updateStatus("matches_rows_occ", state.findRows or 0, state.findOcc or 0)
     end
 end
 
 
 function win.On.FindNextButton.Clicked(ev)
-    gotoNextMatch()
+    UI.gotoNextMatch()
 end
 
 function win.On.FindPreviousButton.Clicked(ev)
-    gotoPreviousMatch()
+    UI.gotoPreviousMatch()
 end
 
 function win.On.AllReplaceButton.Clicked(ev)
-    applyReplace()
+    Subtitle.applyReplace()
 end
 
 function win.On.SingleReplaceButton.Clicked(ev)
-    replaceSingle()
+    Subtitle.replaceSingle()
 end
 
 function win.On.RefreshButton.Clicked(ev)
-    clearHighlights()
+    UI.clearHighlights()
     state.findMatches = nil
     state.findIndex = nil
     state.currentMatchPos = nil
-    refreshFromTimeline()
+    Subtitle.refreshFromTimeline()
 end
 
 function win.On.UpdateSubtitleButton.Clicked(ev)
-    exportAndImport()
+    Subtitle.exportAndImport()
 end
 
 function win.On.DonationButton.Clicked(ev)
-    if currentLanguage() == "cn" then
-        showDonationWindow()
+    if UI.currentLanguage() == "cn" then
+        UI.showDonationWindow()
     else
-        openExternalUrl(SCRIPT_KOFI_URL)
+        Utils.openExternalUrl(SCRIPT_KOFI_URL)
     end
 end
 
 function win.On.CopyrightButton.Clicked(ev)
     local preferEnglish = false
-    if langEn and langEn.Checked then
+    if controls.langEn and controls.langEn.Checked then
         preferEnglish = true
     elseif state.language == "en" then
         preferEnglish = true
     end
     local targetUrl = preferEnglish and SCRIPT_KOFI_URL or SCRIPT_BILIBILI_URL
-    openExternalUrl(targetUrl)
+    Utils.openExternalUrl(targetUrl)
 end
 
 function win.On.SubtitleEditor.TextChanged(ev)
@@ -1991,11 +5209,16 @@ function win.On.SubtitleEditor.TextChanged(ev)
     if not entry then
         return
     end
-    local newText = editor.PlainText or editor.Text or ""
+    local newText = controls.editor.PlainText or controls.editor.Text or ""
     entry.text = newText
-    local item = tree:TopLevelItem(index - 1)
+    local item = controls.tree and controls.tree:TopLevelItem(index - 1)
     if item then
         item.Text[2] = newText
+    end
+    if state.translate and state.translate.entries and state.translate.entries[index] then
+        local tEntry = state.translate.entries[index]
+        tEntry.original = newText
+        translate.updateOriginalRow(index, newText)
     end
 end
 
@@ -2003,7 +5226,7 @@ function win.On.SubtitleTree.ItemClicked(ev)
     if state.suppressTreeSelection then
         return
     end
-    local item = tree:CurrentItem()
+    local item = controls.tree and controls.tree:CurrentItem()
     if not item then
         return
     end
@@ -2011,24 +5234,237 @@ function win.On.SubtitleTree.ItemClicked(ev)
     if not index then
         return
     end
-    jumpToEntry(index, true)
+    UI.jumpToEntry(index, true)
+end
+
+function win.On.TranslateSubtitleTree.ItemClicked(ev)
+    if not controls.translateTree then
+        return
+    end
+    local item = controls.translateTree:CurrentItem()
+    if not item then
+        return
+    end
+    local index = tonumber(item.Text[0] or "")
+    if not index then
+        return
+    end
+    translate.selectRow(index)
+end
+
+function win.On.TranslateSubtitleEditor.TextChanged(ev)
+    if translateEditorProgrammatic then
+        return
+    end
+    local idx = state.translate.selectedIndex
+    if not idx then
+        return
+    end
+    local entry = state.translate.entries and state.translate.entries[idx]
+    if not entry then
+        return
+    end
+    local text = (controls.translateEditor and (controls.translateEditor.PlainText or controls.translateEditor.Text)) or ""
+    entry.translation = text
+    translate.updateTreeRow(idx, text)
+end
+
+function win.On.TranslateProviderCombo.CurrentIndexChanged(ev)
+    if controls.translateProviderCombo then
+        state.translate.provider = controls.translateProviderCombo.CurrentText or state.translate.provider
+    end
+end
+
+function win.On.TranslateConcurrencyCombo.CurrentIndexChanged(ev)
+    if not controls.translateConcurrencyCombo then
+        return
+    end
+    local index = controls.translateConcurrencyCombo.CurrentIndex
+    if not index or index < 0 then
+        state.translate.concurrency = DEFAULT_TRANSLATE_CONCURRENCY
+        setConcurrencyComboSelection(state.translate.concurrency)
+        return
+    end
+    local option = TRANSLATE_CONCURRENCY_OPTIONS[index + 1]
+    local value = option and option.value or DEFAULT_TRANSLATE_CONCURRENCY
+    state.translate.concurrency = value
+    if not option then
+        setConcurrencyComboSelection(state.translate.concurrency)
+    end
+end
+
+function win.On.AzureConfigButton.Clicked(ev)
+    Azure.openConfigWindow()
+end
+
+function win.On.OpenAIFormatConfigButton.Clicked(ev)
+    OpenAIService.openConfigWindow()
+end
+
+Azure.refreshConfigTexts()
+Azure.syncConfigControls()
+OpenAIService.refreshConfigTexts()
+OpenAIService.syncOpenAIConfigControls()
+
+if azureConfigWin then
+    function azureConfigWin.On.AzureConfirm.Clicked(ev)
+        Azure.closeConfigWindow()
+    end
+    function azureConfigWin.On.AzureConfigWin.Close(ev)
+        Azure.closeConfigWindow()
+    end
+    function azureConfigWin.On.AzureRegisterButton.Clicked(ev)
+        Utils.openExternalUrl(AZURE_REGISTER_URL)
+    end
+end
+
+if openAIConfigWin then
+    function openAIConfigWin.On.OpenAIFormatConfigWin.Close(ev)
+        OpenAIService.closeConfigWindow()
+    end
+
+    function openAIConfigWin.On.OpenAIFormatModelCombo.CurrentIndexChanged(ev)
+        local combo = openAIConfigItems.OpenAIFormatModelCombo
+        local index = ev and ev.Index
+        if (not index) and combo then
+            index = combo.CurrentIndex
+        end
+        if type(index) == "number" and index >= 0 then
+            state.openaiFormat.selectedIndex = index + 1
+            Storage.ensureOpenAIModelList(state.openaiFormat)
+            if openAIConfigItems.OpenAIFormatModelName then
+                local models = state.openaiFormat.models or {}
+                openAIConfigItems.OpenAIFormatModelName.Text = (models[state.openaiFormat.selectedIndex] and models[state.openaiFormat.selectedIndex].name) or ""
+            end
+        end
+    end
+
+    function openAIConfigWin.On.VerifyModel.Clicked(ev)
+        translate.handleVerify()
+    end
+
+    function openAIConfigWin.On.ShowAddModel.Clicked(ev)
+        OpenAIService.applyConfigFromControls()
+        if addModelItems.addOpenAIFormatModelDisplay then
+            addModelItems.addOpenAIFormatModelDisplay.Text = ""
+        end
+        if addModelItems.addOpenAIFormatModelName then
+            addModelItems.addOpenAIFormatModelName.Text = ""
+        end
+        if addModelWin then
+            addModelWin:Show()
+        end
+        openAIConfigWin:Hide()
+    end
+
+    function openAIConfigWin.On.DeleteModel.Clicked(ev)
+        translate.handleDeleteModel()
+    end
+end
+
+if addModelWin then
+    function addModelWin.On.AddModelBtn.Clicked(ev)
+        translate.handleAddModel()
+    end
+
+    function addModelWin.On.AddModelWin.Close(ev)
+        if openAIConfigWin then
+            OpenAIService.syncOpenAIConfigControls()
+            addModelWin:Hide()
+            openAIConfigWin:Show()
+        end
+    end
+end
+
+function win.On.TranslateTargetCombo.CurrentIndexChanged(ev)
+    if controls.translateTargetCombo then
+        state.translate.targetLabel = controls.translateTargetCombo.CurrentText or state.translate.targetLabel
+    end
+end
+
+function win.On.TranslateTransButton.Clicked(ev)
+    translate.performWorkflow()
+end
+
+function win.On.TranslateSelectedButton.Clicked(ev)
+    if state.translate.busy then
+        return
+    end
+    translate.ensureEntries(false)
+    local idx = state.translate.selectedIndex
+    if not idx then
+        translate.setStatus("failed", translate.resolveError("no_selection"))
+        return
+    end
+
+    local provider = controls.translateProviderCombo and controls.translateProviderCombo.CurrentText or state.translate.provider
+    if not provider or Utils.trim(provider) == "" then
+        provider = TRANSLATE_PROVIDER_AZURE_LABEL
+    end
+    if not Translate.isSupportedProvider(provider) then
+        translate.setStatus("failed", translate.resolveError("provider_not_supported"))
+        return
+    end
+    state.translate.provider = provider
+
+    local targetLabel = controls.translateTargetCombo and controls.translateTargetCombo.CurrentText or state.translate.targetLabel or "English"
+    state.translate.targetLabel = targetLabel
+
+    state.translate.busy = true
+    translate.setControlsEnabled(false)
+
+    local ok, err = pcall(translate.translateSingleEntry, idx, targetLabel)
+
+    state.translate.busy = false
+    translate.setControlsEnabled(true)
+
+    if not ok then
+        translate.setStatus("failed", translate.resolveError(err or "translation_failed"))
+    end
+end
+
+function win.On.TranslateUpdateSubtitleButton.Clicked(ev)
+    if state.translate.busy then
+        return
+    end
+    if Subtitle.exportTranslatedSubtitles and Subtitle.exportTranslatedSubtitles() then
+        if Subtitle.refreshFromTimeline() then
+            translate.setStatus("updated")
+        end
+    end
 end
 
 function win.On.SubtitleUtilityWin.Close(ev)
-    saveSettings(settingsFile, {
-        lang_cn = langCn and langCn.Checked or false,
-        lang_en = langEn and langEn.Checked or false,
-    })
-    cleanupTempDir()
+    OpenAIService.applyConfigFromControls()
+    Azure.applyConfigFromControls()
+    Storage.ensureOpenAIModelList(state.openaiFormat)
+    local selectedModel = Storage.getOpenAISelectedModel(state.openaiFormat)
+    local settingsPayload = {
+        TranslateProviderCombo = state.translate and state.translate.provider or "",
+        TranslateTargetCombo = state.translate and state.translate.targetLabel or "",
+        TranslateConcurrencyCombo = state.translate and state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY,
+        AzureRegion = state.azure and state.azure.region or "",
+        AzureApiKey = state.azure and state.azure.apiKey or "",
+        OpenAIFormatModelCombo = selectedModel and (selectedModel.display or selectedModel.name) or "",
+        OpenAIFormatBaseURL = state.openaiFormat and state.openaiFormat.baseUrl or OPENAI_FORMAT_DEFAULT_BASE_URL,
+        OpenAIFormatApiKey = state.openaiFormat and state.openaiFormat.apiKey or "",
+        OpenAIFormatTemperatureSpinBox = state.openaiFormat and state.openaiFormat.temperature or OPENAI_FORMAT_DEFAULT_TEMPERATURE,
+        SystemPromptTxt = state.openaiFormat and state.openaiFormat.systemPrompt or OPENAI_DEFAULT_SYSTEM_PROMPT,
+        LangCnCheckBox = controls.langCn and controls.langCn.Checked or false,
+        LangEnCheckBox = controls.langEn and controls.langEn.Checked or false,
+    }
+    Storage.saveSettings(settingsFile, settingsPayload, Storage.settingsKeyOrder)
+    Storage.saveOpenAIModelStore()
+    Subtitle.cleanupTempDir()
     disp:ExitLoop()
 end
 
-applyLanguage(state.language)
-local function performInitialLoad()
-    refreshFromTimeline()
-    checkForUpdates()
+UI.applyLanguage(state.language)
+function App.performInitialLoad()
+    Subtitle.refreshFromTimeline()
+    App.checkForUpdates()
 end
-runWithLoading(performInitialLoad)
+UI.runWithLoading(App.performInitialLoad)
 win:Show()
 disp:RunLoop()
 win:Hide()
