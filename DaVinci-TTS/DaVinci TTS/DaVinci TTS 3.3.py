@@ -411,6 +411,7 @@ def _check_for_updates():
         _loading_confirmation_pending = False
 
 # ---------- Resolve/Fusion 连接,外部环境使用（先保存起来） ----------
+"""
 try:
     import DaVinciResolveScript as dvr_script
     from python_get_resolve import GetResolve
@@ -429,7 +430,7 @@ except ImportError:
     import DaVinciResolveScript as dvr_script
     from python_get_resolve import GetResolve
     print("DaVinciResolveScript from DaVinci")
-
+"""
 
 try:
     import requests

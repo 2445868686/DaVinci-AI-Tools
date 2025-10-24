@@ -318,6 +318,7 @@ loading_win.On.ConfirmButton.Clicked = _on_loading_confirm
 threading.Thread(target=_loading_timer_worker, daemon=True).start()
 
 # ---------- Resolve/Fusion 连接,外部环境使用（先保存起来） ----------
+"""
 try:
     import DaVinciResolveScript as dvr_script
     from python_get_resolve import GetResolve
@@ -335,7 +336,7 @@ except ImportError:
     import DaVinciResolveScript as dvr_script
     from python_get_resolve import GetResolve
     print("DaVinciResolveScript from DaVinci")
-
+"""
 def connect_resolve():
     pm  = resolve.GetProjectManager()
     prj = pm.GetCurrentProject()
