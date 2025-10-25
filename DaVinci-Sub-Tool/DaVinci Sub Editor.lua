@@ -1,5 +1,5 @@
 local SCRIPT_NAME = "DaVinci Sub Editor"
-local SCRIPT_VERSION = "1.0.6-Free" -- 标记为免费版
+local SCRIPT_VERSION = "1.0.7-Free" -- 标记为免费版
 local SCRIPT_AUTHOR = "HEIBA"
 print(string.format("%s | %s | %s", SCRIPT_NAME, SCRIPT_VERSION, SCRIPT_AUTHOR))
 local SCRIPT_KOFI_URL = "https://ko-fi.com/s/5e9dcdeae5"
@@ -976,6 +976,348 @@ function Utils.createImageFromBase64(base64Data, destinationPath)
 end
 
 
+-- ========= Fraction & FPS helpers =========
+Subtitle.Fraction = {}
+
+local function _gcd(a, b)
+    a, b = math.abs(a), math.abs(b)
+    while b ~= 0 do a, b = b, a % b end
+    return a
+end
+
+local function _normalize(num, den)
+    if den == 0 then return 0, 1 end
+    if den < 0 then num, den = -num, -den end
+    local g = _gcd(num, den)
+    return math.floor(num / g), math.floor(den / g)
+end
+
+-- 将各种 fps 输入（number / "30000/1001" / "23.976" / table{num,den}）统一为分数
+function Subtitle.fpsToFraction(v)
+    if type(v) == "table" and v.num and v.den then
+        local n, d = _normalize(tonumber(v.num) or 0, tonumber(v.den) or 1)
+        if n <= 0 or d <= 0 then return { num = 24, den = 1 } end
+        return { num = n, den = d }
+    end
+    if type(v) == "string" then
+        v = v:match("^%s*(.-)%s*$")
+        local a, b = v:match("^(%d+)%s*/%s*(%d+)$")
+        if a and b then
+            local n, d = _normalize(tonumber(a), tonumber(b))
+            return { num = n, den = d }
+        end
+        -- 别名：常见 NTSC 比率
+        if v == "23.976" then return { num = 24000, den = 1001 } end
+        if v == "29.97"  then return { num = 30000, den = 1001 } end
+        if v == "59.94"  then return { num = 60000, den = 1001 } end
+        if v == "47.952" then return { num = 48000, den = 1001 } end
+        if v == "119.88" then return { num = 120000, den = 1001 } end
+    end
+    -- number：近似匹配常见小数；否则按整数 fps 处理
+    if type(v) == "number" then
+        local f = v
+        local function near(x,y) return math.abs(x - y) < 1e-3 end
+        if near(f, 23.976) then return { num = 24000, den = 1001 } end
+        if near(f, 29.97 ) then return { num = 30000, den = 1001 } end
+        if near(f, 59.94 ) then return { num = 60000, den = 1001 } end
+        if near(f, 47.952) then return { num = 48000, den = 1001 } end
+        if near(f, 119.88) then return { num = 120000, den = 1001 } end
+        if f > 0 then return { num = math.floor(f + 0.5), den = 1 } end
+    end
+    return { num = 24, den = 1 }
+end
+
+function Subtitle.fpsAsFloat(frac)
+    if type(frac) == "table" and frac.num and frac.den then
+        return frac.num / frac.den
+    end
+    local f = Subtitle.fpsToFraction(frac)
+    return f.num / f.den
+end
+
+-- 时间基（用于 HH:MM:SS:FF 的“FF”位），对齐 Whisper 的 round 逻辑
+function Subtitle.fpsTimebase(frac)
+    local f = Subtitle.fpsAsFloat(frac)
+    return math.floor(f + 0.5) -- 23.976→24, 29.97→30, 59.94→60 等
+end
+
+function Subtitle.framesToSeconds(frames, frac)
+    local f = Subtitle.fpsToFraction(frac)
+    return (frames * f.den) / f.num
+end
+
+function Subtitle.secondsToFrames(seconds, frac)
+    local f = Subtitle.fpsToFraction(frac)
+    return math.floor(seconds * f.num / f.den + 0.5)
+end
+
+-- 以分数 fps 精确换算到毫秒，再格式化：HH:MM:SS,mmm
+function Subtitle.framesToSrtTimestamp(frames, fps_spec)
+    local f = Subtitle.fpsToFraction(fps_spec)
+    local fr = math.max(0, math.floor(frames or 0))
+    -- total_ms = round(frames * 1000 * den / num)
+    local total_ms = math.floor(fr * 1000 * f.den / f.num + 0.5)
+
+    local s  = math.floor(total_ms / 1000)
+    local ms = total_ms - s * 1000
+    local hh = math.floor(s / 3600); s = s - hh * 3600
+    local mm = math.floor(s / 60);   s = s - mm * 60
+    local ss = s
+    return string.format("%02d:%02d:%02d,%03d", hh, mm, ss, ms)
+end
+
+-- 用“时间基 = round(fps)”做整数除法与取余：HH:MM:SS:FF
+function Subtitle.framesToTimecode(frames, fps_spec)
+    local f = Subtitle.fpsToFraction(fps_spec)
+    local base = Subtitle.fpsTimebase(f) -- e.g. 23.976 -> 24
+    local fr = math.max(0, math.floor(frames or 0))
+
+    local frames_per_hour = base * 3600
+    local frames_per_min  = base * 60
+
+    local hh = math.floor(fr / frames_per_hour); fr = fr - hh * frames_per_hour
+    local mm = math.floor(fr / frames_per_min);  fr = fr - mm * frames_per_min
+    local ss = math.floor(fr / base)
+    local ff = fr - ss * base
+
+    return string.format("%02d:%02d:%02d:%02d", hh, mm, ss, ff)
+end
+
+function Subtitle.getTimelineContext()
+    local pm = resolve:GetProjectManager()
+    if not pm then
+        return nil
+    end
+    local project = pm:GetCurrentProject()
+    if not project then
+        return nil
+    end
+    local timeline = project:GetCurrentTimeline()
+    if not timeline then
+        return nil
+    end
+    local mediaPool = project:GetMediaPool()
+    if not mediaPool then
+        return nil
+    end
+    local rootFolder = mediaPool:GetRootFolder()
+    return {
+        project = project,
+        timeline = timeline,
+        mediaPool = mediaPool,
+        rootFolder = rootFolder,
+    }
+end
+
+function Subtitle.sortEntries(entries)
+    table.sort(entries, function(a, b)
+        if a.startFrame == b.startFrame then
+            return a.endFrame < b.endFrame
+        end
+        return a.startFrame < b.startFrame
+    end)
+end
+
+function Subtitle.collectSubtitles()
+    local ctx = Subtitle.getTimelineContext()
+    if not ctx then
+        return false, "no_timeline"
+    end
+    local timeline = ctx.timeline
+    state.timeline = timeline
+    local fpsSetting = timeline:GetSetting("timelineFrameRate")
+    if not fpsSetting then
+        fpsSetting = ctx.project:GetSetting("timelineFrameRate")
+    end
+    state.fps_frac = Subtitle.fpsToFraction(fpsSetting)       -- ★ 新增：分数帧率
+    state.fps_timebase = Subtitle.fpsTimebase(state.fps_frac) -- ★ 新增：时间基
+    state.fps = state.fps_frac.num / state.fps_frac.den
+    local startFrame = timeline:GetStartFrame()
+    state.startFrame = startFrame or 0
+
+    local trackCount = timeline:GetTrackCount("subtitle") or 0
+    local entries = {}
+    state.activeTrackIndex = nil
+
+    for track = 1, trackCount do
+        local enabled = timeline:GetIsTrackEnabled("subtitle", track)
+        if enabled ~= false then
+            local itemList = timeline:GetItemListInTrack("subtitle", track)
+                if itemList and #itemList > 0 then
+                    state.activeTrackIndex = track
+                    for _, item in ipairs(itemList) do
+                        local startValue = item:GetStart() or 0
+                        local endValue = item:GetEnd() or startValue
+                        local name = item:GetName() or ""
+                        local startFrame = math.floor(startValue + 0.5)
+                        local endFrame = math.floor(endValue + 0.5)
+                        table.insert(entries, {
+                            startFrame = startFrame,
+                            endFrame = endFrame,
+                            startText  = Subtitle.framesToTimecode(startFrame, state.fps_frac),
+                            endText    = Subtitle.framesToTimecode(endFrame,   state.fps_frac),
+                            text = name,
+                        })
+                    end
+                    break
+                end
+            end
+        end
+
+    Subtitle.sortEntries(entries)
+    state.entries = entries
+    return true
+end
+
+
+
+function Subtitle.cleanupTempDir()
+    local tempDir = Utils.getTempDir()
+    if tempDir == "" then
+        return
+    end
+    Utils.removeDir(tempDir)
+end
+
+function Subtitle.writeSrt(entries, path, startFrame, fps)
+    if not entries or #entries == 0 then
+        return false, "no_entries_update"
+    end
+
+    -- ★ 新增：在函数内部兜底当前时间线的真实 fps
+    local effFps = nil
+    if type(fps) == "number" and fps > 0 then
+        effFps = fps
+    elseif state and type(state.fps) == "number" and state.fps > 0 then
+        effFps = state.fps
+    else
+        local ctx = Subtitle.getTimelineContext()
+        if ctx and ctx.timeline then
+            local fpsSetting = ctx.timeline:GetSetting("timelineFrameRate")
+                or (ctx.project and ctx.project:GetSetting("timelineFrameRate"))
+        end
+    end
+    if not effFps or effFps <= 0 then effFps = 24.0 end  -- 最后兜底（几乎不会走到）
+
+    local dir = path:match("^(.*)[/\\][^/\\]+$")
+    if dir and dir ~= "" then Utils.ensureDir(dir) end
+    local fh, err = io.open(path, "w")
+    if not fh then return false, err or "open_failed" end
+
+    local baseStart = startFrame or 0
+    for idx, entry in ipairs(entries) do
+        local s = math.max(0, (entry.startFrame or 0) - baseStart)
+        local e = math.max(s + 1, (entry.endFrame   or 0) - baseStart)  -- 保底至少1帧
+
+        -- ★ 这里统一用 effFps（真实时间线帧率）换算
+        local sText = Subtitle.framesToSrtTimestamp(s, effFps)
+        local eText = Subtitle.framesToSrtTimestamp(e, effFps)
+        fh:write(string.format("%d\n", idx))
+        fh:write(string.format("%s --> %s\n", sText, eText))
+        fh:write((entry.text or "") .. "\n\n")
+    end
+    fh:close()
+    return true
+end
+
+
+function Subtitle.findClipByName(clips, name)
+    if not clips then
+        return nil
+    end
+    for _, clip in ipairs(clips) do
+        if clip:GetName() == name then
+            return clip
+        end
+    end
+    return nil
+end
+
+function Subtitle.importSrtToTimeline(path)
+    local ctx = Subtitle.getTimelineContext()
+    if not ctx then
+        return false, "no_timeline"
+    end
+    local timeline = ctx.timeline
+    local mediaPool = ctx.mediaPool
+    local root = ctx.rootFolder
+
+    local trackCount = timeline:GetTrackCount("subtitle") or 0
+    local targetIndex = nil
+
+    for i = 1, trackCount do
+        local enabled = timeline:GetIsTrackEnabled("subtitle", i)
+        timeline:SetTrackEnable("subtitle", i, false)
+
+        if not targetIndex then
+            local items = timeline:GetItemListInTrack("subtitle", i)
+            if not items or #items == 0 then
+                targetIndex = i
+            end
+        end
+    end
+
+    if not targetIndex then
+        timeline:AddTrack("subtitle")
+        local newCount = timeline:GetTrackCount("subtitle")
+        if newCount and newCount > trackCount then
+            trackCount = newCount
+            targetIndex = trackCount
+        else
+            targetIndex = trackCount > 0 and trackCount or 1
+        end
+    end
+
+    timeline:SetTrackEnable("subtitle", targetIndex, true)
+    state.activeTrackIndex = targetIndex
+
+    local srtFolder = nil
+    local subFolders = root and root:GetSubFolderList() or {}
+    for _, folder in ipairs(subFolders) do
+        if folder:GetName() == "srt" then
+            srtFolder = folder
+            break
+        end
+    end
+    if not srtFolder then
+        srtFolder = mediaPool:AddSubFolder(root, "srt")
+    end
+    if not srtFolder then
+        return false, "create_srt_folder_failed"
+    end
+    mediaPool:SetCurrentFolder(srtFolder)
+
+    local imported = mediaPool:ImportMedia({ path })
+    local mediaItem = nil
+    if type(imported) == "table" and #imported > 0 then
+        mediaItem = imported[#imported]
+    end
+    if not mediaItem then
+        local baseName = path:match("[^/\\]+$")
+        local clips = srtFolder:GetClipList()
+        mediaItem = Subtitle.findClipByName(clips, baseName)
+    end
+    if not mediaItem then
+        return false, "import_failed"
+    end
+
+    timeline:SetCurrentTimecode(timeline:GetStartTimecode())
+    local appendOk = mediaPool:AppendToTimeline({ mediaItem })
+
+    local finalCount = timeline:GetTrackCount("subtitle") or trackCount
+    for i = 1, finalCount do
+        if i ~= targetIndex then
+            timeline:SetTrackEnable("subtitle", i, false)
+        end
+    end
+    timeline:SetTrackEnable("subtitle", targetIndex, true)
+
+    if appendOk == false or appendOk == nil then
+        return false, "append_failed"
+    end
+    return true
+end
+
 
 function UI.runWithLoading(action)
     if type(action) ~= "function" then
@@ -1254,297 +1596,6 @@ if not Translate.isSupportedProvider(state.translate.provider) then
     state.translate.provider = TRANSLATE_PROVIDER_SILICONFLOUW_LABEL -- 默认 SiliconFlow
 end
 
-
-function Subtitle.parseFps(raw)
-    if not raw then
-        return 24.0
-    end
-    if type(raw) == "number" then
-        return raw
-    end
-    if type(raw) == "string" then
-        raw = raw:match("^%s*(.-)%s*$")
-        if raw == "" then
-            return 24.0
-        end
-        local num, denom = raw:match("^(%-?%d+)%s*/%s*(%-?%d+)$")
-        if num and denom then
-            denom = tonumber(denom)
-            if denom ~= 0 then
-                return tonumber(num) / denom
-            end
-        end
-        return tonumber(raw) or 24.0
-    end
-    return 24.0
-end
-
-function Subtitle.framesToTimecode(frames, fps)
-    frames = math.floor(frames + 0.5)
-    if fps <= 0 then
-        fps = 24.0
-    end
-    local totalSeconds = math.floor(frames / fps)
-    local remainFrames = frames - math.floor(totalSeconds * fps)
-    if remainFrames < 0 then
-        remainFrames = 0
-    end
-    local hours = math.floor(totalSeconds / 3600)
-    local minutes = math.floor((totalSeconds % 3600) / 60)
-    local seconds = totalSeconds % 60
-    return string.format("%02d:%02d:%02d:%02d", hours, minutes, seconds, remainFrames)
-end
-
-function Subtitle.framesToSrtTimestamp(frames, fps)
-    if fps <= 0 then
-        fps = 24.0
-    end
-    if frames < 0 then
-        frames = 0
-    end
-    local totalSeconds = frames / fps
-    local hours = math.floor(totalSeconds / 3600)
-    totalSeconds = totalSeconds - hours * 3600
-    local minutes = math.floor(totalSeconds / 60)
-    totalSeconds = totalSeconds - minutes * 60
-    local seconds = math.floor(totalSeconds)
-    local milliseconds = math.floor((totalSeconds - seconds) * 1000 + 0.5)
-    if milliseconds >= 1000 then
-        milliseconds = milliseconds - 1000
-        seconds = seconds + 1
-        if seconds >= 60 then
-            seconds = seconds - 60
-            minutes = minutes + 1
-            if minutes >= 60 then
-                minutes = minutes - 60
-                hours = hours + 1
-            end
-        end
-    end
-    return string.format("%02d:%02d:%02d,%03d", hours, minutes, seconds, milliseconds)
-end
-
-function Subtitle.getTimelineContext()
-    local pm = resolve:GetProjectManager()
-    if not pm then
-        return nil
-    end
-    local project = pm:GetCurrentProject()
-    if not project then
-        return nil
-    end
-    local timeline = project:GetCurrentTimeline()
-    if not timeline then
-        return nil
-    end
-    local mediaPool = project:GetMediaPool()
-    if not mediaPool then
-        return nil
-    end
-    local rootFolder = mediaPool:GetRootFolder()
-    return {
-        project = project,
-        timeline = timeline,
-        mediaPool = mediaPool,
-        rootFolder = rootFolder,
-    }
-end
-
-function Subtitle.sortEntries(entries)
-    table.sort(entries, function(a, b)
-        if a.startFrame == b.startFrame then
-            return a.endFrame < b.endFrame
-        end
-        return a.startFrame < b.startFrame
-    end)
-end
-
-function Subtitle.collectSubtitles()
-    local ctx = Subtitle.getTimelineContext()
-    if not ctx then
-        return false, "no_timeline"
-    end
-    local timeline = ctx.timeline
-    state.timeline = timeline
-    local fpsSetting = timeline:GetSetting("timelineFrameRate")
-    if not fpsSetting then
-        fpsSetting = ctx.project:GetSetting("timelineFrameRate")
-    end
-    state.fps = Subtitle.parseFps(fpsSetting)
-    local startFrame = timeline:GetStartFrame()
-    state.startFrame = startFrame or 0
-
-    local trackCount = timeline:GetTrackCount("subtitle") or 0
-    local entries = {}
-    state.activeTrackIndex = nil
-
-    for track = 1, trackCount do
-        local enabled = timeline:GetIsTrackEnabled("subtitle", track)
-        if enabled ~= false then
-            local itemList = timeline:GetItemListInTrack("subtitle", track)
-                if itemList and #itemList > 0 then
-                    state.activeTrackIndex = track
-                    for _, item in ipairs(itemList) do
-                        local startValue = item:GetStart() or 0
-                        local endValue = item:GetEnd() or startValue
-                        local name = item:GetName() or ""
-                        local startFrame = math.floor(startValue + 0.5)
-                        local endFrame = math.floor(endValue + 0.5)
-                        table.insert(entries, {
-                            startFrame = startFrame,
-                            endFrame = endFrame,
-                            startText = Subtitle.framesToTimecode(startFrame, state.fps),
-                            endText = Subtitle.framesToTimecode(endFrame, state.fps),
-                            text = name,
-                        })
-                    end
-                    break
-                end
-            end
-        end
-
-    Subtitle.sortEntries(entries)
-    state.entries = entries
-    return true
-end
-
-
-
-function Subtitle.cleanupTempDir()
-    local tempDir = Utils.getTempDir()
-    if tempDir == "" then
-        return
-    end
-    Utils.removeDir(tempDir)
-end
-
-function Subtitle.writeSrt(entries, path, startFrame, fps)
-    if not entries or #entries == 0 then
-        return false, "no_entries_update"
-    end
-    local dir = path:match("^(.*)[/\\][^/\\]+$")
-    if dir and dir ~= "" then
-        Utils.ensureDir(dir)
-    end
-    local fh, err = io.open(path, "w")
-    if not fh then
-        if err then
-            print("writeSrt error: " .. tostring(err))
-        end
-        return false, "write_failed"
-    end
-    for idx, entry in ipairs(entries) do
-        local s = math.max(0, (entry.startFrame or 0) - startFrame)
-        local e = math.max(0, (entry.endFrame or 0) - startFrame)
-        if e <= s then
-            e = s + 1
-        end
-        local sText = Subtitle.framesToSrtTimestamp(s, fps)
-        local eText = Subtitle.framesToSrtTimestamp(e, fps)
-        fh:write(string.format("%d\n", idx))
-        fh:write(string.format("%s --> %s\n", sText, eText))
-        fh:write((entry.text or "") .. "\n\n")
-    end
-    fh:close()
-    return true
-end
-
-function Subtitle.findClipByName(clips, name)
-    if not clips then
-        return nil
-    end
-    for _, clip in ipairs(clips) do
-        if clip:GetName() == name then
-            return clip
-        end
-    end
-    return nil
-end
-
-function Subtitle.importSrtToTimeline(path)
-    local ctx = Subtitle.getTimelineContext()
-    if not ctx then
-        return false, "no_timeline"
-    end
-    local timeline = ctx.timeline
-    local mediaPool = ctx.mediaPool
-    local root = ctx.rootFolder
-
-    local trackCount = timeline:GetTrackCount("subtitle") or 0
-    local targetIndex = nil
-
-    for i = 1, trackCount do
-        local enabled = timeline:GetIsTrackEnabled("subtitle", i)
-        timeline:SetTrackEnable("subtitle", i, false)
-
-        if not targetIndex then
-            local items = timeline:GetItemListInTrack("subtitle", i)
-            if not items or #items == 0 then
-                targetIndex = i
-            end
-        end
-    end
-
-    if not targetIndex then
-        timeline:AddTrack("subtitle")
-        local newCount = timeline:GetTrackCount("subtitle")
-        if newCount and newCount > trackCount then
-            trackCount = newCount
-            targetIndex = trackCount
-        else
-            targetIndex = trackCount > 0 and trackCount or 1
-        end
-    end
-
-    timeline:SetTrackEnable("subtitle", targetIndex, true)
-    state.activeTrackIndex = targetIndex
-
-    local srtFolder = nil
-    local subFolders = root and root:GetSubFolderList() or {}
-    for _, folder in ipairs(subFolders) do
-        if folder:GetName() == "srt" then
-            srtFolder = folder
-            break
-        end
-    end
-    if not srtFolder then
-        srtFolder = mediaPool:AddSubFolder(root, "srt")
-    end
-    if not srtFolder then
-        return false, "create_srt_folder_failed"
-    end
-    mediaPool:SetCurrentFolder(srtFolder)
-
-    local imported = mediaPool:ImportMedia({ path })
-    local mediaItem = nil
-    if type(imported) == "table" and #imported > 0 then
-        mediaItem = imported[#imported]
-    end
-    if not mediaItem then
-        local baseName = path:match("[^/\\]+$")
-        local clips = srtFolder:GetClipList()
-        mediaItem = Subtitle.findClipByName(clips, baseName)
-    end
-    if not mediaItem then
-        return false, "import_failed"
-    end
-
-    timeline:SetCurrentTimecode(timeline:GetStartTimecode())
-    local appendOk = mediaPool:AppendToTimeline({ mediaItem })
-
-    local finalCount = timeline:GetTrackCount("subtitle") or trackCount
-    for i = 1, finalCount do
-        if i ~= targetIndex then
-            timeline:SetTrackEnable("subtitle", i, false)
-        end
-    end
-    timeline:SetTrackEnable("subtitle", targetIndex, true)
-
-    if appendOk == false or appendOk == nil then
-        return false, "append_failed"
-    end
-    return true
-end
 
 -- ==============================================================
 -- UI Layout: Main Window and Tabs (Edit / Translate / Config)
@@ -2454,7 +2505,6 @@ function SiliconFlowService.translateEntries(entries, targetLabel)
         return nil, "no_entries"
     end
 
-    setTranslateStatus("fetching_key")
     local apiKey, fetchErr = fetch_provider_secret(SILICONFLOUW_SUPABASE_PROVIDER)
     if not apiKey then
         return nil, fetchErr or "missing_key"
@@ -2609,8 +2659,6 @@ local function translateSingleEntry(index, targetLabel)
     -- 免费版限制检查 (结束)
     -- ==================================
 
-    -- 免费版只允许 SiliconFlow
-    -- setTranslateStatus("fetching_key")
     local apiKey, fetchErr = fetch_provider_secret(SILICONFLOUW_SUPABASE_PROVIDER)
     if not apiKey then
         setTranslateStatus("failed", resolveTranslateError(fetchErr or "missing_key"))
@@ -2923,7 +2971,7 @@ function Subtitle.performTimelineJump(entry)
     if currentPage ~= "cut" and currentPage ~= "edit" and currentPage ~= "color" and currentPage ~= "fairlight" and currentPage ~= "deliver" then
         resolve:OpenPage("edit")
     end
-    local timecode = Subtitle.framesToTimecode(entry.startFrame, state.fps or 24.0)
+    local timecode = Subtitle.framesToTimecode(entry.startFrame, state.fps_frac or state.fps or {num=24,den=1})
     local ok = state.timeline:SetCurrentTimecode(timecode)
     if not ok then
         UI.updateStatus("jump_failed")
@@ -3417,27 +3465,25 @@ function Subtitle.replaceSingle()
     end
     state.currentMatchPos = nextIdx - 1
 end
+
 function Subtitle.exportAndImport()
+    -- ★ 导出前若还没初始化，先采集一次，刷新 state.fps / state.startFrame
+    if not (state and type(state.fps) == "number" and state.fps > 0) then
+        Subtitle.collectSubtitles()
+    end
     if not state.entries or #state.entries == 0 then
         UI.updateStatus("no_entries_update")
         return
     end
-    local tempDir = Utils.getTempDir()
-    Utils.ensureDir(tempDir)
     local tempPath = Subtitle.nextSrtPathForTimeline(state.timeline)
-    local ok, err = Subtitle.writeSrt(state.entries, tempPath, state.startFrame or 0, state.fps or 24.0)
-    if not ok then
-        UI.updateStatus(err or "write_failed")
-        return
-    end
+    local ok, err = Subtitle.writeSrt(state.entries, tempPath, state.startFrame or 0, state.fps)
+    if not ok then UI.updateStatus(err or "write_failed"); return end
     local success, importErr = Subtitle.importSrtToTimeline(tempPath)
-    if not success then
-        UI.updateStatus(importErr or "import_failed")
-        return
-    end
+    if not success then UI.updateStatus(importErr or "import_failed"); return end
     Subtitle.refreshFromTimeline()
     UI.updateStatus("updated_success")
 end
+
 
 function win.On.LangCnCheckBox.Clicked(ev)
     if languageProgrammatic then
