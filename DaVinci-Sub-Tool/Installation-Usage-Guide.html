@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
@@ -202,7 +202,9 @@
             <li><a href="#refresh-zh">3. 刷新并浏览字幕</a></li>
             <li><a href="#search-zh">4. 查找与替换</a></li>
             <li><a href="#edit-zh">5. 编辑并写回时间线</a></li>
-            <li><a href="#faq-zh">6. 常见问题</a></li>
+            <li><a href="#translate-zh">6. 翻译功能</a></li>
+            <li><a href="#settings-zh">7. 设置</a></li>
+            <li><a href="#faq-zh">8. 常见问题</a></li>
           </ul>
         </li>
       </ul>
@@ -279,6 +281,28 @@
             <li>写回成功会提示「更新完成」，若导入失败或时间线被锁定，会在状态栏给出原因。</li>
           </ul>
         </section>
+        <section id="translate-zh">
+          <h2>翻译功能</h2>
+          <p>工具集成了多种翻译服务，可快速为字幕生成译文。</p>
+          <ul>
+            <li><strong>服务商选择</strong>：在“翻译”选项卡中，从下拉菜单选择翻译服务，如 Microsoft、SiliconFlow (免费AI)、GLM-4-Flash (免费AI) 或自定义的 OpenAI 兼容 API。</li>
+            <li><strong>目标语言</strong>：选择期望翻译成的语言。</li>
+            <li><strong>开始翻译</strong>：点击 <code>开始翻译</code> 按钮，工具会逐条或并发翻译所有字幕。进度和预估的 token 消耗会显示在状态栏。</li>
+            <li><strong>翻译选中</strong>：如果只想翻译特定几行，可在列表中选中它们，然后点击 <code>翻译选中行</code>。</li>
+            <li><strong>译文编辑</strong>：翻译完成后，译文会出现在右侧列。你可以像编辑原文一样，在下方的编辑器中对译文进行修改。</li>
+            <li><strong>导入译文</strong>：点击 <code>译文导入时间线</code>，工具会将所有译文作为一条新的字幕轨添加到时间线，并禁用其它字幕轨，方便导出或审校。</li>
+          </ul>
+        </section>
+        <section id="settings-zh">
+          <h2>设置</h2>
+          <p>“设置”选项卡允许你配置 API 密钥和其它参数。</p>
+          <ul>
+            <li><strong>API 配置</strong>：为 Microsoft Azure 或 OpenAI Format 等需要密钥的服务，点击 <code>配置</code> 按钮，在弹窗中填入你的 API Key、区域或 Base URL。</li>
+            <li><strong>OpenAI 兼容模型</strong>：对于 OpenAI Format，你可以添加任何兼容其 API 格式的模型（如 Groq、Together.ai 等）。点击 <code>新增模型</code>，填写显示名称和模型 ID，然后 <code>验证</code> 并保存。</li>
+            <li><strong>并发模式</strong>：调整翻译请求的并发程度。“高速”模式能显著加快批量翻译速度，但对免登录的 AI 服务可能会因请求频率过高而失败。</li>
+            <li><strong>界面语言</strong>：在设置页可以切换 UI 的中/英文显示。</li>
+          </ul>
+        </section>
         <section id="faq-zh">
           <h2>常见问题</h2>
           <h3>脚本没有读取到字幕？</h3>
@@ -314,7 +338,9 @@
             <li><a href="#refresh-en">3. Refresh &amp; Browse</a></li>
             <li><a href="#search-en">4. Find &amp; Replace</a></li>
             <li><a href="#edit-en">5. Edit &amp; Update Timeline</a></li>
-            <li><a href="#faq-en">6. FAQ</a></li>
+            <li><a href="#translate-en">6. Translation</a></li>
+            <li><a href="#settings-en">7. Settings</a></li>
+            <li><a href="#faq-en">8. FAQ</a></li>
           </ul>
         </li>
       </ul>
@@ -388,6 +414,28 @@
             <li>The media pool stores the SRT inside an <code>srt</code> folder under the root before appending it to the subtitle track.</li>
             <li>Other subtitle tracks are temporarily disabled during the import to avoid stacking duplicates, and restored afterwards.</li>
             <li>Success, failures, or locked-track warnings are displayed in the status line.</li>
+          </ul>
+        </section>
+        <section id="translate-en">
+          <h2>Translation</h2>
+          <p>The tool integrates multiple translation services to quickly generate translated subtitles.</p>
+          <ul>
+            <li><strong>Provider Selection</strong>: In the "Translate" tab, choose a provider from the dropdown, such as Microsoft, SiliconFlow (Free AI), GLM-4-Flash (Free AI), or a custom OpenAI-compatible API.</li>
+            <li><strong>Target Language</strong>: Select the desired target language.</li>
+            <li><strong>Start Translation</strong>: Click <code>Translate</code> to process all subtitles. Progress and estimated token usage are shown in the status bar.</li>
+            <li><strong>Translate Selected</strong>: To translate only specific lines, select them in the list and click <code>Translate Selected</code>.</li>
+            <li><strong>Edit Translation</strong>: Once complete, translations appear in the right-hand column. You can edit them in the editor below, just like the original text.</li>
+            <li><strong>Import Translation</strong>: Click <code>Import Translation to Timeline</code> to add the translated text as a new subtitle track, disabling others for a clean export or review.</li>
+          </ul>
+        </section>
+        <section id="settings-en">
+          <h2>Settings</h2>
+          <p>The "Settings" tab allows you to configure API keys and other parameters.</p>
+          <ul>
+            <li><strong>API Configuration</strong>: For services requiring a key, like Microsoft Azure or OpenAI Format, click <code>Config</code> to enter your API Key, Region, or Base URL in the dialog.</li>
+            <li><strong>OpenAI-Compatible Models</strong>: For the OpenAI Format, you can add any API-compatible model (e.g., from Groq, Together.ai). Click <code>Add Model</code>, enter a display name and model ID, then <code>Verify</code> and save.</li>
+            <li><strong>Concurrency Mode</strong>: Adjust the level of parallel translation requests. "High" mode can significantly speed up batch translations but may fail with free AI services due to rate limits.</li>
+            <li><strong>UI Language</strong>: Switch the UI between Chinese and English in the settings tab.</li>
           </ul>
         </section>
         <section id="faq-en">

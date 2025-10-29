@@ -1,6 +1,6 @@
 
 local SCRIPT_NAME = "DaVinci Sub Tool"
-local SCRIPT_VERSION = "1.0.7"
+local SCRIPT_VERSION = "1.0.8"
 local SCRIPT_AUTHOR = "HEIBA"
 print(string.format("%s | %s | %s", SCRIPT_NAME, SCRIPT_VERSION, SCRIPT_AUTHOR))
 local SCRIPT_KOFI_URL = "https://ko-fi.com/heiba"
@@ -16,6 +16,7 @@ local App = {
         OpenAIFormat = {},
         GLM = {},
         Parallel = {},
+        ChatProviders = {},
     },
     Subtitle = {},
     Translate = {},
@@ -36,9 +37,10 @@ local Azure = Services.Azure
 local OpenAIService = Services.OpenAIFormat
 local GLMService = Services.GLM
 local ParallelServices = Services.Parallel
+local ChatProviders = Services.ChatProviders
 local httpClient = Services.HttpClient
 local SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
-local WINDOW_WIDTH, WINDOW_HEIGHT = 550, 600
+local WINDOW_WIDTH, WINDOW_HEIGHT = 600, 600
 local X_CENTER = math.floor((SCREEN_WIDTH - WINDOW_WIDTH ) / 2)
 local Y_CENTER = math.floor((SCREEN_HEIGHT - WINDOW_HEIGHT) / 2)
 local LOADING_WINDOW_WIDTH, LOADING_WINDOW_HEIGHT = 220, 120
@@ -76,10 +78,12 @@ local disp = bmd.UIDispatcher(ui)
 local json = require('dkjson')
 
 local TRANSLATE_PROVIDER_AZURE_LABEL = "Microsoft"
+local TRANSLATE_PROVIDER_SILICONFLOW_LABEL = "SiliconFlow         ( Free AI  )"
 local TRANSLATE_PROVIDER_GL_LABEL = "GLM-4-Flash       ( Free AI  )"
 local TRANSLATE_PROVIDER_OPENAI_LABEL = "OpenAI Format  ( API Key )"
 local TRANSLATE_PROVIDER_LIST = {
     TRANSLATE_PROVIDER_AZURE_LABEL,
+    TRANSLATE_PROVIDER_SILICONFLOW_LABEL,
     TRANSLATE_PROVIDER_GL_LABEL,
     TRANSLATE_PROVIDER_OPENAI_LABEL,
 }
@@ -107,6 +111,9 @@ local GLM_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 local GLM_MODEL = "GLM-4-Flash"
 local GLM_MAX_RETRY = 3
 local GLM_TIMEOUT = 30
+local SILICONFLOUW_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
+local SILICONFLOUW_MODEL = "THUDM/GLM-4-9B-0414"
+local SILICONFLOUW_SUPABASE_PROVIDER = "SILICONFLOUW"
 local AZURE_SUPABASE_PROVIDER = "AZURE"
 local GLM_SUPABASE_PROVIDER = "BIGMODEL"
 local OPENAI_FORMAT_DEFAULT_BASE_URL = "https://api.openai.com"
@@ -138,47 +145,33 @@ Note:
 
 local OPENAI_DEFAULT_SYSTEM_PROMPT = TRANSLATE_SYSTEM_PROMPT
 
-local LANG_CODE_MAP = {
-    ["中文（普通话）"] = "zh-Hans",
-    ["中文（粤语）"] = "yue",
-    ["English"] = "en",
-    ["Japanese"] = "ja",
-    ["Korean"] = "ko",
-    ["Spanish"] = "es",
-    ["Portuguese"] = "pt",
-    ["French"] = "fr",
-    ["Indonesian"] = "id",
-    ["German"] = "de",
-    ["Russian"] = "ru",
-    ["Italian"] = "it",
-    ["Arabic"] = "ar",
-    ["Turkish"] = "tr",
-    ["Ukrainian"] = "uk",
-    ["Vietnamese"] = "vi",
-    ["Uzbek"] = "uz",
-    ["Dutch"] = "nl",
-}
+local function buildLangLabels(langMap, priorityList)
+    local labels, seen = {}, {}
+    if type(priorityList) == "table" then
+        for _, label in ipairs(priorityList) do
+            if langMap[label] and not seen[label] then
+                table.insert(labels, label)
+                seen[label] = true
+            end
+        end
+    end
+    local rest = {}
+    for label in pairs(langMap) do
+        if not seen[label] then
+            table.insert(rest, label)
+        end
+    end
+    table.sort(rest, function(a, b)
+        return tostring(a) < tostring(b)
+    end)
+    for _, label in ipairs(rest) do
+        table.insert(labels, label)
+    end
+    return labels
+end
 
-local LANG_LABELS = {
-    "中文（普通话）",
-    "中文（粤语）",
-    "English",
-    "Japanese",
-    "Korean",
-    "Spanish",
-    "Portuguese",
-    "French",
-    "Indonesian",
-    "German",
-    "Russian",
-    "Italian",
-    "Arabic",
-    "Turkish",
-    "Ukrainian",
-    "Vietnamese",
-    "Uzbek",
-    "Dutch",
-}
+local LANG_CODE_MAP = {}
+local LANG_LABELS = {}
 
 Translate.secretCache = {}
 
@@ -1618,6 +1611,7 @@ Utils.ensureDir(configDir)
 settingsFile = Utils.joinPath(configDir, "subedit_settings.json")
 local storedSettings
 local modelsFile = Utils.joinPath(configDir, "models.json")
+local langCodeMapPath = Utils.joinPath(configDir, "lang_code_map.json")
 local openAIModelStore = { builtin = {}, custom = {} }
 Storage.settingsKeyOrder = {
     "TranslateProviderCombo",
@@ -1717,6 +1711,50 @@ function Storage.loadSettings(path)
 
     return settings_table
 end
+
+local fallbackLangConfig = {
+    map = {
+        ["中文（简体）"] = "zh-Hans",
+        ["English"] = "en",
+    },
+    priority = { "中文（简体）", "English" },
+}
+
+function Storage.sanitizePriorityList(list)
+    local result = {}
+    if type(list) == "table" then
+        for _, label in ipairs(list) do
+            if type(label) == "string" and label ~= "" then
+                table.insert(result, label)
+            end
+        end
+    end
+    return result
+end
+
+function Storage.loadLangConfig()
+    Utils.ensureDir(configDir)
+    local config = Storage.loadSettings(langCodeMapPath)
+    if type(config) == "table" and type(config.map) == "table" then
+        local priority = Storage.sanitizePriorityList(config.priority)
+        return config.map, priority
+    end
+    if not Utils.fileExists(langCodeMapPath) then
+        Storage.saveSettings(langCodeMapPath, fallbackLangConfig)
+    end
+    return fallbackLangConfig.map, Storage.sanitizePriorityList(fallbackLangConfig.priority)
+end
+
+function Storage.applyLangConfig(map, priority)
+    if type(map) ~= "table" then
+        map = {}
+    end
+    LANG_CODE_MAP = map
+    LANG_LABELS = buildLangLabels(LANG_CODE_MAP, priority or {})
+end
+
+local langCodeMap, langPriorityList = Storage.loadLangConfig()
+Storage.applyLangConfig(langCodeMap, langPriorityList)
 
 function Storage.loadOpenAIModelStore()
     Utils.ensureDir(configDir)
@@ -3169,7 +3207,48 @@ local function buildTranslateContext(entries, index)
     return table.concat(beforeParts, "\n"), table.concat(afterParts, "\n")
 end
 
-function GLMService.buildRequestPayload(sentence, prefixText, suffixText, targetLabel)
+ChatProviders.registry = ChatProviders.registry or {}
+ChatProviders.labelIndex = ChatProviders.labelIndex or {}
+
+local function getChatProviderConfig(configOrId)
+    if type(configOrId) == "table" then
+        return configOrId
+    elseif type(configOrId) == "string" then
+        if ChatProviders.registry then
+            return ChatProviders.registry[configOrId]
+        end
+    end
+    return nil
+end
+
+function ChatProviders.register(config)
+    if not config or not config.id then
+        return
+    end
+    ChatProviders.registry = ChatProviders.registry or {}
+    ChatProviders.labelIndex = ChatProviders.labelIndex or {}
+    ChatProviders.registry[config.id] = config
+    if config.label then
+        ChatProviders.labelIndex[config.label] = config.id
+    end
+end
+
+function ChatProviders.get(id)
+    return getChatProviderConfig(id)
+end
+
+function ChatProviders.getByLabel(label)
+    if not label or label == "" then
+        return nil
+    end
+    local idx = ChatProviders.labelIndex and ChatProviders.labelIndex[label]
+    if idx then
+        return ChatProviders.registry[idx]
+    end
+    return nil
+end
+
+function ChatProviders.buildMessages(sentence, prefixText, suffixText, targetLabel)
     local prompt = composeTranslatePrompt(targetLabel)
     local messages = {
         { role = "system", content = prompt },
@@ -3185,17 +3264,34 @@ function GLMService.buildRequestPayload(sentence, prefixText, suffixText, target
         table.insert(messages, { role = "assistant", content = table.concat(ctxParts, "\nCONTEXT (do not translate)\n") })
     end
     table.insert(messages, { role = "user", content = string.format("<<< Sentence >>>\n%s", sentence or "") })
-
-    local payloadTable = {
-        model = GLM_MODEL,
-        messages = messages,
-        temperature = GLM_TEMPERATURE,
-        thinking = { type = "disabled" },
-    }
-    return json.encode(payloadTable)
+    return messages
 end
 
-function GLMService.parseResponseBody(body)
+function ChatProviders.buildRequestPayload(configOrId, sentence, prefixText, suffixText, targetLabel)
+    local config = getChatProviderConfig(configOrId)
+    if not config then
+        return nil
+    end
+    local payload = {
+        model = config.model,
+        messages = ChatProviders.buildMessages(sentence, prefixText, suffixText, targetLabel),
+        temperature = config.temperature or GLM_TEMPERATURE,
+    }
+    if type(config.payloadExtras) == "table" then
+        for key, value in pairs(config.payloadExtras) do
+            payload[key] = value
+        end
+    end
+    if type(config.preparePayload) == "function" then
+        local prepared = config.preparePayload(payload, sentence, prefixText, suffixText, targetLabel)
+        if prepared ~= nil then
+            payload = prepared
+        end
+    end
+    return json.encode(payload)
+end
+
+function ChatProviders.parseResponseBody(body)
     if type(body) ~= "string" or body == "" then
         return nil, 0, "empty_response"
     end
@@ -3223,20 +3319,284 @@ function GLMService.parseResponseBody(body)
     return content, tokens, nil
 end
 
-function GLMService.requestTranslation(sentence, prefixText, suffixText, targetLabel, apiKey)
-    local payload = GLMService.buildRequestPayload(sentence, prefixText, suffixText, targetLabel)
-    local headers = {
+function ChatProviders.buildHeaderTable(config, apiKey)
+    if type(config.buildHeaders) == "function" then
+        return config.buildHeaders(apiKey)
+    end
+    return {
         Authorization = "Bearer " .. apiKey,
         ["Content-Type"] = "application/json",
         ["User-Agent"] = string.format("%s/%s", SCRIPT_NAME, SCRIPT_VERSION),
     }
+end
 
-    local body, status = Services.httpPostJson(GLM_API_URL, payload, headers, GLM_TIMEOUT)
+function ChatProviders.buildHeaderList(config, apiKey)
+    if type(config.buildHeaderList) == "function" then
+        return config.buildHeaderList(apiKey)
+    end
+    local headerTable = ChatProviders.buildHeaderTable(config, apiKey)
+    local list = {}
+    for key, value in pairs(headerTable or {}) do
+        table.insert(list, string.format("%s: %s", key, value))
+    end
+    return list
+end
+
+function ChatProviders.resolveApiKey(config)
+    if type(config.resolveApiKey) == "function" then
+        return config.resolveApiKey(config)
+    end
+    if config.supabaseProvider and config.supabaseProvider ~= "" then
+        return fetch_provider_secret(config.supabaseProvider)
+    end
+    return nil, "missing_key"
+end
+
+local function chatProviderPerformRequest(config, sentence, prefixText, suffixText, targetLabel, apiKey)
+    local payload = ChatProviders.buildRequestPayload(config, sentence, prefixText, suffixText, targetLabel)
+    if not payload then
+        return nil, 0, "payload_build_failed"
+    end
+    local headers = ChatProviders.buildHeaderTable(config, apiKey)
+    local body, status = Services.httpPostJson(config.apiUrl, payload, headers, config.timeout or GLM_TIMEOUT)
     if not body then
         return nil, 0, status or "request_failed"
     end
+    local parser = config.parseResponse or ChatProviders.parseResponseBody
+    return parser(body)
+end
 
-    return GLMService.parseResponseBody(body)
+function ChatProviders.requestWithApiKey(configOrId, sentence, prefixText, suffixText, targetLabel, apiKey)
+    local config = getChatProviderConfig(configOrId)
+    if not config then
+        return nil, 0, "provider_not_supported"
+    end
+    if not apiKey or apiKey == "" then
+        return nil, 0, "missing_key"
+    end
+    return chatProviderPerformRequest(config, sentence, prefixText, suffixText, targetLabel, apiKey)
+end
+
+function ChatProviders.requestTranslation(configOrId, sentence, prefixText, suffixText, targetLabel)
+    local config = getChatProviderConfig(configOrId)
+    if not config then
+        return nil, 0, "provider_not_supported"
+    end
+    local apiKey, err = ChatProviders.resolveApiKey(config)
+    if not apiKey then
+        return nil, 0, err or "missing_key"
+    end
+    return chatProviderPerformRequest(config, sentence, prefixText, suffixText, targetLabel, apiKey)
+end
+
+function ChatProviders.translateEntries(configOrId, entries, targetLabel)
+    local config = getChatProviderConfig(configOrId)
+    if not config then
+        return nil, "provider_not_supported"
+    end
+    if not entries or #entries == 0 then
+        return nil, "no_entries"
+    end
+
+    local apiKey, fetchErr = ChatProviders.resolveApiKey(config)
+    if not apiKey then
+        return nil, fetchErr or "missing_key"
+    end
+
+    local totalTokens = 0
+    local total = #entries
+    local concurrency = math.max(1, state.translate and state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY)
+    local processed = 0
+    local maxRetry = config.maxRetry or GLM_MAX_RETRY
+
+    setTranslateStatus("progress", processed, total, totalTokens)
+
+    local useParallel = (concurrency > 1) and config.allowParallel ~= false
+
+    if useParallel then
+        local startIndex = 1
+        while startIndex <= total do
+            local batchEnd = math.min(total, startIndex + concurrency - 1)
+            local batchIndices = {}
+            for idx = startIndex, batchEnd do
+                table.insert(batchIndices, idx)
+            end
+
+            local attempts = {}
+            for _, idx in ipairs(batchIndices) do
+                attempts[idx] = 0
+            end
+
+            local pending = {}
+            for _, idx in ipairs(batchIndices) do
+                table.insert(pending, idx)
+            end
+
+            while #pending > 0 do
+                local tasks = {}
+                for _, idx in ipairs(pending) do
+                    local entry = entries[idx]
+                    local prefixText, suffixText = buildTranslateContext(entries, idx)
+                    table.insert(tasks, {
+                        index = idx,
+                        payload = ChatProviders.buildRequestPayload(config, entry.original or "", prefixText, suffixText, targetLabel) or "",
+                    })
+                end
+
+                local headersList = ChatProviders.buildHeaderList(config, apiKey)
+                local results, batchErr = ParallelServices.runCurlParallel(tasks, {
+                    apiUrl = config.apiUrl,
+                    timeout = config.timeout or GLM_TIMEOUT,
+                    parallelLimit = concurrency,
+                    headers = headersList,
+                    payloadPrefix = config.parallelPayloadPrefix or string.format("%s_payload", config.id or "chat"),
+                    outputPrefix = config.parallelOutputPrefix or string.format("%s_output", config.id or "chat"),
+                    parseResponse = config.parseResponse or ChatProviders.parseResponseBody,
+                })
+                if not results then
+                    if processed == 0 then
+                        useParallel = false
+                        break
+                    end
+                    local failIdx = pending[1]
+                    local errMsg = batchErr or "parallel_execution_failed"
+                    if errMsg == "parallel_execution_failed" then
+                        errMsg = "openai_parallel_failed"
+                    end
+                    if failIdx then
+                        processed = processed + 1
+                        local fallback = string.format("[Error: %s]", tostring(errMsg))
+                        entries[failIdx].translation = fallback
+                        updateTranslateTreeRow(failIdx, fallback)
+                        setTranslateStatus("progress", processed, total, totalTokens)
+                    end
+                    return nil, errMsg, totalTokens
+                end
+
+                local nextPending = {}
+
+                for _, task in ipairs(tasks) do
+                    local result = results[task.index]
+                    if result and result.success then
+                        local entry = entries[task.index]
+                        entry.translation = result.translation
+                        updateTranslateTreeRow(task.index, result.translation)
+                        totalTokens = totalTokens + (result.tokens or 0)
+                        processed = processed + 1
+                        setTranslateStatus("progress", processed, total, totalTokens)
+                    else
+                        local errMsg = (result and result.err) or batchErr or "translation_failed"
+                        if errMsg == "parallel_execution_failed" then
+                            errMsg = "openai_parallel_failed"
+                        end
+                        attempts[task.index] = (attempts[task.index] or 0) + 1
+                        if attempts[task.index] < maxRetry then
+                            table.insert(nextPending, task.index)
+                        else
+                            processed = processed + 1
+                            local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
+                            entries[task.index].translation = fallback
+                            updateTranslateTreeRow(task.index, fallback)
+                            setTranslateStatus("progress", processed, total, totalTokens)
+                        end
+                    end
+                end
+
+                if #nextPending == 0 then
+                    pending = {}
+                else
+                    pending = nextPending
+                end
+            end
+
+            if not useParallel then
+                break
+            end
+
+            startIndex = batchEnd + 1
+        end
+    end
+
+    if not useParallel then
+        totalTokens = 0
+        processed = 0
+        setTranslateStatus("progress", processed, total, totalTokens)
+
+        for startIndex = 1, total, concurrency do
+            local batchEnd = math.min(total, startIndex + concurrency - 1)
+            for index = startIndex, batchEnd do
+                local entry = entries[index]
+                local prefixText, suffixText = buildTranslateContext(entries, index)
+                local success = false
+                local lastError = nil
+
+                for attempt = 1, maxRetry do
+                    local translation, tokens, errMsg = ChatProviders.requestWithApiKey(config, entry.original or "", prefixText, suffixText, targetLabel, apiKey)
+                    if translation then
+                        entry.translation = translation
+                        updateTranslateTreeRow(index, translation)
+                        totalTokens = totalTokens + (tokens or 0)
+                        success = true
+                        break
+                    else
+                        lastError = errMsg
+                    end
+                end
+
+                processed = processed + 1
+                setTranslateStatus("progress", processed, total, totalTokens)
+
+                if not success then
+                    local fallback = string.format("[Error: %s]", tostring(lastError or "failed"))
+                    entries[index].translation = fallback
+                    updateTranslateTreeRow(index, fallback)
+                end
+            end
+        end
+    end
+
+    return totalTokens, nil
+end
+
+local GLM_CHAT_PROVIDER = {
+    id = "glm",
+    label = TRANSLATE_PROVIDER_GL_LABEL,
+    supabaseProvider = GLM_SUPABASE_PROVIDER,
+    apiUrl = GLM_API_URL,
+    model = GLM_MODEL,
+    timeout = GLM_TIMEOUT,
+    maxRetry = GLM_MAX_RETRY,
+    payloadExtras = { thinking = { type = "disabled" } },
+}
+
+local SILICONFLOUW_CHAT_PROVIDER = {
+    id = "siliconflow",
+    label = TRANSLATE_PROVIDER_SILICONFLOW_LABEL,
+    supabaseProvider = SILICONFLOUW_SUPABASE_PROVIDER,
+    apiUrl = SILICONFLOUW_API_URL,
+    model = SILICONFLOUW_MODEL,
+    timeout = GLM_TIMEOUT,
+    maxRetry = GLM_MAX_RETRY,
+    payloadExtras = { thinking = { type = "disabled" } },
+}
+
+ChatProviders.register(GLM_CHAT_PROVIDER)
+ChatProviders.register(SILICONFLOUW_CHAT_PROVIDER)
+
+function GLMService.buildRequestPayload(sentence, prefixText, suffixText, targetLabel)
+    return ChatProviders.buildRequestPayload(GLM_CHAT_PROVIDER, sentence, prefixText, suffixText, targetLabel)
+end
+
+function GLMService.parseResponseBody(body)
+    return ChatProviders.parseResponseBody(body)
+end
+
+function GLMService.requestTranslation(sentence, prefixText, suffixText, targetLabel, apiKey)
+    return ChatProviders.requestWithApiKey(GLM_CHAT_PROVIDER, sentence, prefixText, suffixText, targetLabel, apiKey)
+end
+
+function GLMService.translateEntries(entries, targetLabel)
+    return ChatProviders.translateEntries(GLM_CHAT_PROVIDER, entries, targetLabel)
 end
 
 function Azure.resolveCredential()
@@ -3364,169 +3724,6 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
             end
         end
         return translation, tokens, err
-    end
-
-    function GLMService.translateEntries(entries, targetLabel)
-        if not entries or #entries == 0 then
-            return nil, "no_entries"
-        end
-
-        --setTranslateStatus("fetching_key")
-        local apiKey, fetchErr = fetch_provider_secret(GLM_SUPABASE_PROVIDER)
-        if not apiKey then
-            return nil, fetchErr or "missing_key"
-        end
-
-        local totalTokens = 0
-        local total = #entries
-        local concurrency = math.max(1, state.translate and state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY)
-        local processed = 0
-
-        setTranslateStatus("progress", processed, total, totalTokens)
-
-        local useParallel = concurrency > 1
-
-        if useParallel then
-            local startIndex = 1
-            while startIndex <= total do
-                local batchEnd = math.min(total, startIndex + concurrency - 1)
-                local batchIndices = {}
-                for idx = startIndex, batchEnd do
-                    table.insert(batchIndices, idx)
-                end
-
-                local attempts = {}
-                for _, idx in ipairs(batchIndices) do
-                    attempts[idx] = 0
-                end
-
-                local pending = {}
-                for _, idx in ipairs(batchIndices) do
-                    table.insert(pending, idx)
-                end
-
-                while #pending > 0 do
-                    local tasks = {}
-                    for _, idx in ipairs(pending) do
-                        local entry = entries[idx]
-                        local prefixText, suffixText = buildTranslateContext(entries, idx)
-                        table.insert(tasks, {
-                            index = idx,
-                            payload = GLMService.buildRequestPayload(entry.original or "", prefixText, suffixText, targetLabel),
-                        })
-                    end
-
-                    local results, batchErr = ParallelServices.runCurlParallel(tasks, {
-                        apiUrl = GLM_API_URL,
-                        timeout = GLM_TIMEOUT,
-                        parallelLimit = concurrency,
-                        headers = {
-                            string.format("Authorization: Bearer %s", apiKey),
-                            "Content-Type: application/json",
-                            string.format("User-Agent: %s/%s", SCRIPT_NAME, SCRIPT_VERSION),
-                        },
-                        payloadPrefix = "glm_payload",
-                        outputPrefix = "glm_output",
-                    })
-                    if not results then
-                        if processed == 0 then
-                            useParallel = false
-                            break
-                        end
-                        local failIdx = pending[1]
-                        local errMsg = batchErr or "parallel_execution_failed"
-                        if failIdx then
-                            processed = processed + 1
-                            local fallback = string.format("[Error: %s]", tostring(errMsg))
-                            entries[failIdx].translation = fallback
-                            updateTranslateTreeRow(failIdx, fallback)
-                            setTranslateStatus("progress", processed, total, totalTokens)
-                        end
-                        return nil, errMsg, totalTokens
-                    end
-
-                    local nextPending = {}
-
-                    for _, task in ipairs(tasks) do
-                        local result = results[task.index]
-                        if result and result.success then
-                            local entry = entries[task.index]
-                            entry.translation = result.translation
-                            updateTranslateTreeRow(task.index, result.translation)
-                            totalTokens = totalTokens + (result.tokens or 0)
-                            processed = processed + 1
-                            setTranslateStatus("progress", processed, total, totalTokens)
-                        else
-                            local errMsg = (result and result.err) or batchErr or "translation_failed"
-                                                            if errMsg == "parallel_execution_failed" then
-                                                                errMsg = "openai_parallel_failed"
-                                                            end
-                                                            attempts[task.index] = (attempts[task.index] or 0) + 1
-                                                            if attempts[task.index] < GLM_MAX_RETRY then
-                                                                table.insert(nextPending, task.index)
-                                                            else
-                                                                processed = processed + 1
-                                                                local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
-                                                                entries[task.index].translation = fallback
-                                                                updateTranslateTreeRow(task.index, fallback)
-                                                                setTranslateStatus("progress", processed, total, totalTokens)
-                                                            end                        end
-                    end
-
-                    if #nextPending == 0 then
-                        pending = {}
-                    else
-                        pending = nextPending
-                    end
-                end
-
-                if not useParallel then
-                    break
-                end
-
-                startIndex = batchEnd + 1
-            end
-        end
-
-        if not useParallel then
-            totalTokens = 0
-            processed = 0
-            setTranslateStatus("progress", processed, total, totalTokens)
-
-            for startIndex = 1, total, concurrency do
-                local batchEnd = math.min(total, startIndex + concurrency - 1)
-                for index = startIndex, batchEnd do
-                    local entry = entries[index]
-                    local prefixText, suffixText = buildTranslateContext(entries, index)
-                    local success = false
-                    local lastError = nil
-
-                    for attempt = 1, GLM_MAX_RETRY do
-                        local translation, tokens, errMsg = GLMService.requestTranslation(entry.original or "", prefixText, suffixText, targetLabel, apiKey)
-                        if translation then
-                            entry.translation = translation
-                            updateTranslateTreeRow(index, translation)
-                            totalTokens = totalTokens + (tokens or 0)
-                            success = true
-                            break
-                        else
-                            lastError = errMsg
-                        end
-                    end
-
-                    processed = processed + 1
-                    setTranslateStatus("progress", processed, total, totalTokens)
-
-                    if not success then
-                        local fallback = string.format("[Error: %s]", tostring(lastError or "failed"))
-                        entry.translation = fallback
-                        updateTranslateTreeRow(index, fallback)
-                    end
-                end
-            end
-        end
-
-        return totalTokens, nil
     end
 
     function Azure.translateEntries(entries, targetLabel)
@@ -3866,13 +4063,16 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
             provider = TRANSLATE_PROVIDER_AZURE_LABEL
         end
         state.translate.provider = provider
+        local providerConfig = ChatProviders.getByLabel(provider)
         local translateFunc
         if provider == TRANSLATE_PROVIDER_AZURE_LABEL then
             translateFunc = Azure.translateEntries
-        elseif provider == TRANSLATE_PROVIDER_GL_LABEL then
-            translateFunc = GLMService.translateEntries
         elseif provider == TRANSLATE_PROVIDER_OPENAI_LABEL then
             translateFunc = OpenAIService.translateEntries
+        elseif providerConfig then
+            translateFunc = function(list, label)
+                return ChatProviders.translateEntries(providerConfig, list, label)
+            end
         else
             local en, cn = resolveTranslateErrorPair("provider_not_supported")
             show_dynamic_message(en, cn)
@@ -3922,6 +4122,7 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
             return false
         end
         local provider = state.translate.provider or TRANSLATE_PROVIDER_AZURE_LABEL
+        local providerConfig = ChatProviders.getByLabel(provider)
         if provider == TRANSLATE_PROVIDER_AZURE_LABEL then
             local targetCode = getTargetLangCode(targetLabel)
             if not targetCode or targetCode == "" then
@@ -3955,9 +4156,8 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
             updateTranslateTreeRow(index, fallback)
             setTranslateStatus("success", 1, state.translate.totalTokens)
             return true
-        elseif provider == TRANSLATE_PROVIDER_GL_LABEL then
-            --setTranslateStatus("fetching_key")
-            local apiKey, fetchErr = fetch_provider_secret(GLM_SUPABASE_PROVIDER)
+        elseif providerConfig then
+            local apiKey, fetchErr = ChatProviders.resolveApiKey(providerConfig)
             if not apiKey then
                 setTranslateStatus("failed", resolveTranslateError(fetchErr or "missing_key"))
                 return false
@@ -3966,7 +4166,7 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
             local beforeCtx, afterCtx = buildTranslateContext(entries, index)
             setTranslateStatus("progress", 0, 1, state.translate.totalTokens or 0)
 
-            local translation, tokens, errMsg = GLMService.requestTranslation(entry.original or "", beforeCtx, afterCtx, targetLabel, apiKey)
+            local translation, tokens, errMsg = ChatProviders.requestWithApiKey(providerConfig, entry.original or "", beforeCtx, afterCtx, targetLabel, apiKey)
             if translation then
                 entry.translation = translation
                 updateTranslateTreeRow(index, translation)
