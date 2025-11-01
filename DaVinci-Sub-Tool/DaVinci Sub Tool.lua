@@ -1,6 +1,6 @@
 
 local SCRIPT_NAME = "DaVinci Sub Tool"
-local SCRIPT_VERSION = "1.0.8"
+local SCRIPT_VERSION = "1.0.9"
 local SCRIPT_AUTHOR = "HEIBA"
 print(string.format("%s | %s | %s", SCRIPT_NAME, SCRIPT_VERSION, SCRIPT_AUTHOR))
 local SCRIPT_KOFI_URL = "https://ko-fi.com/heiba"
@@ -196,6 +196,11 @@ App.State = {
     stickyHighlights = {},
     highlightedRows = {},
     updateInfo = nil,
+    loadingLabel = nil,
+    autoFollow = true,
+    lastFollowIndex = nil,
+    manualJumpFrame = nil,
+    manualJumpAt = nil,
     translate = {
         entries = {},
         populated = false,
@@ -207,6 +212,7 @@ App.State = {
         totalTokens = 0,
         lastStatusKey = "idle",
         lastStatusArgs = nil,
+        failed = {},
     },
 }
 
@@ -231,6 +237,7 @@ state.sessionCode = string.format("%04X", math.random(0, 0xFFFF))
 
 local findHighlightColor = { R = 0.40, G = 0.40, B = 0.40, A = 0.60 } -- 查找命中 / 替换后标记
 local transparentColor = { R = 0.0, G = 0.0, B = 0.0, A = 0.0 } -- 透明，真正清空
+local translateFailureColor = { R = 0.90, G = 0.25, B = 0.25, A = 0.35 } -- 翻译失败标记
 local editorProgrammatic = false
 local translateEditorProgrammatic = false
 local languageProgrammatic = false
@@ -263,6 +270,8 @@ local uiText = {
         translate_trans_button = "开始翻译",
         translate_update_button = "译文导入时间线",
         translate_selected_button = "翻译选中行",
+        auto_follow_check = "跟随播放头",
+        translate_retry_failed_button = "重试失败字幕",
         translate_editor_placeholder = "在此编辑译文内容",
         openai_config_label = "OpenAI Format",
         openai_config_button = "配置",
@@ -326,6 +335,8 @@ local uiText = {
         translate_trans_button = "Translate",
         translate_update_button = "Import Translation to Timeline",
         translate_selected_button = "Translate Selected",
+        auto_follow_check = "Follow Playhead",
+        translate_retry_failed_button = "Retry Failed",
         translate_editor_placeholder = "Edit translation here",
         openai_config_label = "OpenAI Format",
         openai_config_button = "Config",
@@ -370,6 +381,12 @@ local uiText = {
 local messages = {
     current_total = { cn = "当前字幕数量：%d", en = "Total subtitles: %d" },
     loaded_count = { cn = "已加载 %d 条字幕", en = "Loaded %d subtitles" },
+    loading_started = { cn = "正在加载字幕...", en = "Loading subtitles..." },
+    loading_progress = { cn = "加载字幕中：%d/%d", en = "Loading subtitles: %d/%d" },
+    loading_tracks = { cn = "正在查找字幕轨道...", en = "Locating subtitle tracks..." },
+    loading_collect = { cn = "已找到字幕轨道，准备读取 %d 条字幕", en = "Subtitle track found, preparing to read %d subtitles" },
+    loading_sorting = { cn = "正在整理字幕顺序...", en = "Sorting subtitles..." },
+    loading_empty = { cn = "未在时间线中找到字幕", en = "No subtitles found on the timeline" },
     enter_find_text = { cn = "请输入查找文本", en = "Enter text to find" },
     no_find_results = { cn = "未找到匹配字幕", en = "No matching subtitles" },
     find_match_count = { cn = "匹配 %d 条字幕", en = "%d subtitles matched" },
@@ -388,6 +405,7 @@ local messages = {
     append_failed = { cn = "无法将字幕追加至时间线", en = "Failed to append subtitles to timeline" },
     match_progress = { cn = "匹配项：第 %d 个结果，共 %d 个结果", en = "Match: result %d of %d" },
     matches_rows_occ = { cn = "包含条目：%d 条；出现次数：%d 处", en = "Rows: %d; Occurrences: %d" },
+    retry_no_failed = { cn = "没有失败的字幕需要重试", en = "No failed subtitles to retry." },
 
 }
 
@@ -397,7 +415,7 @@ local translateStatusTemplates = {
     no_entries = { cn = "没有可翻译的字幕", en = "No subtitles to translate" },
     fetching_key = { cn = "正在获取翻译密钥...", en = "Fetching translator credential..." },
     progress = { cn = "翻译中 %d/%d  令牌:%d", en = "Translating %d/%d  Tokens:%d" },
-    success = { cn = "翻译完成，共 %d 条字幕。令牌:%d", en = "Translation finished: %d lines. Tokens:%d" },
+    success = { cn = "翻译完成，共 %d 条字幕，成功%d 条字幕，失败%d 条字幕，令牌:%d", en = "Translation finished: %d subtitles, %d succeeded, %d failed. Tokens:%d" },
     failed = { cn = "翻译失败：%s", en = "Translation failed: %s" },
     updating = { cn = "正在生成并导入 SRT...", en = "Generating and importing SRT..." },
     updated = { cn = "译文已导入时间线", en = "Translated subtitles imported" },
@@ -416,7 +434,7 @@ local translateErrorMessages = {
     openai_missing_key = { cn = "请在设置中填写 OpenAI API Key", en = "Enter the OpenAI API key in settings." },
     openai_missing_base = { cn = "请在设置中填写 OpenAI Base URL", en = "Enter the OpenAI Base URL in settings." },
     openai_missing_model = { cn = "请选择有效的 OpenAI 模型", en = "Select a valid OpenAI model." },
-    openai_parallel_failed = { cn = "并发请求失败，已退回串行模式", en = "Parallel requests failed; falling back to sequential mode." },
+    openai_parallel_failed = { cn = "并发请求失败，已为对应字幕写入错误提示", en = "Parallel requests failed; affected lines were marked with error text." },
 }
 
 local SUPABASE_URL = "https://tbjlsielfxmkxldzmokc.supabase.co"
@@ -1197,6 +1215,29 @@ function Subtitle.framesToTimecode(frames, fps_spec)
     return string.format("%02d:%02d:%02d:%02d", hh, mm, ss, ff)
 end
 
+
+function Subtitle.timecodeToFrames(tc, fps_spec)
+    if not tc or tc == "" then
+        return nil
+    end
+    local hh, mm, ss, ff = tc:match("^(%d+):(%d+):(%d+):(%d+)$")
+    if not hh then
+        hh, mm, ss, ff = tc:match("^(%d+):(%d+):(%d+);(%d+)$")
+    end
+    if not hh then
+        return nil
+    end
+    hh, mm, ss, ff = tonumber(hh), tonumber(mm), tonumber(ss), tonumber(ff)
+    if not (hh and mm and ss and ff) then
+        return nil
+    end
+    local frac = Subtitle.fpsToFraction(fps_spec)
+    local base = Subtitle.fpsTimebase(frac)
+    local totalFrames = (((hh * 60) + mm) * 60 + ss) * base + ff
+
+    return totalFrames
+end
+
 function Subtitle.getTimelineContext()
     local pm = resolve:GetProjectManager()
     if not pm then
@@ -1232,7 +1273,12 @@ function Subtitle.sortEntries(entries)
     end)
 end
 
-function Subtitle.collectSubtitles()
+function Subtitle.collectSubtitles(opts)
+    if type(opts) ~= "table" then
+        opts = {}
+    end
+    local onProgress = type(opts.onProgress) == "function" and opts.onProgress or nil
+    local onStage = type(opts.onStage) == "function" and opts.onStage or nil
     local ctx = Subtitle.getTimelineContext()
     if not ctx then
         return false, "no_timeline"
@@ -1253,12 +1299,23 @@ function Subtitle.collectSubtitles()
     local entries = {}
     state.activeTrackIndex = nil
 
+    if onStage then
+        onStage("loading_tracks")
+    end
+
     for track = 1, trackCount do
         local enabled = timeline:GetIsTrackEnabled("subtitle", track)
         if enabled ~= false then
             local itemList = timeline:GetItemListInTrack("subtitle", track)
                 if itemList and #itemList > 0 then
                     state.activeTrackIndex = track
+                    local totalItems = #itemList
+                    if onStage then
+                        onStage("loading_collect", totalItems)
+                    end
+                    if onProgress then
+                        onProgress(0, totalItems)
+                    end
                     for _, item in ipairs(itemList) do
                         local startValue = item:GetStart() or 0
                         local endValue = item:GetEnd() or startValue
@@ -1272,13 +1329,42 @@ function Subtitle.collectSubtitles()
                             endText    = Subtitle.framesToTimecode(endFrame,   state.fps_frac),
                             text = name,
                         })
+                        if onProgress then
+                            onProgress(#entries, totalItems)
+                        end
                     end
                     break
                 end
             end
         end
 
+    if onStage then
+        if #entries == 0 then
+            onStage("loading_empty")
+        else
+            onStage("loading_sorting")
+        end
+    end
+
     Subtitle.sortEntries(entries)
+    local totalEntries = #entries
+    for idx, entry in ipairs(entries) do
+        local startFrame = entry.startFrame or 0
+        local endFrame = entry.endFrame or startFrame
+        local nextEntry = entries[idx + 1]
+        local nextStart = nextEntry and nextEntry.startFrame or nil
+        local endExclusive = (endFrame or startFrame) + 1
+        if nextStart and nextStart < endExclusive then
+            endExclusive = nextStart
+        end
+        local intervalEnd = math.max(startFrame + 1, endExclusive)
+        entry._intervalEnd = intervalEnd
+    end
+    if onProgress then
+        if totalEntries > 0 then
+            onProgress(totalEntries, totalEntries)
+        end
+    end
     state.entries = entries
     return true
 end
@@ -1586,7 +1672,12 @@ function UI.runWithLoading(action)
     local label = items and items.LoadingLabel
 
     if label then
-        label.Text = " loading..."
+        label.Text = UI.messageString("loading_started") or "loading..."
+    end
+
+    local previousLoadingLabel = state.loadingLabel
+    if label then
+        state.loadingLabel = label
     end
 
     loadingWin:Show()
@@ -1599,6 +1690,8 @@ function UI.runWithLoading(action)
     if loadingWin.DeleteLater then
         loadingWin:DeleteLater()
     end
+
+    state.loadingLabel = previousLoadingLabel
 
     if not ok then
         error(result)
@@ -2066,6 +2159,11 @@ local win = disp:AddWindow(
 
         ui:HGroup{
           Weight = 0,
+          ui:CheckBox{ ID = "AutoFollowCheck", Text = UI.uiString("auto_follow_check"), Checked = true, Weight = 0 },
+        },
+
+        ui:HGroup{
+          Weight = 0,
           ui:Label{ ID = "StatusLabel", Text = "", Weight = 1, Alignment = { AlignHCenter = true, AlignVCenter = true } },
         },
 
@@ -2130,7 +2228,12 @@ local win = disp:AddWindow(
 
         ui:HGroup{ Weight = 0, ui:Label{ ID = "TranslateStatusLabel", Text = "", Weight = 1, Alignment = { AlignHCenter = true, AlignVCenter = true }, WordWrap = true } },
 
-        ui:HGroup{ Weight = 0.1, ui:Button{ ID = "TranslateTransButton",    Text = UI.uiString("translate_trans_button"),    Weight = 1 }, ui:Button{ ID = "TranslateSelectedButton", Text = UI.uiString("translate_selected_button"), Weight = 1 } },
+        ui:HGroup{
+          Weight = 0.1,
+          ui:Button{ ID = "TranslateTransButton",          Text = UI.uiString("translate_trans_button"),        Weight = 1 },
+          ui:Button{ ID = "TranslateRetryFailedButton",   Text = UI.uiString("translate_retry_failed_button"),  Weight = 1 },
+          ui:Button{ ID = "TranslateSelectedButton",      Text = UI.uiString("translate_selected_button"),      Weight = 1 },
+        },
 
         ui:HGroup{ Weight = 0.1, ui:Button{ ID = "TranslateUpdateSubtitleButton", Text = UI.uiString("translate_update_button"), Weight = 1 } },
 
@@ -2154,6 +2257,7 @@ local win = disp:AddWindow(
         ui:Button{ ID = "CopyrightButton", Text = UI.uiString("copyright"), Alignment = { AlignHCenter = true, AlignVCenter = true }, Font = ui.Font({ PixelSize = 12, StyleName = "Bold" }), Flat = true, TextColor = { 0.1, 0.3, 0.9, 1 }, BackgroundColor = { 1, 1, 1, 0 }, Weight = 0 },
       },
     },
+
   }
 )
 
@@ -2295,6 +2399,176 @@ local function populateConcurrencyCombo(value)
 end
 
 populateConcurrencyCombo(state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY)
+
+local playheadTimer = ui:Timer{
+    ID = "PlayheadTimer",
+    Interval = 100,
+    SingleShot = false,
+    TimerType = "CoarseTimer",
+}
+state.playheadTimer = playheadTimer
+
+
+local function getCurrentTimelineFrame()
+    local timeline = state.timeline
+    if not timeline then
+        return nil
+    end
+    if timeline.GetCurrentFrame then
+        local ok, frame = pcall(function()
+            return timeline:GetCurrentFrame()
+        end)
+        if ok and type(frame) == "number" then
+            return math.floor(frame + 0.5)
+        end
+    end
+    if timeline.GetCurrentTimecode then
+        local ok, tc = pcall(function()
+            return timeline:GetCurrentTimecode()
+        end)
+        if ok and tc and tc ~= "" then
+            return Subtitle.timecodeToFrames(tc, state.fps_frac or state.fps or { num = 24, den = 1 })
+        end
+    end
+    return nil
+end
+
+-- 替换原函数：接缝/空白一律指向右侧；内部采用 [start, end) 判定
+local function findEntryIndexByFrame(absFrame)
+    local entries = state.entries or {}
+    local total = #entries
+    if total == 0 then return nil end
+
+    -- ① 保持“接缝/空白 → 右侧”：找第一条 start >= absFrame
+    local lo, hi = 1, total
+    local insertPos = total + 1
+    while lo <= hi do
+        local mid = math.floor((lo + hi) / 2)
+        local s = entries[mid] and entries[mid].startFrame or 0
+        if s >= absFrame then
+            insertPos = mid
+            hi = mid - 1
+        else
+            lo = mid + 1
+        end
+    end
+
+    -- ② 前一条内部采用左闭右开 [start, end)
+    local prevIndex = insertPos - 1
+    if prevIndex >= 1 then
+        local e = entries[prevIndex]
+        if e then
+            local s = e.startFrame or 0
+            local t = e.endFrame   or s
+            if t <= s then t = s + 1 end  -- 兜底，防坏数据
+            if absFrame >= s and absFrame < t then
+                return prevIndex
+            end
+        end
+    end
+
+    -- ③ 其余（接缝、空白、越尾）→ 右侧
+    if insertPos >= 1 and insertPos <= total then
+        return insertPos
+    end
+    return total
+end
+
+
+function UI.followPlayheadTick()
+    if not state.autoFollow then
+        return
+    end
+    if state.suppressTreeSelection then
+        return
+    end
+    local entries = state.entries
+    if not entries or #entries == 0 then
+        return
+    end
+    local frame = getCurrentTimelineFrame()
+    if not frame then
+        return
+    end
+    if state.manualJumpFrame and state.manualJumpAt then
+        local elapsed = os.clock() - state.manualJumpAt
+        if math.abs(frame - state.manualJumpFrame) <= 1 and elapsed < 0.25 then
+            return
+        elseif elapsed >= 0.25 then
+            state.manualJumpFrame = nil
+            state.manualJumpAt = nil
+        end
+    end
+    local index = findEntryIndexByFrame(frame)
+    if not index then
+        state.lastFollowIndex = nil
+        return
+    end
+    if state.manualJumpFrame and (math.abs(frame - state.manualJumpFrame) > 1 or index ~= state.lastFollowIndex) then
+        state.manualJumpFrame = nil
+        state.manualJumpAt = nil
+    end
+    if state.lastFollowIndex == index then
+        return
+    end
+    if not it.SubtitleTree then
+        return
+    end
+    UI.jumpToEntry(index, false)
+    state.lastFollowIndex = index
+end
+
+local function updatePlayheadTimerState(triggerTick)
+    if not playheadTimer then
+        return
+    end
+    local isActive = false
+    if playheadTimer.GetIsActive then
+        local ok, active = pcall(function()
+            return playheadTimer:GetIsActive()
+        end)
+        isActive = ok and active or false
+    end
+    if state.autoFollow then
+        if not isActive then
+            pcall(function() playheadTimer:Start() end)
+        end
+        if triggerTick then
+            UI.followPlayheadTick()
+        end
+    elseif isActive then
+        pcall(function() playheadTimer:Stop() end)
+    end
+end
+
+if it.AutoFollowCheck then
+    it.AutoFollowCheck.Checked = state.autoFollow and true or false
+    function win.On.AutoFollowCheck.Clicked(ev)
+        state.autoFollow = it.AutoFollowCheck.Checked == true
+        state.lastFollowIndex = nil
+        state.manualJumpFrame = nil
+        state.manualJumpAt = nil
+        updatePlayheadTimerState(true)
+    end
+end
+
+local previousTimeoutHandler = disp.On.Timeout
+function disp.On.Timeout(ev)
+    local handled
+    if previousTimeoutHandler then
+        handled = previousTimeoutHandler(ev)
+    end
+    local who = ev and (ev.who or ev.ID or ev.Name or ev.TimerID or ev.TimerId)
+    if who == "PlayheadTimer" then
+        if state.autoFollow then
+            UI.followPlayheadTick()
+        end
+        return true
+    end
+    return handled
+end
+
+updatePlayheadTimerState(true)
 
 
 function Azure.refreshConfigTexts()
@@ -2703,6 +2977,49 @@ local function setTranslateStatus(key, ...)
     applyTranslateStatusInternal(key, args)
 end
 
+local function computeTranslateSummary(entries)
+    local dataset = entries
+    if dataset == nil then
+        dataset = state.translate and state.translate.entries or {}
+    end
+
+    local failedMap = (state.translate and state.translate.failed) or {}
+    local total, failed = 0, 0
+
+    if type(dataset) == "table" then
+        for _, item in ipairs(dataset) do
+            if item then
+                total = total + 1
+                local idx
+                if type(item) == "table" then
+                    idx = item.index or item.idx or item.rowIndex or item.originalIndex or item.id
+                elseif type(item) == "number" then
+                    idx = item
+                end
+                if idx and failedMap[idx] then
+                    failed = failed + 1
+                end
+            end
+        end
+    end
+
+    local success = total - failed
+    if success < 0 then
+        success = 0
+    end
+    return total, success, failed
+end
+
+local function applyTranslateSuccessStatus(entries, tokenCount, shouldNotify)
+    local total, success, failed = computeTranslateSummary(entries)
+    local tokens = tokenCount or 0
+    setTranslateStatus("success", total, success, failed, tokens)
+    if shouldNotify then
+        notifyTranslateStatus("success", { total, success, failed, tokens }, { total, success, failed, tokens })
+    end
+    return total, success, failed
+end
+
 local function resolveTranslateErrorForLang(code, lang)
     if code == nil or code == "" then
         return ""
@@ -2901,6 +3218,28 @@ local function refreshTranslateStatus()
     applyTranslateStatusInternal(tState.lastStatusKey or "idle", tState.lastStatusArgs or {})
 end
 
+local function hasFailedTranslateEntries()
+    local failed = state.translate and state.translate.failed
+    if not failed then
+        return false
+    end
+    for _ in pairs(failed) do
+        return true
+    end
+    return false
+end
+
+local function updateRetryButtonState()
+    if not it.TranslateRetryFailedButton then
+        return
+    end
+    if state.translate and state.translate.busy then
+        it.TranslateRetryFailedButton.Enabled = false
+        return
+    end
+    it.TranslateRetryFailedButton.Enabled = hasFailedTranslateEntries()
+end
+
 local function setTranslateControlsEnabled(enabled)
     local flag = enabled and true or false
     if it.TranslateProviderCombo then
@@ -2924,6 +3263,13 @@ local function setTranslateControlsEnabled(enabled)
     if it.TranslateConcurrencyCombo then
         it.TranslateConcurrencyCombo.Enabled = flag
     end
+    if it.TranslateRetryFailedButton then
+        if flag then
+            updateRetryButtonState()
+        else
+            it.TranslateRetryFailedButton.Enabled = false
+        end
+    end
 end
 
 local function normalizeTranslateTree()
@@ -2938,7 +3284,16 @@ local function normalizeTranslateTree()
         it.TranslateSubtitleTree.ColumnWidth[3] = 260
     end)
 end
-
+local function clearAllTranslateFailures()
+    if not state.translate.failed then
+        return
+    end
+    for idx in pairs(state.translate.failed) do
+        setTranslateRowHighlight(idx, nil)
+    end
+    state.translate.failed = {}
+    updateRetryButtonState()
+end
 local function resetTranslateState()
     local tState = state.translate
     if not tState then
@@ -2951,6 +3306,8 @@ local function resetTranslateState()
     tState.busy = false
     tState.lastStatusKey = "idle"
     tState.lastStatusArgs = nil
+    clearAllTranslateFailures()
+    tState.failed = {}
     if it.TranslateSubtitleTree then
         UI.withUpdatesSuspended(it.TranslateSubtitleTree, function()
             it.TranslateSubtitleTree:Clear()
@@ -2966,6 +3323,7 @@ local function resetTranslateState()
         it.TranslateSelectedButton.Enabled = false
     end
     setTranslateStatus("idle")
+    updateRetryButtonState()
 end
 
 local function cloneEditEntriesForTranslate()
@@ -3001,8 +3359,12 @@ local function populateTranslateTree()
             item.Text[2] = entry.original or ""
             item.Text[3] = entry.translation or ""
             it.TranslateSubtitleTree:AddTopLevelItem(item)
+            if state.translate.failed and state.translate.failed[index] then
+                setTranslateRowHighlight(index, translateFailureColor)
+            end
         end
     end)
+    updateRetryButtonState()
 end
 
 local function updateTranslateTreeRow(index, text)
@@ -3013,8 +3375,54 @@ local function updateTranslateTreeRow(index, text)
         local item = it.TranslateSubtitleTree:TopLevelItem(index - 1)
         if item then
             item.Text[3] = text or ""
+            if state.translate and state.translate.failed and state.translate.failed[index] then
+                item.BackgroundColor[3] = translateFailureColor
+            else
+                item.BackgroundColor[3] = transparentColor
+            end
         end
     end)
+end
+
+
+
+local function setTranslateRowHighlight(index, color)
+    if not it.TranslateSubtitleTree then
+        return
+    end
+    local item = it.TranslateSubtitleTree:TopLevelItem(index - 1)
+    if not item then
+        return
+    end
+    local target = color or transparentColor
+    item.BackgroundColor[3] = target
+end
+
+
+
+local function markTranslateFailure(index, reason)
+    if not index then
+        return
+    end
+    local tState = state.translate
+    if not tState.failed then
+        tState.failed = {}
+    end
+    tState.failed[index] = reason or true
+    setTranslateRowHighlight(index, translateFailureColor)
+    updateRetryButtonState()
+end
+
+local function clearTranslateFailure(index)
+    if not index then
+        return
+    end
+    local tState = state.translate
+    if tState.failed then
+        tState.failed[index] = nil
+    end
+    setTranslateRowHighlight(index, nil)
+    updateRetryButtonState()
 end
 
 local function updateTranslateOriginalRow(index, text)
@@ -3056,6 +3464,7 @@ local function ensureTranslateEntries(force)
     if not force and tState.populated and #tState.entries > 0 then
         normalizeTranslateTree()   
         refreshTranslateStatus()
+        updateRetryButtonState()
         return
     end
     setTranslateStatus("copying")
@@ -3063,6 +3472,8 @@ local function ensureTranslateEntries(force)
     tState.populated = true
     tState.selectedIndex = nil
     tState.totalTokens = 0
+    clearAllTranslateFailures()
+    tState.failed = {}
     populateTranslateTree()
     if it.TranslateSubtitleEditor then
         UI.withTranslateProgrammatic(function()
@@ -3122,6 +3533,10 @@ local function initTranslateTab()
     if it.TranslateSelectedButton then
         it.TranslateSelectedButton.Text = UI.uiString("translate_selected_button")
         it.TranslateSelectedButton.Enabled = state.translate.selectedIndex ~= nil and not state.translate.busy
+    end
+    if it.TranslateRetryFailedButton then
+        it.TranslateRetryFailedButton.Text = UI.uiString("translate_retry_failed_button")
+        updateRetryButtonState()
     end
     if it.TranslateUpdateSubtitleButton then
         it.TranslateUpdateSubtitleButton.Text = UI.uiString("translate_update_button")
@@ -3417,19 +3832,10 @@ function ChatProviders.translateEntries(configOrId, entries, targetLabel)
         local startIndex = 1
         while startIndex <= total do
             local batchEnd = math.min(total, startIndex + concurrency - 1)
-            local batchIndices = {}
+            local attempts, pending = {}, {}
             for idx = startIndex, batchEnd do
-                table.insert(batchIndices, idx)
-            end
-
-            local attempts = {}
-            for _, idx in ipairs(batchIndices) do
                 attempts[idx] = 0
-            end
-
-            local pending = {}
-            for _, idx in ipairs(batchIndices) do
-                table.insert(pending, idx)
+                pending[#pending + 1] = idx
             end
 
             while #pending > 0 do
@@ -3437,10 +3843,10 @@ function ChatProviders.translateEntries(configOrId, entries, targetLabel)
                 for _, idx in ipairs(pending) do
                     local entry = entries[idx]
                     local prefixText, suffixText = buildTranslateContext(entries, idx)
-                    table.insert(tasks, {
+                    tasks[#tasks + 1] = {
                         index = idx,
-                        payload = ChatProviders.buildRequestPayload(config, entry.original or "", prefixText, suffixText, targetLabel) or "",
-                    })
+                        payload = ChatProviders.buildRequestPayload(config, entry and entry.original or "", prefixText, suffixText, targetLabel) or "",
+                    }
                 end
 
                 local headersList = ChatProviders.buildHeaderList(config, apiKey)
@@ -3454,33 +3860,37 @@ function ChatProviders.translateEntries(configOrId, entries, targetLabel)
                     parseResponse = config.parseResponse or ChatProviders.parseResponseBody,
                 })
                 if not results then
-                    if processed == 0 then
-                        useParallel = false
-                        break
-                    end
-                    local failIdx = pending[1]
                     local errMsg = batchErr or "parallel_execution_failed"
                     if errMsg == "parallel_execution_failed" then
                         errMsg = "openai_parallel_failed"
                     end
-                    if failIdx then
+                    for _, idx in ipairs(pending) do
+                        local entry = entries[idx]
+                        local rowIndex = entry and entry.index or idx
                         processed = processed + 1
                         local fallback = string.format("[Error: %s]", tostring(errMsg))
-                        entries[failIdx].translation = fallback
-                        updateTranslateTreeRow(failIdx, fallback)
+                        if entry then
+                            entry.translation = fallback
+                        end
+                        updateTranslateTreeRow(rowIndex, fallback)
+                        markTranslateFailure(rowIndex, errMsg)
                         setTranslateStatus("progress", processed, total, totalTokens)
                     end
-                    return nil, errMsg, totalTokens
+                    break
                 end
 
                 local nextPending = {}
 
                 for _, task in ipairs(tasks) do
                     local result = results[task.index]
+                    local entry = entries[task.index]
+                    local rowIndex = entry and entry.index or task.index
                     if result and result.success then
-                        local entry = entries[task.index]
-                        entry.translation = result.translation
-                        updateTranslateTreeRow(task.index, result.translation)
+                        if entry then
+                            entry.translation = result.translation
+                        end
+                        updateTranslateTreeRow(rowIndex, result.translation)
+                        clearTranslateFailure(rowIndex)
                         totalTokens = totalTokens + (result.tokens or 0)
                         processed = processed + 1
                         setTranslateStatus("progress", processed, total, totalTokens)
@@ -3491,12 +3901,15 @@ function ChatProviders.translateEntries(configOrId, entries, targetLabel)
                         end
                         attempts[task.index] = (attempts[task.index] or 0) + 1
                         if attempts[task.index] < maxRetry then
-                            table.insert(nextPending, task.index)
+                            nextPending[#nextPending + 1] = task.index
                         else
                             processed = processed + 1
                             local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
-                            entries[task.index].translation = fallback
-                            updateTranslateTreeRow(task.index, fallback)
+                            if entry then
+                                entry.translation = fallback
+                            end
+                            updateTranslateTreeRow(rowIndex, fallback)
+                            markTranslateFailure(rowIndex, errMsg)
                             setTranslateStatus("progress", processed, total, totalTokens)
                         end
                     end
@@ -3507,10 +3920,6 @@ function ChatProviders.translateEntries(configOrId, entries, targetLabel)
                 else
                     pending = nextPending
                 end
-            end
-
-            if not useParallel then
-                break
             end
 
             startIndex = batchEnd + 1
@@ -3526,6 +3935,7 @@ function ChatProviders.translateEntries(configOrId, entries, targetLabel)
             local batchEnd = math.min(total, startIndex + concurrency - 1)
             for index = startIndex, batchEnd do
                 local entry = entries[index]
+                local rowIndex = entry and entry.index or index
                 local prefixText, suffixText = buildTranslateContext(entries, index)
                 local success = false
                 local lastError = nil
@@ -3534,7 +3944,8 @@ function ChatProviders.translateEntries(configOrId, entries, targetLabel)
                     local translation, tokens, errMsg = ChatProviders.requestWithApiKey(config, entry.original or "", prefixText, suffixText, targetLabel, apiKey)
                     if translation then
                         entry.translation = translation
-                        updateTranslateTreeRow(index, translation)
+                        updateTranslateTreeRow(rowIndex, translation)
+                        clearTranslateFailure(rowIndex)
                         totalTokens = totalTokens + (tokens or 0)
                         success = true
                         break
@@ -3549,7 +3960,8 @@ function ChatProviders.translateEntries(configOrId, entries, targetLabel)
                 if not success then
                     local fallback = string.format("[Error: %s]", tostring(lastError or "failed"))
                     entries[index].translation = fallback
-                    updateTranslateTreeRow(index, fallback)
+                    updateTranslateTreeRow(rowIndex, fallback)
+                    markTranslateFailure(rowIndex, lastError)
                 end
             end
         end
@@ -3779,13 +4191,13 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
                 local tasks = {}
                 for idx = startIndex, batchEnd do
                     local entry = entries[idx]
-                    table.insert(tasks, {
+                    tasks[#tasks + 1] = {
                         index = idx,
                         payload = json.encode({
-                            { text = entry.original or "" },
+                            { text = entry and entry.original or "" },
                         }),
                         url = translateUrl,
-                    })
+                    }
                 end
 
                 local results, batchErr = ParallelServices.runCurlParallel(tasks, {
@@ -3797,37 +4209,45 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
                     parseResponse = Azure.parseResponseBody,
                 })
                 if not results then
-                    if processed == 0 then
-                        useParallel = false
-                        break
-                    end
-                    local failIdx = tasks[1] and tasks[1].index or startIndex
                     local errMsg = batchErr or "parallel_execution_failed"
-                    local fallback = string.format("[Error: %s]", tostring(errMsg))
-                    if failIdx and entries[failIdx] then
-                        entries[failIdx].translation = fallback
-                        updateTranslateTreeRow(failIdx, fallback)
+                    for _, task in ipairs(tasks) do
+                        local idx = task.index
+                        local entry = entries[idx]
+                        local rowIndex = entry and entry.index or idx
+                        local fallback = string.format("[Error: %s]", tostring(errMsg))
+                        if entry then
+                            entry.translation = fallback
+                        end
+                        updateTranslateTreeRow(rowIndex, fallback)
+                        markTranslateFailure(rowIndex, errMsg)
                         processed = processed + 1
                         setTranslateStatus("progress", processed, total, totalTokens)
                     end
-                    return nil, errMsg, totalTokens
-                end
-
-                for _, task in ipairs(tasks) do
-                    local result = results[task.index]
-                    if result and result.success then
-                        local translation = result.translation
-                        entries[task.index].translation = translation
-                        updateTranslateTreeRow(task.index, translation)
-                        processed = processed + 1
-                        setTranslateStatus("progress", processed, total, totalTokens)
-                    else
-                        local errMsg = (result and result.err) or batchErr or "translation_failed"
-                        local fallback = string.format("[Error: %s]", tostring(errMsg))
-                        entries[task.index].translation = fallback
-                        updateTranslateTreeRow(task.index, fallback)
-                        processed = processed + 1
-                        setTranslateStatus("progress", processed, total, totalTokens)
+                else
+                    for _, task in ipairs(tasks) do
+                        local result = results[task.index]
+                        local entry = entries[task.index]
+                        local rowIndex = entry and entry.index or task.index
+                        if result and result.success then
+                            local translation = result.translation
+                            if entry then
+                                entry.translation = translation
+                            end
+                            updateTranslateTreeRow(rowIndex, translation)
+                            clearTranslateFailure(rowIndex)
+                            processed = processed + 1
+                            setTranslateStatus("progress", processed, total, totalTokens)
+                        else
+                            local errMsg = (result and result.err) or batchErr or "translation_failed"
+                            local fallback = string.format("[Error: %s]", tostring(errMsg))
+                            if entry then
+                                entry.translation = fallback
+                            end
+                            updateTranslateTreeRow(rowIndex, fallback)
+                            markTranslateFailure(rowIndex, errMsg)
+                            processed = processed + 1
+                            setTranslateStatus("progress", processed, total, totalTokens)
+                        end
                     end
                 end
 
@@ -3835,18 +4255,21 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
             end
         end
 
-        if (not useParallel) or (processed < total) then
+        if not useParallel then
             processed = 0
             setTranslateStatus("progress", processed, total, totalTokens)
             for index, entry in ipairs(entries) do
                 local translation, _, errMsg = Azure.requestTranslation(entry.original or "", targetCode, baseUrl, apiKey, region)
+                local rowIndex = entry and entry.index or index
                 if translation then
                     entry.translation = translation
-                    updateTranslateTreeRow(index, translation)
+                    updateTranslateTreeRow(rowIndex, translation)
+                    clearTranslateFailure(rowIndex)
                 else
                     local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
                     entry.translation = fallback
-                    updateTranslateTreeRow(index, fallback)
+                    updateTranslateTreeRow(rowIndex, fallback)
+                    markTranslateFailure(rowIndex, errMsg)
                 end
                 processed = processed + 1
                 setTranslateStatus("progress", processed, total, totalTokens)
@@ -3896,19 +4319,10 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
             local startIndex = 1
             while startIndex <= total do
                 local batchEnd = math.min(total, startIndex + concurrency - 1)
-                local batchIndices = {}
+                local attempts, pending = {}, {}
                 for idx = startIndex, batchEnd do
-                    table.insert(batchIndices, idx)
-                end
-
-                local attempts = {}
-                for _, idx in ipairs(batchIndices) do
                     attempts[idx] = 0
-                end
-
-                local pending = {}
-                for _, idx in ipairs(batchIndices) do
-                    table.insert(pending, idx)
+                    pending[#pending + 1] = idx
                 end
 
                 while #pending > 0 do
@@ -3916,10 +4330,10 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
                     for _, idx in ipairs(pending) do
                         local entry = entries[idx]
                         local prefixText, suffixText = buildTranslateContext(entries, idx)
-                        table.insert(tasks, {
+                        tasks[#tasks + 1] = {
                             index = idx,
                             payload = OpenAIService.buildRequestPayload(entry.original or "", prefixText, suffixText, targetLabel, selected.name, temperature),
-                        })
+                        }
                     end
 
                     local results, batchErr = ParallelServices.runCurlParallel(tasks, {
@@ -3936,33 +4350,37 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
                         parseResponse = OpenAIService.parseResponseBody,
                     })
                     if not results then
-                        if processed == 0 then
-                            useParallel = false
-                            break
-                        end
-                        local failIdx = pending[1]
                         local errMsg = batchErr or "parallel_execution_failed"
                         if errMsg == "parallel_execution_failed" then
                             errMsg = "openai_parallel_failed"
                         end
-                        if failIdx then
+                        for _, idx in ipairs(pending) do
+                            local entry = entries[idx]
+                            local rowIndex = entry and entry.index or idx
                             processed = processed + 1
                             local fallback = string.format("[Error: %s]", tostring(errMsg))
-                            entries[failIdx].translation = fallback
-                            updateTranslateTreeRow(failIdx, fallback)
+                            if entry then
+                                entry.translation = fallback
+                            end
+                            updateTranslateTreeRow(rowIndex, fallback)
+                            markTranslateFailure(rowIndex, errMsg)
                             setTranslateStatus("progress", processed, total, totalTokens)
                         end
-                        return nil, errMsg, totalTokens
+                        break
                     end
 
                     local nextPending = {}
 
                     for _, task in ipairs(tasks) do
                         local result = results[task.index]
+                        local entry = entries[task.index]
+                        local rowIndex = entry and entry.index or task.index
                         if result and result.success then
-                            local entry = entries[task.index]
-                            entry.translation = result.translation
-                            updateTranslateTreeRow(task.index, result.translation)
+                            if entry then
+                                entry.translation = result.translation
+                            end
+                            updateTranslateTreeRow(rowIndex, result.translation)
+                            clearTranslateFailure(rowIndex)
                             totalTokens = totalTokens + (result.tokens or 0)
                             processed = processed + 1
                             setTranslateStatus("progress", processed, total, totalTokens)
@@ -3970,12 +4388,15 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
                             local errMsg = (result and result.err) or batchErr or "translation_failed"
                             attempts[task.index] = (attempts[task.index] or 0) + 1
                             if attempts[task.index] < GLM_MAX_RETRY then
-                                table.insert(nextPending, task.index)
+                                nextPending[#nextPending + 1] = task.index
                             else
                                 processed = processed + 1
                                 local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
-                                entries[task.index].translation = fallback
-                                updateTranslateTreeRow(task.index, fallback)
+                                if entry then
+                                    entry.translation = fallback
+                                end
+                                updateTranslateTreeRow(rowIndex, fallback)
+                                markTranslateFailure(rowIndex, errMsg)
                                 setTranslateStatus("progress", processed, total, totalTokens)
                             end
                         end
@@ -3986,10 +4407,6 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
                     else
                         pending = nextPending
                     end
-                end
-
-                if not useParallel then
-                    break
                 end
 
                 startIndex = batchEnd + 1
@@ -4012,6 +4429,7 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
                 local batchEnd = math.min(total, startIndex + concurrency - 1)
                 for index = startIndex, batchEnd do
                     local entry = entries[index]
+                    local rowIndex = entry and entry.index or index
                     local prefixText, suffixText = buildTranslateContext(entries, index)
                     local success = false
                     local lastError = nil
@@ -4020,7 +4438,8 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
                         local translation, tokens, errMsg = OpenAIService.requestTranslation(entry.original or "", prefixText, suffixText, targetLabel, requestConfig)
                         if translation then
                             entry.translation = translation
-                            updateTranslateTreeRow(index, translation)
+                            updateTranslateTreeRow(rowIndex, translation)
+                            clearTranslateFailure(rowIndex)
                             totalTokens = totalTokens + (tokens or 0)
                             success = true
                             break
@@ -4035,7 +4454,8 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
                     if not success then
                         local fallback = string.format("[Error: %s]", tostring(lastError or "failed"))
                         entry.translation = fallback
-                        updateTranslateTreeRow(index, fallback)
+                        updateTranslateTreeRow(rowIndex, fallback)
+                        markTranslateFailure(rowIndex, lastError)
                     end
                 end
             end
@@ -4108,8 +4528,7 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
         end
 
         state.translate.totalTokens = totalTokens
-        setTranslateStatus("success", #entries, totalTokens)
-        notifyTranslateStatus("success", { #entries, totalTokens }, { #entries, totalTokens })
+        applyTranslateSuccessStatus(entries, totalTokens, true)
         return true
     end
 
@@ -4121,6 +4540,7 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
             setTranslateStatus("failed", resolveTranslateError("no_selection"))
             return false
         end
+        local rowIndex = entry.index or index
         local provider = state.translate.provider or TRANSLATE_PROVIDER_AZURE_LABEL
         local providerConfig = ChatProviders.getByLabel(provider)
         if provider == TRANSLATE_PROVIDER_AZURE_LABEL then
@@ -4146,15 +4566,17 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
             local translation, _, errMsg = Azure.requestTranslation(entry.original or "", targetCode, baseUrl, apiKey, region)
             if translation then
                 entry.translation = translation
-                updateTranslateTreeRow(index, translation)
+                updateTranslateTreeRow(rowIndex, translation)
+                clearTranslateFailure(rowIndex)
                 state.translate.totalTokens = state.translate.totalTokens or 0
-                setTranslateStatus("success", 1, state.translate.totalTokens)
+                applyTranslateSuccessStatus({ entry }, state.translate.totalTokens)
                 return true
             end
             local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
             entry.translation = fallback
-            updateTranslateTreeRow(index, fallback)
-            setTranslateStatus("success", 1, state.translate.totalTokens)
+            updateTranslateTreeRow(rowIndex, fallback)
+            markTranslateFailure(rowIndex, errMsg)
+            applyTranslateSuccessStatus({ entry }, state.translate.totalTokens)
             return true
         elseif providerConfig then
             local apiKey, fetchErr = ChatProviders.resolveApiKey(providerConfig)
@@ -4169,16 +4591,18 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
             local translation, tokens, errMsg = ChatProviders.requestWithApiKey(providerConfig, entry.original or "", beforeCtx, afterCtx, targetLabel, apiKey)
             if translation then
                 entry.translation = translation
-                updateTranslateTreeRow(index, translation)
+                updateTranslateTreeRow(rowIndex, translation)
+                clearTranslateFailure(rowIndex)
                 state.translate.totalTokens = (state.translate.totalTokens or 0) + (tokens or 0)
-                setTranslateStatus("success", 1, state.translate.totalTokens)
+                applyTranslateSuccessStatus({ entry }, state.translate.totalTokens)
                 return true
             end
 
             local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
             entry.translation = fallback
-            updateTranslateTreeRow(index, fallback)
-            setTranslateStatus("success", 1, state.translate.totalTokens)
+            updateTranslateTreeRow(rowIndex, fallback)
+            markTranslateFailure(rowIndex, errMsg)
+            applyTranslateSuccessStatus({ entry }, state.translate.totalTokens)
             return true
         elseif provider == TRANSLATE_PROVIDER_OPENAI_LABEL then
             OpenAIService.applyConfigFromControls()
@@ -4215,21 +4639,130 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
             })
             if translation then
                 entry.translation = translation
-                updateTranslateTreeRow(index, translation)
+                updateTranslateTreeRow(rowIndex, translation)
+                clearTranslateFailure(rowIndex)
                 state.translate.totalTokens = (state.translate.totalTokens or 0) + (tokens or 0)
-                setTranslateStatus("success", 1, state.translate.totalTokens)
+                applyTranslateSuccessStatus({ entry }, state.translate.totalTokens)
                 return true
             end
 
             local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
             entry.translation = fallback
-            updateTranslateTreeRow(index, fallback)
-            setTranslateStatus("success", 1, state.translate.totalTokens)
+            updateTranslateTreeRow(rowIndex, fallback)
+            markTranslateFailure(rowIndex, errMsg)
+            applyTranslateSuccessStatus({ entry }, state.translate.totalTokens)
             return true
         end
 
         setTranslateStatus("failed", resolveTranslateError("provider_not_supported"))
         return false
+    end
+
+
+    local function collectFailedIndices()
+        local failed = state.translate.failed
+        local indices = {}
+        if failed then
+            for idx in pairs(failed) do
+                indices[#indices + 1] = idx
+            end
+            table.sort(indices)
+        end
+        return indices
+    end
+
+    local function retryFailedEntries()
+        if state.translate.busy then
+            return false
+        end
+
+        ensureTranslateEntries(false)
+
+        local indices = collectFailedIndices()
+        if #indices == 0 then
+            UI.updateStatus("retry_no_failed")
+            updateRetryButtonState()
+            return false
+        end
+
+        local entries = state.translate.entries or {}
+        local subset = {}
+        for _, idx in ipairs(indices) do
+            local entry = entries[idx]
+            if entry then
+                subset[#subset + 1] = entry
+            else
+                if state.translate.failed then
+                    state.translate.failed[idx] = nil
+                end
+            end
+        end
+
+        updateRetryButtonState()
+
+        if #subset == 0 then
+            state.translate.failed = {}
+            updateRetryButtonState()
+            UI.updateStatus("retry_no_failed")
+            return false
+        end
+
+        local provider = (it.TranslateProviderCombo and it.TranslateProviderCombo.CurrentText) or state.translate.provider or TRANSLATE_PROVIDER_AZURE_LABEL
+        state.translate.provider = provider
+        local providerConfig = ChatProviders.getByLabel(provider)
+        local translateFunc
+        if provider == TRANSLATE_PROVIDER_AZURE_LABEL then
+            translateFunc = Azure.translateEntries
+        elseif provider == TRANSLATE_PROVIDER_OPENAI_LABEL then
+            translateFunc = OpenAIService.translateEntries
+        elseif providerConfig then
+            translateFunc = function(list, label)
+                return ChatProviders.translateEntries(providerConfig, list, label)
+            end
+        else
+            local message = resolveTranslateError("provider_not_supported")
+            setTranslateStatus("failed", message)
+            updateRetryButtonState()
+            return false
+        end
+
+        local targetLabel = state.translate.targetLabel or (it.TranslateTargetCombo and it.TranslateTargetCombo.CurrentText) or "English"
+        state.translate.targetLabel = targetLabel
+
+        local originalConcurrency = state.translate.concurrency
+        state.translate.concurrency = 3
+
+        state.translate.busy = true
+        setTranslateControlsEnabled(false)
+
+        local ok, totalTokens, err = pcall(translateFunc, subset, targetLabel)
+
+        state.translate.concurrency = originalConcurrency
+        state.translate.busy = false
+        setTranslateControlsEnabled(true)
+
+        if not ok then
+            local reasonKey = totalTokens or "translation_failed"
+            local en, cn = resolveTranslateErrorPair(reasonKey)
+            notifyTranslateStatus("failed", { en }, { cn })
+            setTranslateStatus("failed", resolveTranslateError(reasonKey))
+            updateRetryButtonState()
+            return false
+        end
+
+        if not totalTokens then
+            local reasonKey = err or "translation_failed"
+            local en, cn = resolveTranslateErrorPair(reasonKey)
+            notifyTranslateStatus("failed", { en }, { cn })
+            setTranslateStatus("failed", resolveTranslateError(reasonKey))
+            updateRetryButtonState()
+            return false
+        end
+
+        state.translate.totalTokens = (state.translate.totalTokens or 0) + (totalTokens or 0)
+        applyTranslateSuccessStatus(subset, state.translate.totalTokens, true)
+        updateRetryButtonState()
+        return true
     end
 
 
@@ -4249,6 +4782,7 @@ Translate.translateSingleEntry = translateSingleEntry
 Translate.updateTreeRow = updateTranslateTreeRow
 Translate.updateOriginalRow = updateTranslateOriginalRow
 Translate.selectRow = selectTranslateRow
+Translate.retryFailedEntries = retryFailedEntries
 -- Translate Tab: (moved) Export Translated Subtitles
 function Subtitle.exportTranslatedSubtitles()
     local entries = state.translate.entries or {}
@@ -4300,10 +4834,42 @@ end
 -- Subtitle Domain: Timeline IO / SRT / Jump
 -- ==============================================================
 function Subtitle.refreshFromTimeline()
-    local ok, err = Subtitle.collectSubtitles()
+    local function handleStage(stage, a)
+        if stage == "loading_tracks" then
+            UI.updateStatus("loading_tracks")
+        elseif stage == "loading_collect" then
+            local total = tonumber(a) or 0
+            if total < 0 then total = 0 end
+            UI.updateStatus("loading_collect", total)
+        elseif stage == "loading_sorting" then
+            UI.updateStatus("loading_sorting")
+        elseif stage == "loading_empty" then
+            UI.updateStatus("loading_empty")
+        end
+    end
+
+    local function handleProgress(done, total)
+        if total and total > 0 then
+            local clamped = done
+            if clamped > total then
+                clamped = total
+            elseif clamped < 0 then
+                clamped = 0
+            end
+            UI.updateStatus("loading_progress", clamped, total)
+        else
+            UI.updateStatus("loading_started")
+        end
+    end
+
+    local ok, err = Subtitle.collectSubtitles({
+        onProgress = handleProgress,
+        onStage = handleStage,
+    })
     if not ok then
         UI.updateStatus(err or "cannot_read_subtitles")
         state.entries = {}
+        state.lastFollowIndex = nil
         if it.SubtitleTree then
             UI.withUpdatesSuspended(it.SubtitleTree, function()
                 it.SubtitleTree:Clear()
@@ -4317,11 +4883,17 @@ function Subtitle.refreshFromTimeline()
         state.currentMatchHighlight = nil
         UI.setEditorText("")
         Translate.resetState()
+        updatePlayheadTimerState(false)
         return false
     end
     Translate.resetState()
     UI.populateTree()
     UI.updateStatus("loaded_count", #state.entries)
+    if state.autoFollow then
+        state.lastFollowIndex = nil
+        UI.followPlayheadTick()
+    end
+    updatePlayheadTimerState(false)
     return true
 end
 
@@ -4440,22 +5012,30 @@ function UI.updateStatus(key, ...)
     state.lastStatusKey = key
     state.lastStatusArgs = { ... }
 
+    local text
     if not key then
-        it.StatusLabel.Text = ""
-        return
+        text = ""
+    else
+        local template = UI.messageString(key)
+        if template then
+            text = string.format(template, ...)
+        else
+            text = tostring(key)
+            if select('#', ...) > 0 then
+                text = string.format(text, ...)
+            end
+        end
     end
 
-    local template = UI.messageString(key)
-    if template then
-        it.StatusLabel.Text = string.format(template, ...)
-        return
+    if it.StatusLabel then
+        it.StatusLabel.Text = text or ""
     end
-
-    local text = tostring(key)
-    if select('#', ...) > 0 then
-        text = string.format(text, ...)
+    local loadingLabel = state.loadingLabel
+    if loadingLabel and type(loadingLabel) == "userdata" then
+        pcall(function()
+            loadingLabel.Text = text or ""
+        end)
     end
-    it.StatusLabel.Text = text
 end
 
 -- ==============================================================
@@ -4532,6 +5112,8 @@ function Subtitle.performTimelineJump(entry)
     end
 end
 
+
+
 -- 新增：清空 Tree 现有选择
 function UI.clearTreeSelection()
     if not it.SubtitleTree then return end
@@ -4560,10 +5142,13 @@ function UI.jumpToEntry(index, doTimeline)
     state.suppressTreeSelection = false
 
     state.selectedIndex = index
+    state.lastFollowIndex = index
     UI.setEditorText(entry.text or "")
 
     if doTimeline ~= false then
         Subtitle.performTimelineJump(entry)
+        state.manualJumpFrame = entry.startFrame or 0
+        state.manualJumpAt = os.clock()
     end
 end
 
@@ -4769,6 +5354,10 @@ function UI.applyLanguage(lang)
     if it.SingleReplaceButton then
         it.SingleReplaceButton.Text = UI.uiString("single_replace_button")
     end
+    if it.AutoFollowCheck then
+        it.AutoFollowCheck.Text = UI.uiString("auto_follow_check")
+        it.AutoFollowCheck.Checked = state.autoFollow and true or false
+    end
     if it.RefreshButton then
         it.RefreshButton.Text = UI.uiString("refresh_button")
     end
@@ -4826,6 +5415,10 @@ function UI.applyLanguage(lang)
         it.TranslateSelectedButton.Text = UI.uiString("translate_selected_button")
         it.TranslateSelectedButton.Enabled = state.translate.selectedIndex ~= nil and not state.translate.busy
     end
+    if it.TranslateRetryFailedButton then
+        it.TranslateRetryFailedButton.Text = UI.uiString("translate_retry_failed_button")
+        updateRetryButtonState()
+    end
     if it.TranslateUpdateSubtitleButton then
         it.TranslateUpdateSubtitleButton.Text = UI.uiString("translate_update_button")
     end
@@ -4879,6 +5472,7 @@ end
 
 function UI.populateTree(suppressStatus)
     state.selectedIndex = nil
+    state.lastFollowIndex = nil
     state.findMatches = nil
     state.findIndex = nil
     state.currentMatchPos = nil
@@ -5113,7 +5707,19 @@ function win.On.RefreshButton.Clicked(ev)
     state.findMatches = nil
     state.findIndex = nil
     state.currentMatchPos = nil
-    Subtitle.refreshFromTimeline()
+    local refreshBtn = it.RefreshButton
+    if refreshBtn then
+        refreshBtn.Enabled = false
+    end
+    UI.updateStatus("loading_tracks")
+    local ok, result = pcall(Subtitle.refreshFromTimeline)
+    if not ok then
+        print(string.format("[Subtitle] Refresh failed: %s", tostring(result)))
+        UI.updateStatus("cannot_read_subtitles")
+    end
+    if refreshBtn then
+        refreshBtn.Enabled = true
+    end
 end
 
 function win.On.UpdateSubtitleButton.Clicked(ev)
@@ -5300,6 +5906,7 @@ function win.On.TranslateSubtitleEditor.TextChanged(ev)
     local text = (it.TranslateSubtitleEditor and (it.TranslateSubtitleEditor.PlainText or it.TranslateSubtitleEditor.Text)) or ""
     entry.translation = text
     Translate.updateTreeRow(idx, text)
+    clearTranslateFailure(idx)
 end
 
 function win.On.TranslateProviderCombo.CurrentIndexChanged(ev)
@@ -5333,6 +5940,10 @@ function win.On.TranslateTargetCombo.CurrentIndexChanged(ev)
 end
 function win.On.TranslateTransButton.Clicked(ev)
     Translate.performWorkflow()
+end
+
+function win.On.TranslateRetryFailedButton.Clicked(ev)
+    Translate.retryFailedEntries()
 end
 
 function win.On.TranslateSelectedButton.Clicked(ev)
@@ -5379,6 +5990,11 @@ function win.On.TranslateUpdateSubtitleButton.Clicked(ev)
 end
 
 function win.On.SubtitleUtilityWin.Close(ev)
+    if playheadTimer and playheadTimer.Stop then
+        pcall(function()
+            playheadTimer:Stop()
+        end)
+    end
     OpenAIService.applyConfigFromControls()
     Azure.applyConfigFromControls()
     Storage.ensureOpenAIModelList(state.openaiFormat)
@@ -5405,8 +6021,8 @@ end
 
 UI.applyLanguage(state.language)
 function App.performInitialLoad()
-    Subtitle.refreshFromTimeline()
     App.checkForUpdates()
+    Subtitle.refreshFromTimeline()
 end
 UI.runWithLoading(App.performInitialLoad)
 win:Show()
