@@ -1,5 +1,5 @@
 local SCRIPT_NAME = "DaVinci Sub Editor"
-local SCRIPT_VERSION = "1.0.7-Free" -- 标记为免费版
+local SCRIPT_VERSION = "1.0.8-Free" -- 标记为免费版
 local SCRIPT_AUTHOR = "HEIBA"
 print(string.format("%s | %s | %s", SCRIPT_NAME, SCRIPT_VERSION, SCRIPT_AUTHOR))
 local SCRIPT_KOFI_URL = "https://ko-fi.com/s/5e9dcdeae5"
@@ -165,6 +165,11 @@ App.State = {
     stickyHighlights = {},
     highlightedRows = {},
     updateInfo = nil,
+    loadingLabel = nil,
+    autoFollow = true,
+    lastFollowIndex = nil,
+    manualJumpFrame = nil,
+    manualJumpAt = nil,
     translate = {
         entries = {},
         populated = false,
@@ -221,6 +226,8 @@ local uiText = {
         translate_trans_button = "开始翻译",
         translate_update_button = "译文导入时间线",
         translate_selected_button = "翻译选中行",
+        auto_follow_check = "跟随播放头",
+        translate_retry_failed_button = "重试失败字幕",
         translate_editor_placeholder = "在此编辑译文内容",
         openai_config_label = "OpenAI Format",
         openai_config_button = "配置",
@@ -291,6 +298,8 @@ local uiText = {
         translate_trans_button = "Translate",
         translate_update_button = "Import Translation to Timeline",
         translate_selected_button = "Translate Selected",
+        auto_follow_check = "Follow Playhead",
+        translate_retry_failed_button = "Retry Failed",
         translate_editor_placeholder = "Edit translation here",
         openai_config_label = "OpenAI Format",
         openai_config_button = "Config",
@@ -341,6 +350,12 @@ local uiText = {
 local messages = {
     current_total = { cn = "当前字幕数量：%d", en = "Total subtitles: %d" },
     loaded_count = { cn = "已加载 %d 条字幕", en = "Loaded %d subtitles" },
+    loading_started = { cn = "正在加载字幕...", en = "Loading subtitles..." },
+    loading_progress = { cn = "加载字幕中：%d/%d", en = "Loading subtitles: %d/%d" },
+    loading_tracks = { cn = "正在查找字幕轨道...", en = "Locating subtitle tracks..." },
+    loading_collect = { cn = "已找到字幕轨道，准备读取 %d 条字幕", en = "Subtitle track found, preparing to read %d subtitles" },
+    loading_sorting = { cn = "正在整理字幕顺序...", en = "Sorting subtitles..." },
+    loading_empty = { cn = "未在时间线中找到字幕", en = "No subtitles found on the timeline" },
     enter_find_text = { cn = "请输入查找文本", en = "Enter text to find" },
     no_find_results = { cn = "未找到匹配字幕", en = "No matching subtitles" },
     find_match_count = { cn = "匹配 %d 条字幕", en = "%d subtitles matched" },
@@ -387,7 +402,7 @@ local translateErrorMessages = {
     openai_missing_key = { cn = "请在设置中填写 OpenAI API Key", en = "Enter the OpenAI API key in settings." },
     openai_missing_base = { cn = "请在设置中填写 OpenAI Base URL", en = "Enter the OpenAI Base URL in settings." },
     openai_missing_model = { cn = "请选择有效的 OpenAI 模型", en = "Select a valid OpenAI model." },
-    openai_parallel_failed = { cn = "并发请求失败，已退回串行模式", en = "Parallel requests failed; falling back to sequential mode." },
+    openai_parallel_failed = { cn = "并发请求失败，已为对应字幕写入错误提示", en = "Parallel requests failed; affected lines were marked with error text." },
 }
 
 
@@ -1083,6 +1098,28 @@ function Subtitle.framesToTimecode(frames, fps_spec)
     return string.format("%02d:%02d:%02d:%02d", hh, mm, ss, ff)
 end
 
+function Subtitle.timecodeToFrames(tc, fps_spec)
+    if not tc or tc == "" then
+        return nil
+    end
+    local hh, mm, ss, ff = tc:match("^(%d+):(%d+):(%d+):(%d+)$")
+    if not hh then
+        hh, mm, ss, ff = tc:match("^(%d+):(%d+):(%d+);(%d+)$")
+    end
+    if not hh then
+        return nil
+    end
+    hh, mm, ss, ff = tonumber(hh), tonumber(mm), tonumber(ss), tonumber(ff)
+    if not (hh and mm and ss and ff) then
+        return nil
+    end
+    local frac = Subtitle.fpsToFraction(fps_spec)
+    local base = Subtitle.fpsTimebase(frac)
+    local totalFrames = (((hh * 60) + mm) * 60 + ss) * base + ff
+
+    return totalFrames
+end
+
 function Subtitle.getTimelineContext()
     local pm = resolve:GetProjectManager()
     if not pm then
@@ -1118,7 +1155,12 @@ function Subtitle.sortEntries(entries)
     end)
 end
 
-function Subtitle.collectSubtitles()
+function Subtitle.collectSubtitles(opts)
+    if type(opts) ~= "table" then
+        opts = {}
+    end
+    local onProgress = type(opts.onProgress) == "function" and opts.onProgress or nil
+    local onStage = type(opts.onStage) == "function" and opts.onStage or nil
     local ctx = Subtitle.getTimelineContext()
     if not ctx then
         return false, "no_timeline"
@@ -1139,12 +1181,23 @@ function Subtitle.collectSubtitles()
     local entries = {}
     state.activeTrackIndex = nil
 
+    if onStage then
+        onStage("loading_tracks")
+    end
+
     for track = 1, trackCount do
         local enabled = timeline:GetIsTrackEnabled("subtitle", track)
         if enabled ~= false then
             local itemList = timeline:GetItemListInTrack("subtitle", track)
                 if itemList and #itemList > 0 then
                     state.activeTrackIndex = track
+                    local totalItems = #itemList
+                    if onStage then
+                        onStage("loading_collect", totalItems)
+                    end
+                    if onProgress then
+                        onProgress(0, totalItems)
+                    end
                     for _, item in ipairs(itemList) do
                         local startValue = item:GetStart() or 0
                         local endValue = item:GetEnd() or startValue
@@ -1158,13 +1211,30 @@ function Subtitle.collectSubtitles()
                             endText    = Subtitle.framesToTimecode(endFrame,   state.fps_frac),
                             text = name,
                         })
+                        if onProgress then
+                            onProgress(#entries, totalItems)
+                        end
                     end
                     break
                 end
             end
         end
 
+    if onStage then
+        if #entries == 0 then
+            onStage("loading_empty")
+        else
+            onStage("loading_sorting")
+        end
+    end
+
     Subtitle.sortEntries(entries)
+    if onProgress then
+        local total = #entries
+        if total > 0 then
+            onProgress(total, total)
+        end
+    end
     state.entries = entries
     return true
 end
@@ -1351,7 +1421,12 @@ function UI.runWithLoading(action)
     local label = items and items.LoadingLabel
 
     if label then
-        label.Text = " loading..."
+        label.Text = UI.messageString("loading_started") or "loading..."
+    end
+
+    local previousLoadingLabel = state.loadingLabel
+    if label then
+        state.loadingLabel = label
     end
 
     loadingWin:Show()
@@ -1364,6 +1439,8 @@ function UI.runWithLoading(action)
     if loadingWin.DeleteLater then
         loadingWin:DeleteLater()
     end
+
+    state.loadingLabel = previousLoadingLabel
 
     if not ok then
         error(result)
@@ -1664,7 +1741,10 @@ local win = disp:AddWindow(
           PlaceholderText = UI.uiString("editor_placeholder"),
           WordWrap        = true,
         },
-
+        ui:HGroup{
+          Weight = 0,
+          ui:CheckBox{ ID = "AutoFollowCheck", Text = UI.uiString("auto_follow_check"), Checked = true, Weight = 0 },
+        },
         ui:HGroup{
           Weight = 0,
           ui:Label{
@@ -1774,6 +1854,7 @@ local win = disp:AddWindow(
         ui:HGroup{
           Weight = 0.1,
           ui:Button{ ID = "TranslateTransButton",     Text = UI.uiString("translate_trans_button"),     Weight = 1 },
+          ui:Button{ ID = "TranslateRetryFailedButton",   Text = UI.uiString("translate_retry_failed_button"),  Weight = 1 },
           ui:Button{ ID = "TranslateSelectedButton",  Text = UI.uiString("translate_selected_button"),  Weight = 1 },
         },
 
@@ -1889,6 +1970,176 @@ local function populateConcurrencyCombo(value)
 end
 
 populateConcurrencyCombo(state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY)
+
+local playheadTimer = ui:Timer{
+    ID = "PlayheadTimer",
+    Interval = 100,
+    SingleShot = false,
+    TimerType = "CoarseTimer",
+}
+state.playheadTimer = playheadTimer
+
+
+local function getCurrentTimelineFrame()
+    local timeline = state.timeline
+    if not timeline then
+        return nil
+    end
+    if timeline.GetCurrentFrame then
+        local ok, frame = pcall(function()
+            return timeline:GetCurrentFrame()
+        end)
+        if ok and type(frame) == "number" then
+            return math.floor(frame + 0.5)
+        end
+    end
+    if timeline.GetCurrentTimecode then
+        local ok, tc = pcall(function()
+            return timeline:GetCurrentTimecode()
+        end)
+        if ok and tc and tc ~= "" then
+            return Subtitle.timecodeToFrames(tc, state.fps_frac or state.fps or { num = 24, den = 1 })
+        end
+    end
+    return nil
+end
+
+-- 替换原函数：接缝/空白一律指向右侧；内部采用 [start, end) 判定
+local function findEntryIndexByFrame(absFrame)
+    local entries = state.entries or {}
+    local total = #entries
+    if total == 0 then return nil end
+
+    -- ① 保持“接缝/空白 → 右侧”：找第一条 start >= absFrame
+    local lo, hi = 1, total
+    local insertPos = total + 1
+    while lo <= hi do
+        local mid = math.floor((lo + hi) / 2)
+        local s = entries[mid] and entries[mid].startFrame or 0
+        if s >= absFrame then
+            insertPos = mid
+            hi = mid - 1
+        else
+            lo = mid + 1
+        end
+    end
+
+    -- ② 前一条内部采用左闭右开 [start, end)
+    local prevIndex = insertPos - 1
+    if prevIndex >= 1 then
+        local e = entries[prevIndex]
+        if e then
+            local s = e.startFrame or 0
+            local t = e.endFrame   or s
+            if t <= s then t = s + 1 end  -- 兜底，防坏数据
+            if absFrame >= s and absFrame < t then
+                return prevIndex
+            end
+        end
+    end
+
+    -- ③ 其余（接缝、空白、越尾）→ 右侧
+    if insertPos >= 1 and insertPos <= total then
+        return insertPos
+    end
+    return total
+end
+
+
+function UI.followPlayheadTick()
+    if not state.autoFollow then
+        return
+    end
+    if state.suppressTreeSelection then
+        return
+    end
+    local entries = state.entries
+    if not entries or #entries == 0 then
+        return
+    end
+    local frame = getCurrentTimelineFrame()
+    if not frame then
+        return
+    end
+    if state.manualJumpFrame and state.manualJumpAt then
+        local elapsed = os.clock() - state.manualJumpAt
+        if math.abs(frame - state.manualJumpFrame) <= 1 and elapsed < 0.25 then
+            return
+        elseif elapsed >= 0.25 then
+            state.manualJumpFrame = nil
+            state.manualJumpAt = nil
+        end
+    end
+    local index = findEntryIndexByFrame(frame)
+    if not index then
+        state.lastFollowIndex = nil
+        return
+    end
+    if state.manualJumpFrame and (math.abs(frame - state.manualJumpFrame) > 1 or index ~= state.lastFollowIndex) then
+        state.manualJumpFrame = nil
+        state.manualJumpAt = nil
+    end
+    if state.lastFollowIndex == index then
+        return
+    end
+    if not it.SubtitleTree then
+        return
+    end
+    UI.jumpToEntry(index, false)
+    state.lastFollowIndex = index
+end
+
+local function updatePlayheadTimerState(triggerTick)
+    if not playheadTimer then
+        return
+    end
+    local isActive = false
+    if playheadTimer.GetIsActive then
+        local ok, active = pcall(function()
+            return playheadTimer:GetIsActive()
+        end)
+        isActive = ok and active or false
+    end
+    if state.autoFollow then
+        if not isActive then
+            pcall(function() playheadTimer:Start() end)
+        end
+        if triggerTick then
+            UI.followPlayheadTick()
+        end
+    elseif isActive then
+        pcall(function() playheadTimer:Stop() end)
+    end
+end
+
+if it.AutoFollowCheck then
+    it.AutoFollowCheck.Checked = state.autoFollow and true or false
+    function win.On.AutoFollowCheck.Clicked(ev)
+        state.autoFollow = it.AutoFollowCheck.Checked == true
+        state.lastFollowIndex = nil
+        state.manualJumpFrame = nil
+        state.manualJumpAt = nil
+        updatePlayheadTimerState(true)
+    end
+end
+
+local previousTimeoutHandler = disp.On.Timeout
+function disp.On.Timeout(ev)
+    local handled
+    if previousTimeoutHandler then
+        handled = previousTimeoutHandler(ev)
+    end
+    local who = ev and (ev.who or ev.ID or ev.Name or ev.TimerID or ev.TimerId)
+    if who == "PlayheadTimer" then
+        if state.autoFollow then
+            UI.followPlayheadTick()
+        end
+        return true
+    end
+    return handled
+end
+
+updatePlayheadTimerState(true)
 
 
 local messageWin = disp:AddWindow({
@@ -2171,6 +2422,9 @@ local function setTranslateControlsEnabled(enabled)
     end
     if it.TranslateSelectedButton then
         it.TranslateSelectedButton.Enabled = flag and (state.translate.selectedIndex ~= nil)
+    end
+    if it.TranslateRetryFailedButton then
+        it.TranslateRetryFailedButton.Text = UI.uiString("translate_retry_failed_button")
     end
     if it.TranslateUpdateSubtitleButton then
         it.TranslateUpdateSubtitleButton.Enabled = flag
@@ -2748,7 +3002,38 @@ end
 -- Subtitle Domain: Timeline IO / SRT / Jump
 -- ==============================================================
 function Subtitle.refreshFromTimeline()
-    local ok, err = Subtitle.collectSubtitles()
+    local function handleStage(stage, a)
+        if stage == "loading_tracks" then
+            UI.updateStatus("loading_tracks")
+        elseif stage == "loading_collect" then
+            local total = tonumber(a) or 0
+            if total < 0 then total = 0 end
+            UI.updateStatus("loading_collect", total)
+        elseif stage == "loading_sorting" then
+            UI.updateStatus("loading_sorting")
+        elseif stage == "loading_empty" then
+            UI.updateStatus("loading_empty")
+        end
+    end
+
+    local function handleProgress(done, total)
+        if total and total > 0 then
+            local clamped = done
+            if clamped > total then
+                clamped = total
+            elseif clamped < 0 then
+                clamped = 0
+            end
+            UI.updateStatus("loading_progress", clamped, total)
+        else
+            UI.updateStatus("loading_started")
+        end
+    end
+
+    local ok, err = Subtitle.collectSubtitles({
+        onProgress = handleProgress,
+        onStage = handleStage,
+    })
     if not ok then
         UI.updateStatus(err or "cannot_read_subtitles")
         state.entries = {}
@@ -2888,22 +3173,30 @@ function UI.updateStatus(key, ...)
     state.lastStatusKey = key
     state.lastStatusArgs = { ... }
 
+    local text
     if not key then
-        it.StatusLabel.Text = ""
-        return
+        text = ""
+    else
+        local template = UI.messageString(key)
+        if template then
+            text = string.format(template, ...)
+        else
+            text = tostring(key)
+            if select('#', ...) > 0 then
+                text = string.format(text, ...)
+            end
+        end
     end
 
-    local template = UI.messageString(key)
-    if template then
-        it.StatusLabel.Text = string.format(template, ...)
-        return
+    if it.StatusLabel then
+        it.StatusLabel.Text = text or ""
     end
-
-    local text = tostring(key)
-    if select('#', ...) > 0 then
-        text = string.format(text, ...)
+    local loadingLabel = state.loadingLabel
+    if loadingLabel and type(loadingLabel) == "userdata" then
+        pcall(function()
+            loadingLabel.Text = text or ""
+        end)
     end
-    it.StatusLabel.Text = text
 end
 
 -- ==============================================================
@@ -3215,6 +3508,10 @@ function UI.applyLanguage(lang)
     if it.SingleReplaceButton then
         it.SingleReplaceButton.Text = UI.uiString("single_replace_button")
     end
+    if it.AutoFollowCheck then
+        it.AutoFollowCheck.Text = UI.uiString("auto_follow_check")
+        it.AutoFollowCheck.Checked = state.autoFollow and true or false
+    end
     if it.RefreshButton then
         it.RefreshButton.Text = UI.uiString("refresh_button")
     end
@@ -3271,6 +3568,9 @@ function UI.applyLanguage(lang)
     if it.TranslateSelectedButton then
         it.TranslateSelectedButton.Text = UI.uiString("translate_selected_button")
         it.TranslateSelectedButton.Enabled = state.translate.selectedIndex ~= nil and not state.translate.busy
+    end
+    if it.TranslateRetryFailedButton then
+        it.TranslateRetryFailedButton.Text = UI.uiString("translate_retry_failed_button")
     end
     if it.TranslateUpdateSubtitleButton then
         it.TranslateUpdateSubtitleButton.Text = UI.uiString("translate_update_button")
@@ -3504,6 +3804,7 @@ function win.On.MainTabs.CurrentChanged(ev)
     local index = (ev and ev.Index) or 0
     it.MainStack.CurrentIndex = index
     if index == 1 then
+        show_dynamic_message(UI.uiString("upgrade_title"), UI.uiString("upgrade_title"))
         local keep = state.translate and state.translate.selectedIndex  
 
         Translate.initTab()  
@@ -3558,7 +3859,19 @@ function win.On.RefreshButton.Clicked(ev)
     state.findMatches = nil
     state.findIndex = nil
     state.currentMatchPos = nil
-    Subtitle.refreshFromTimeline()
+    local refreshBtn = it.RefreshButton
+    if refreshBtn then
+        refreshBtn.Enabled = false
+    end
+    UI.updateStatus("loading_tracks")
+    local ok, result = pcall(Subtitle.refreshFromTimeline)
+    if not ok then
+        print(string.format("[Subtitle] Refresh failed: %s", tostring(result)))
+        UI.updateStatus("cannot_read_subtitles")
+    end
+    if refreshBtn then
+        refreshBtn.Enabled = true
+    end
 end
 
 function win.On.UpdateSubtitleButton.Clicked(ev)
@@ -3757,7 +4070,9 @@ end
 function win.On.TranslateTransButton.Clicked(ev)
     Translate.performWorkflow()
 end
-
+function win.On.TranslateRetryFailedButton.Clicked(ev)
+    show_dynamic_message(UI.uiString("upgrade_title"), UI.uiString("upgrade_title"))
+end
 -- 修改：翻译选中按钮（执行带限制检查的流程）
 function win.On.TranslateSelectedButton.Clicked(ev)
     if state.translate.busy then return end
@@ -3846,8 +4161,8 @@ end
 
 UI.applyLanguage(state.language)
 function App.performInitialLoad()
-    Subtitle.refreshFromTimeline()
     App.checkForUpdates()
+    Subtitle.refreshFromTimeline()
 end
 UI.runWithLoading(App.performInitialLoad)
 win:Show()

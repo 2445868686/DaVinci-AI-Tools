@@ -1,6 +1,6 @@
 
 local SCRIPT_NAME = "DaVinci Sub Tool"
-local SCRIPT_VERSION = "1.0.9"
+local SCRIPT_VERSION = "1.1.0"
 local SCRIPT_AUTHOR = "HEIBA"
 print(string.format("%s | %s | %s", SCRIPT_NAME, SCRIPT_VERSION, SCRIPT_AUTHOR))
 local SCRIPT_KOFI_URL = "https://ko-fi.com/heiba"
@@ -2514,8 +2514,7 @@ function UI.followPlayheadTick()
     if not it.SubtitleTree then
         return
     end
-    UI.jumpToEntry(index, false)
-    state.lastFollowIndex = index
+    UI.jumpToEntry(index, false, { includeTranslate = true, jumpTimeline = false })
 end
 
 local function updatePlayheadTimerState(triggerTick)
@@ -3435,25 +3434,6 @@ local function updateTranslateOriginalRow(index, text)
             item.Text[2] = text or ""
         end
     end)
-end
-
-local function selectTranslateRow(index)
-    state.translate.selectedIndex = index
-    local entry = state.translate.entries and state.translate.entries[index]
-    if it.TranslateSubtitleTree then
-        local item = it.TranslateSubtitleTree:TopLevelItem(index - 1)
-        if item and it.TranslateSubtitleTree:CurrentItem() ~= item then
-            it.TranslateSubtitleTree:SetCurrentItem(item)
-        end
-    end
-    if it.TranslateSubtitleEditor then
-        UI.withTranslateProgrammatic(function()
-            it.TranslateSubtitleEditor.Text = entry and (entry.translation or "") or ""
-        end)
-    end
-    if it.TranslateSelectedButton then
-        it.TranslateSelectedButton.Enabled = not (state.translate.busy) and true
-    end
 end
 
 local function ensureTranslateEntries(force)
@@ -4781,7 +4761,6 @@ Translate.performWorkflow = performTranslateWorkflow
 Translate.translateSingleEntry = translateSingleEntry
 Translate.updateTreeRow = updateTranslateTreeRow
 Translate.updateOriginalRow = updateTranslateOriginalRow
-Translate.selectRow = selectTranslateRow
 Translate.retryFailedEntries = retryFailedEntries
 -- Translate Tab: (moved) Export Translated Subtitles
 function Subtitle.exportTranslatedSubtitles()
@@ -5114,42 +5093,181 @@ end
 
 
 
--- 新增：清空 Tree 现有选择
-function UI.clearTreeSelection()
-    if not it.SubtitleTree then return end
-    local selected = it.SubtitleTree:SelectedItems()
-    if selected and type(selected) == "table" then
-        for _, it in ipairs(selected) do
-            it.Selected = false
+local function clearTreeSelectionNodes(widget)
+    if not widget or not widget.SelectedItems then
+        return
+    end
+    local selected = widget:SelectedItems()
+    if not selected or type(selected) ~= "table" then
+        return
+    end
+    for _, node in ipairs(selected) do
+        if node and node.Selected ~= nil then
+            node.Selected = false
         end
     end
 end
 
--- 修改：仅选中当前命中的条目
-function UI.jumpToEntry(index, doTimeline)
-    local entry = state.entries[index]
-    if not entry then return end
-    local item = it.SubtitleTree:TopLevelItem(index - 1)
-    if not item then return end
-
-    state.suppressTreeSelection = true
-
-    -- 关键：先清空旧选择，再选中当前
-    UI.clearTreeSelection()
+local function selectTreeNode(widget, index, opts)
+    if not widget or not widget.TopLevelItem then
+        return nil
+    end
+    local item = widget:TopLevelItem(index - 1)
+    if not item then
+        return nil
+    end
+    opts = opts or {}
+    if opts.clear ~= false then
+        clearTreeSelectionNodes(widget)
+    end
     item.Selected = true
-    it.SubtitleTree:ScrollToItem(item)
+    local shouldScroll = opts.scroll
+    if shouldScroll == nil then
+        shouldScroll = true
+    end
+    if shouldScroll and widget.ScrollToItem then
+        widget:ScrollToItem(item)
+    end
+    return item
+end
 
-    state.suppressTreeSelection = false
+-- 新增：清空 Tree 现有选择
+function UI.clearTreeSelection()
+    clearTreeSelectionNodes(it.SubtitleTree)
+end
 
-    state.selectedIndex = index
-    state.lastFollowIndex = index
-    UI.setEditorText(entry.text or "")
+local function cloneOptionTable(src)
+    if type(src) ~= "table" then
+        return {}
+    end
+    local copy = {}
+    for k, v in pairs(src) do
+        copy[k] = v
+    end
+    return copy
+end
 
-    if doTimeline ~= false then
+local function focusEntryRow(index, opts)
+    local entry = state.entries and state.entries[index]
+    if not entry then
+        return nil
+    end
+    opts = opts or {}
+    local includeEdit = opts.includeEdit
+    if includeEdit == nil then
+        includeEdit = true
+    end
+    local includeTranslate = opts.includeTranslate == true
+    local jumpTimeline = opts.jumpTimeline
+    if jumpTimeline == nil then
+        jumpTimeline = true
+    end
+    local scrollEdit = opts.scrollEdit
+    if scrollEdit == nil then
+        scrollEdit = true
+    end
+    local scrollTranslate = opts.scrollTranslate
+    if scrollTranslate == nil then
+        scrollTranslate = true
+    end
+    local clearEdit = opts.clearEdit
+    if clearEdit == nil then
+        clearEdit = true
+    end
+    local clearTranslate = opts.clearTranslate
+    if clearTranslate == nil then
+        clearTranslate = true
+    end
+    local updateTranslateEditor = opts.updateTranslateEditor
+    if updateTranslateEditor == nil then
+        updateTranslateEditor = true
+    end
+
+    if includeEdit and it.SubtitleTree then
+        state.suppressTreeSelection = true
+        selectTreeNode(it.SubtitleTree, index, { scroll = scrollEdit, clear = clearEdit })
+        state.suppressTreeSelection = false
+    end
+
+    if includeEdit then
+        state.selectedIndex = index
+        state.lastFollowIndex = index
+        UI.setEditorText(entry.text or "")
+    else
+        state.lastFollowIndex = index
+    end
+
+    local tState = state.translate
+    if includeTranslate and tState and tState.entries then
+        local tEntry = tState.entries[index]
+        if tEntry then
+            tState.selectedIndex = index
+            if it.TranslateSubtitleTree then
+                selectTreeNode(it.TranslateSubtitleTree, index, { scroll = scrollTranslate, clear = clearTranslate })
+            end
+            if updateTranslateEditor and it.TranslateSubtitleEditor then
+                UI.withTranslateProgrammatic(function()
+                    it.TranslateSubtitleEditor.Text = tEntry.translation or ""
+                end)
+            end
+            if it.TranslateSelectedButton then
+                it.TranslateSelectedButton.Enabled = not (tState.busy)
+            end
+        end
+    end
+
+    if jumpTimeline then
         Subtitle.performTimelineJump(entry)
         state.manualJumpFrame = entry.startFrame or 0
         state.manualJumpAt = os.clock()
     end
+
+    return entry
+end
+
+local function selectTranslateRow(index, opts)
+    if not state.translate then
+        return
+    end
+    local config = {}
+    if type(opts) == "boolean" then
+        config.jumpTimeline = opts
+    elseif type(opts) == "table" then
+        config = cloneOptionTable(opts)
+        if opts.jump ~= nil then
+            config.jumpTimeline = opts.jump == true
+        end
+        if opts.scroll ~= nil then
+            config.scrollTranslate = opts.scroll ~= false
+        end
+    end
+    if config.jumpTimeline == nil then
+        config.jumpTimeline = false
+    end
+    if config.includeEdit == nil then
+        config.includeEdit = true
+    end
+    if config.scrollTranslate == nil then
+        config.scrollTranslate = true
+    end
+    config.includeTranslate = true
+    focusEntryRow(index, config)
+end
+
+Translate.selectRow = selectTranslateRow
+
+-- 修改：仅选中当前命中的条目
+function UI.jumpToEntry(index, doTimeline, opts)
+    local config = cloneOptionTable(opts)
+    if doTimeline == false then
+        config.jumpTimeline = false
+    elseif config.jumpTimeline == nil then
+        config.jumpTimeline = true
+    end
+    if config.includeEdit == nil then
+        config.includeEdit = true
+    end
+    return focusEntryRow(index, config)
 end
 
 function UI.countOccurrences(s, q)
@@ -5888,7 +6006,7 @@ function win.On.TranslateSubtitleTree.ItemClicked(ev)
     if not index then
         return
     end
-    Translate.selectRow(index)
+    Translate.selectRow(index, true)
 end
 
 function win.On.TranslateSubtitleEditor.TextChanged(ev)
