@@ -1,10 +1,10 @@
 # ================= 用户配置 =================
 SCRIPT_NAME    = "Sub AI Translator"
-SCRIPT_VERSION = " 1.4"
+SCRIPT_VERSION = " 1.5"
 SCRIPT_AUTHOR  = "HEIBA"
 print(f"{SCRIPT_NAME} | {SCRIPT_VERSION.strip()} | {SCRIPT_AUTHOR}")
 SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
-WINDOW_WIDTH, WINDOW_HEIGHT = 285, 350
+WINDOW_WIDTH, WINDOW_HEIGHT = 880, 620
 X_CENTER = (SCREEN_WIDTH  - WINDOW_WIDTH ) // 2
 Y_CENTER = (SCREEN_HEIGHT - WINDOW_HEIGHT) // 2
 
@@ -94,23 +94,31 @@ DEFAULT_SETTINGS = {
     "TARGET_LANG":0,
     "CN":True,
     "EN":False,
-    "CONCURRENCY": 10,
+    "TRANSLATE_MODE": 1,
 }
 # ===========================================
-import sys
-import os, re, json, time, platform,concurrent.futures
-from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
-import webbrowser
+import base64
+import concurrent.futures
+import json
+import logging
+import os
+import platform
 import random
-import threading
-import uuid, base64
+import re
 import string
+import sys
+import threading
+import time
+import uuid
+import webbrowser
+from abc import ABC, abstractmethod
 from fractions import Fraction
+from typing import Any, Dict, Optional, Sequence, Tuple
 from urllib.parse import quote_plus
 SCRIPT_PATH = os.path.dirname(os.path.abspath(sys.argv[0]))
 TEMP_DIR         = os.path.join(SCRIPT_PATH, "temp")
 RAND_CODE = "".join(random.choices(string.digits, k=2))
+logger = logging.getLogger(__name__)
 
 FPS_FALLBACK = Fraction(24, 1)
 _FPS_STRING_ALIASES = {
@@ -147,6 +155,63 @@ _FPS_STD_FRACTIONS = tuple({
     Fraction(60, 1),
     *(_FPS_STRING_ALIASES.values()),
 })
+
+TRANSLATION_TREE_HEADERS = {
+    "en": ["#", "Start", "End", "Source", "Target"],
+    "cn": ["#", "开始", "结束", "原文", "译文"],
+}
+
+TRANSLATE_PROGRESS_LABELS = {
+    "all": {"en": "Translating", "cn": "正在翻译"},
+    "retry": {"en": "Retrying failed rows", "cn": "重试失败行"},
+    "selected": {"en": "Translating selection", "cn": "翻译选中行"},
+}
+
+TRANSLATION_BUTTON_IDS = (
+    "LoadSubsButton",
+    "StartTranslateButton",
+    "RetryFailedButton",
+    "TranslateSelectedButton",
+    "ApplyToTimelineButton",
+)
+
+TRANSLATE_SPEED_OPTIONS = [
+    {"key": "slow", "labels": {"cn": "低速 (5)", "en": "Low (5)"}, "value": 5},
+    {"key": "standard", "labels": {"cn": "标准 (20)", "en": "Standard (20)"}, "value": 20},
+    {"key": "fast", "labels": {"cn": "高速 (100)", "en": "High (100)"}, "value": 100},
+]
+
+TRANSLATION_ROW_COLORS = {
+    "failed": {"R": 0.90, "G": 0.25, "B": 0.25, "A": 0.35},
+}
+
+TRANSLATION_ROW_TRANSPARENT = {"R": 0.0, "G": 0.0, "B": 0.0, "A": 0.0}
+
+def configure_logging() -> logging.Logger:
+    """Configure and return the module logger.
+
+    Args:
+        None.
+
+    Returns:
+        logging.Logger: Logger configured for this module.
+
+    Raises:
+        None.
+
+    Examples:
+        >>> configure_logging().name == __name__
+        True
+    """
+    if logger.handlers:
+        return logger
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s")
+    )
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    return logger
 
 
 def _normalize_fraction(frac: Fraction) -> Fraction:
@@ -296,12 +361,38 @@ loading_win = dispatcher.AddWindow(
         )
     ]
 )
-loading_win.Show()
-_loading_items = loading_win.GetItems()
-_loading_start_ts = time.time()
+_loading_items = {}
+_loading_start_ts = 0.0
 _loading_timer_stop = False
 _loading_confirmation_pending = False
 _loading_notice_text = ""
+_loading_progress_message = ""
+_loading_progress_lock = threading.Lock()
+_loading_thread_started = False
+
+
+def _compose_loading_text(elapsed=None):
+    notice = _loading_notice_text.strip()
+    with _loading_progress_lock:
+        progress = (_loading_progress_message or "").strip()
+    if progress:
+        base_text = progress
+    else:
+        base_text = "Loading subtitles...\n加载字幕..."
+    if notice:
+        base_text = f"{notice}\n\n{base_text}"
+    return base_text
+
+
+def _set_loading_message(message):
+    global _loading_progress_message
+    with _loading_progress_lock:
+        _loading_progress_message = message or ""
+    try:
+        _loading_items["LoadLabel"].Text = _compose_loading_text()
+    except Exception:
+        pass
+
 
 def _on_loading_confirm(ev):
     global _loading_confirmation_pending
@@ -319,17 +410,61 @@ def _loading_timer_worker():
     while not _loading_timer_stop:
         try:
             elapsed = int(time.time() - _loading_start_ts)
-            base_text = f"loading...( {elapsed}s elapsed )"
-            notice = _loading_notice_text.strip()
-            if notice:
-                base_text = f"{notice}\n\n{base_text}"
-            _loading_items["LoadLabel"].Text = base_text
+            _loading_items["LoadLabel"].Text = _compose_loading_text(elapsed)
         except Exception:
             pass
         time.sleep(1.0)
 
-loading_win.On.ConfirmButton.Clicked = _on_loading_confirm
-threading.Thread(target=_loading_timer_worker, daemon=True).start()
+
+def initialize_application() -> None:
+    """Initialize loading UI elements and background timers.
+
+    Args:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        None.
+
+    Examples:
+        >>> initialize_application()
+    """
+    global _loading_items
+    global _loading_start_ts
+    global _loading_timer_stop
+    global _loading_confirmation_pending
+    global _loading_notice_text
+    global _loading_progress_message
+    global _loading_thread_started
+
+    configure_logging()
+
+    if _loading_thread_started:
+        _set_loading_message("Loading subtitles...\n加载字幕...")
+        return
+
+    loading_win.Show()
+    _loading_items = loading_win.GetItems()
+    _loading_start_ts = time.time()
+    _loading_timer_stop = False
+    _loading_confirmation_pending = False
+    _loading_notice_text = ""
+    _loading_progress_message = ""
+    loading_win.On.ConfirmButton.Clicked = _on_loading_confirm
+
+    thread = threading.Thread(target=_loading_timer_worker, daemon=True)
+    thread.start()
+    _loading_thread_started = True
+    _set_loading_message("Loading subtitles...\n加载字幕...")
+    logger.info(
+        "Loading window initialized",
+        extra={"component": "loading_ui", "event": "initialized"},
+    )
+
+
+initialize_application()
 
 # ---------- Resolve/Fusion 连接,外部环境使用（先保存起来） ----------
 """
@@ -562,7 +697,7 @@ def _check_for_updates():
     except Exception:
         pass
 
-    _loading_notice_text = notice_text
+    _loading_notice_text = ""
     try:
         _loading_items["ConfirmButton"].Visible = True
         _loading_items["ConfirmButton"].Enabled = True
@@ -958,21 +1093,83 @@ translator_win = dispatcher.AddWindow(
             ui.Stack({"ID":"MyStack","Weight":1.0},[
                 # ===== 4.1 翻译页 =====
                 ui.VGroup({"Weight":1},[
-                    ui.Label({"ID":"ProviderLabel","Text":"服务商","Weight":0.1}),
-                    ui.ComboBox({"ID":"ProviderCombo","Weight":0.1}),
-                    ui.Label({"ID":"TargetLangLabel","Text":"目标语言","Weight":0.1}),
-                    ui.ComboBox({"ID":"TargetLangCombo","Weight":0.1}),
-                    ui.VGap(10),
-                    ui.Button({"ID":"TransButtonTab1","Text":"翻译","Weight":0.1}),
-                    #ui.TextEdit({"ID":"SubTxt","Text":"","ReadOnly":False,"Weight":0.8}),
-                    ui.VGap(10),
-                ]),
-                ui.VGroup({"Weight":1},[
-                    ui.LineEdit({"ID": "OriginalTxt", "Text": "","PlaceholderText": "", "Weight": 0.9, "Font": ui.Font({"PixelSize": 15}),'ClearButtonEnabled': True ,"RichText" : False, }),
-                    ui.Button({"ID": "TransButtonTab2", "Text": "", "Weight": 0.3}),
-                    ui.TextEdit({"ID": "TranslateTxt", "Text": "","PlaceholderText": "", "Weight": 0.9, "Font": ui.Font({"PixelSize": 15}),"TextBackgroundColor": { "R": 0.2, "G": 0.2, "B": 0.2 }}),
-                ]),
+                    ui.VGap(6),
+                    ui.HGroup(
+                        {
+                            "Weight": 0,
+                            "Spacing": 8,
+                        },
+                        [
+                            ui.Label(
+                                {
+                                    "ID": "ProviderLabel",
+                                    "Text": "服务商",
+                                    
+                                    "Alignment": {"AlignVCenter": True},
+                                    "Weight": 0,
+                                }
+                            ),
+                            ui.ComboBox({"ID": "ProviderCombo", "Weight": 1}),
+                            ui.Label(
+                                {
+                                    "ID": "TargetLangLabel",
+                                    "Text": "翻译为",
                                  
+                                    "Alignment": {"AlignVCenter": True},
+                                    "Weight": 0,
+                                }
+                            ),
+                            ui.ComboBox({"ID": "TargetLangCombo", "Weight": 1}),
+                            ui.Label(
+                                {
+                                    "ID": "TranslateModeLabel",
+                                    "Text": "模式",
+                                   
+                                    "Alignment": {"AlignVCenter": True},
+                                    "Weight": 0,
+                                }
+                            ),
+                            ui.ComboBox({"ID": "TranslateModeCombo", "Weight": 0, "MinimumSize": [140, 0]}),
+                        ],
+                    ),
+                    ui.Tree(
+                        {
+                            "ID": "TranslateTree",
+                            "AlternatingRowColors": True,
+                            "WordWrap": True,
+                            "UniformRowHeights": False,
+                            "HorizontalScrollMode": True,
+                            "FrameStyle": 1,
+                            "ColumnCount": 5,
+                            "SelectionMode": "SingleSelection",
+                            "SortingEnabled": False,
+                            "Weight": 1,
+                        }
+                    ),
+                    ui.Label(
+                        {
+                            "ID": "TranslateStatusLabel",
+                            "Text": "",
+                            "Alignment": {"AlignHCenter": True, "AlignVCenter": True},
+                            "WordWrap": True,
+                            "Weight": 0,
+                        }
+                    ),
+                    ui.HGroup(
+                        {
+                            "Weight": 0,
+                            "Spacing": 8,
+                        },
+                        [
+                            ui.Button({"ID": "LoadSubsButton", "Text": "加载时间线字幕", "Weight": 1}),
+                            ui.Button({"ID": "StartTranslateButton", "Text": "开始翻译", "Weight": 1}),
+                            ui.Button({"ID": "RetryFailedButton", "Text": "重试失败", "Weight": 1}),
+                            ui.Button({"ID": "TranslateSelectedButton", "Text": "翻译选中", "Weight": 1}),
+                            ui.Button({"ID": "ApplyToTimelineButton", "Text": "导入译文到时间线", "Weight": 1}),
+                        ],
+                    ),
+                    ui.VGap(6),
+                ]),
                 # ===== 4.2 配置页 =====
                 ui.VGroup({"Weight":1},[
                     ui.HGroup({"Weight": 0.1}, [
@@ -986,10 +1183,6 @@ translator_win = dispatcher.AddWindow(
                     ui.HGroup({"Weight":0.1},[
                         ui.Label({"ID":"OpenAIFormatConfigLabel","Text":"OpenAI Format","Weight":0.1}),
                         ui.Button({"ID":"ShowOpenAIFormat","Text":"配置","Weight":0.1}),
-                    ]),
-                    ui.HGroup({"Weight":0.1},[
-                        ui.Label({"ID":"ConcurrencyLabel","Text":"Concurrency","Weight":0.1}),
-                        ui.SpinBox({"ID":"ConcurrencySpinBox", "Value": 10, "Minimum": 1, "Maximum": 100, "Weight": 0.1}),
                     ]),
                     ui.Label({"ID":"MoreScriptLabel","Text":"","Weight":0.1,"Alignment": {"AlignHCenter": True, "AlignVCenter": True}}),
                     ui.Button({"ID":"TTSButton","Text":"语音合成","Weight":0.1}),
@@ -1009,7 +1202,7 @@ translator_win = dispatcher.AddWindow(
                             "Flat": True,
                             "TextColor": [0.1, 0.3, 0.9, 1],
                             "BackgroundColor": [1, 1, 1, 0],
-                            "Weight": 0
+                            "Weight": 1
                     })
                 ])
             ])
@@ -1266,13 +1459,9 @@ def show_donation_window(qr_base64: str, *,size=280):
 
 translations = {
     "cn": {
-        "Tabs": ["批量翻译","单句翻译","设置"],
+        "Tabs": ["翻译","设置"],
         "OpenAIFormatModelLabel":"选择模型：",
-        "TargetLangLabel":"目标语言：",
-        "TransButtonTab1":"开始翻译",
-        "TransButtonTab2":"开始翻译",
-        "OriginalTxt":"将文本粘贴到这里...",
-        "TranslateTxt":"翻译",
+        "TargetLangLabel":"翻译为",
         "MicrosoftConfigLabel":"Microsoft",
         "ShowAzure":"配置",
         "OpenAIFormatConfigLabel":"Open AI 格式",
@@ -1283,6 +1472,7 @@ translations = {
         "ProviderLabel":"服务商",
         "DeepLConfigLabel":"DeepL",
         "ShowDeepL":"配置",
+        "TranslateModeLabel": "模式",
         "DeepLLabel":"DeepL API",
         "DeepLApiKeyLabel":"密钥",
         "DeepLConfirm":"确定",
@@ -1301,18 +1491,18 @@ translations = {
         "OpenAIFormatModelNameLabel":"* 模型",
         "NewModelDisplayLabel":"显示名称",
         "AddModelBtn":"添加",
-        "ConcurrencyLabel": "并发数",
         "DonationButton":  "☕用一杯咖啡为创意充电☕",
+        "LoadSubsButton": "加载时间线字幕",
+        "StartTranslateButton": "开始翻译",
+        "RetryFailedButton": "重试失败",
+        "TranslateSelectedButton": "翻译选中",
+        "ApplyToTimelineButton": "导入译文到时间线",
     },
 
     "en": {
-        "Tabs": ["Batch","Single", "Settings"],
+        "Tabs": ["Translate","Settings"],
         "OpenAIFormatModelLabel":"Select Model:",
-        "TargetLangLabel":"Target Language:",
-        "TransButtonTab1":"Translate",
-        "TransButtonTab2":"Translate",
-        "OriginalTxt":"Paste the text here...",
-        "TranslateTxt":"Translate",
+        "TargetLangLabel":"To",
         "MicrosoftConfigLabel":"Microsoft",
         "ShowAzure":"Config",
         "OpenAIFormatConfigLabel":"Open AI Format",
@@ -1323,6 +1513,7 @@ translations = {
         "ProviderLabel":"Provider",
         "DeepLConfigLabel":"DeepL",
         "ShowDeepL":"Config",
+        "TranslateModeLabel": "Mode",
         "DeepLLabel":"DeepL API",
         "DeepLApiKeyLabel":"Key",
         "DeepLConfirm":"OK",
@@ -1341,8 +1532,12 @@ translations = {
         "OpenAIFormatModelNameLabel":"* Model name",
         "NewModelDisplayLabel":"Display name",
         "AddModelBtn":"Add",
-        "ConcurrencyLabel": "Concurrency",
         "DonationButton" :"☕ Fuel creativity with a coffee ☕",
+        "LoadSubsButton": "Load Timeline Subtitles",
+        "StartTranslateButton": "Translate All",
+        "RetryFailedButton": "Retry Failed",
+        "TranslateSelectedButton": "Translate Selected",
+        "ApplyToTimelineButton": "Apply To Timeline",
     }
 }    
 
@@ -1367,6 +1562,344 @@ target_language = [
 
 for lang in target_language:
     items["TargetLangCombo"].AddItem(lang)
+
+
+
+translation_state = {
+    "rows": [],
+    "project": None,
+    "timeline": None,
+    "fps_frac": FPS_FALLBACK,
+    "start_frame": 0,
+    "busy": False,
+    "last_tokens": 0,
+    "active_track_index": None,
+    "last_target_code": None,
+    "last_target_label": None,
+    "last_provider": None,
+    "selected_indices": [],
+    "speed_key": "standard",
+    "failed_rows": {},
+}
+
+
+
+def _current_language_key():
+    try:
+        return "en" if items["LangEnCheckBox"].Checked else "cn"
+    except Exception:
+        return "en"
+
+
+
+
+def set_translate_status(en_text: str = "", zh_text: str = "") -> None:
+    """Update the status label according to the current language.
+
+    Args:
+        en_text (str): Message rendered when界面处于英文.
+        zh_text (str): Message rendered when界面处于中文.
+
+    Returns:
+        None.
+
+    Raises:
+        None.
+
+    Examples:
+        >>> set_translate_status("Loading", "加载中")
+    """
+    lang = _current_language_key()
+    text = en_text if lang == "en" else zh_text
+    widget = items.get("TranslateStatusLabel")
+    if widget is not None:
+        widget.Text = text or ""
+
+
+def _format_tc(frame_value: int) -> str:
+    fps_frac = translation_state.get("fps_frac") or FPS_FALLBACK
+    start_frame = translation_state.get("start_frame") or 0
+    relative = max(0, frame_value - start_frame)
+    return frames_to_srt_tc(relative, fps_frac)
+
+
+def _ensure_translation_tree_headers():
+    tree = items.get("TranslateTree")
+    if not tree:
+        return
+    headers = TRANSLATION_TREE_HEADERS.get(_current_language_key(), TRANSLATION_TREE_HEADERS["en"])
+    try:
+        tree.SetHeaderLabels(headers)
+    except Exception:
+        pass
+    column_widths = [60, 80, 80, 280, 320]
+    for idx, width in enumerate(column_widths):
+        try:
+            tree.ColumnWidth[idx] = width
+        except Exception:
+            continue
+
+
+def _apply_translation_row_style(item, row_index):
+    tree = items.get("TranslateTree")
+    if not tree or not item:
+        return
+    failed_map = translation_state.get("failed_rows") or {}
+    row_identifier = _get_row_identifier(row_index)
+    color = TRANSLATION_ROW_COLORS.get("failed") if failed_map.get(row_identifier) else TRANSLATION_ROW_TRANSPARENT
+    target_column = 4  # Target text column
+    try:
+        item.BackgroundColor[target_column] = color
+    except Exception:
+        try:
+            item.BackgroundColor[target_column] = color
+        except Exception:
+            pass
+
+
+def _get_translate_tree_item(row_index):
+    tree = items.get("TranslateTree")
+    if not tree:
+        return None
+    try:
+        return tree.TopLevelItem(row_index)
+    except Exception:
+        return None
+
+
+def _get_row_identifier(row_index):
+    try:
+        row = translation_state.get("rows", [])[row_index]
+        value = row.get("idx") if isinstance(row, dict) else None
+        if value is not None:
+            return int(value)
+    except Exception:
+        pass
+    return (row_index or 0) + 1
+
+
+def mark_translation_failure(row_index, reason=None):
+    failed_map = translation_state.setdefault("failed_rows", {})
+    identifier = _get_row_identifier(row_index)
+    failed_map[identifier] = reason or True
+    failed_map[row_index + 1] = reason or True
+    item = _get_translate_tree_item(row_index)
+    if item:
+        _apply_translation_row_style(item, row_index)
+
+
+def clear_translation_failure(row_index):
+    failed_map = translation_state.get("failed_rows")
+    if failed_map:
+        identifier = _get_row_identifier(row_index)
+        removed = False
+        if failed_map.pop(identifier, None) is not None:
+            removed = True
+        if failed_map.pop(row_index + 1, None) is not None:
+            removed = True
+        if removed:
+            item = _get_translate_tree_item(row_index)
+            if item:
+                _apply_translation_row_style(item, row_index)
+
+
+def refresh_translation_tree(select_index=None):
+    tree = items.get("TranslateTree")
+    if not tree:
+        return
+    rows = translation_state.get("rows") or []
+    try:
+        tree.SetUpdatesEnabled(False)
+    except Exception:
+        pass
+    tree.Clear()
+    _ensure_translation_tree_headers()
+    for zero_index, row in enumerate(rows):
+        item = tree.NewItem()
+        item.Text[0] = str(row.get("idx", 0))
+        item.Text[1] = _format_tc(row.get("start", 0))
+        item.Text[2] = _format_tc(row.get("end", 0))
+        item.Text[3] = (row.get("source") or "").replace("\n", " ")
+        item.Text[4] = (row.get("target") or "").replace("\n", " ")
+        _apply_translation_row_style(item, zero_index)
+        tree.AddTopLevelItem(item)
+    if select_index is not None and 0 <= select_index < len(rows):
+        try:
+            current = tree.TopLevelItem(select_index)
+            if current:
+                tree.SetCurrentItem(current)
+                try:
+                    current.Selected = True
+                except Exception:
+                    pass
+                tree.ScrollToItem(current)
+        except Exception:
+            pass
+        translation_state["selected_indices"] = [select_index]
+    else:
+        translation_state["selected_indices"] = []
+    try:
+        tree.SetUpdatesEnabled(True)
+    except Exception:
+        pass
+
+
+def update_translation_tree_row(index):
+    tree = items.get("TranslateTree")
+    if not tree:
+        return
+    row = None
+    try:
+        row = translation_state["rows"][index]
+    except (KeyError, IndexError):
+        return
+    item = tree.TopLevelItem(index)
+    if not item:
+        return
+    item.Text[4] = (row.get("target") or "").replace("\n", " ")
+    _apply_translation_row_style(item, index)
+
+
+def _selected_row_indices():
+    tree = items.get("TranslateTree")
+    if not tree:
+        return []
+    selected = []
+    try:
+        items_list = tree.SelectedItems() or []
+    except Exception:
+        items_list = []
+    for itm in items_list:
+        try:
+            idx = int(itm.Text[0]) - 1
+        except (AttributeError, TypeError, ValueError):
+            continue
+        rows = translation_state.get("rows") or []
+        if 0 <= idx < len(rows):
+            selected.append(idx)
+    if not selected:
+        try:
+            current = tree.CurrentItem()
+        except Exception:
+            current = None
+        if current:
+            try:
+                idx = int(current.Text[0]) - 1
+            except (TypeError, ValueError):
+                idx = None
+            rows = translation_state.get("rows") or []
+            if idx is not None and 0 <= idx < len(rows):
+                selected.append(idx)
+    return sorted(set(selected))
+
+
+def _current_speed_option():
+    key = translation_state.get("speed_key") or "standard"
+    for opt in TRANSLATE_SPEED_OPTIONS:
+        if opt["key"] == key:
+            return opt
+    return TRANSLATE_SPEED_OPTIONS[1]
+
+
+def _populate_translate_mode_combo(lang=None):
+    combo = items.get("TranslateModeCombo")
+    if not combo:
+        return
+    if lang is None:
+        lang = _current_language_key()
+    current_key = translation_state.get("speed_key") or "standard"
+    selected_index = 0
+    try:
+        combo.SetUpdatesEnabled(False)
+    except Exception:
+        pass
+    try:
+        combo.Clear()
+    except Exception:
+        pass
+    for idx, opt in enumerate(TRANSLATE_SPEED_OPTIONS):
+        label = opt["labels"].get(lang, opt["labels"]["en"])
+        try:
+            combo.AddItem(label)
+        except Exception:
+            pass
+        if opt["key"] == current_key:
+            selected_index = idx
+    try:
+        combo.CurrentIndex = selected_index
+    except Exception:
+        pass
+    try:
+        combo.SetUpdatesEnabled(True)
+    except Exception:
+        pass
+
+
+def _get_selected_speed_value():
+    combo = items.get("TranslateModeCombo")
+    idx = None
+    if combo:
+        try:
+            idx = combo.CurrentIndex
+        except Exception:
+            idx = None
+    if idx is None or idx < 0 or idx >= len(TRANSLATE_SPEED_OPTIONS):
+        return _current_speed_option()["value"]
+    translation_state["speed_key"] = TRANSLATE_SPEED_OPTIONS[idx]["key"]
+    return TRANSLATE_SPEED_OPTIONS[idx]["value"]
+
+
+def _map_target_code(provider_name, target_label):
+    if provider_name == AZURE_PROVIDER:
+        return AZURE_LANG_CODE_MAP.get(target_label, target_label)
+    if provider_name == GOOGLE_PROVIDER:
+        return GOOGLE_LANG_CODE_MAP.get(target_label, target_label)
+    if provider_name == DEEPL_PROVIDER:
+        return GOOGLE_LANG_CODE_MAP.get(target_label, target_label)
+    return target_label
+
+
+def _current_target_code():
+    provider_widget = items.get("ProviderCombo")
+    target_widget = items.get("TargetLangCombo")
+    provider_name = ""
+    target_label = ""
+    if provider_widget is not None:
+        try:
+            provider_name = provider_widget.CurrentText
+        except Exception:
+            provider_name = ""
+    if target_widget is not None:
+        try:
+            target_label = target_widget.CurrentText
+        except Exception:
+            target_label = ""
+    if translation_state.get("last_target_code"):
+        return translation_state["last_target_code"]
+    return _map_target_code(provider_name, target_label)
+
+
+def refresh_translation_controls():
+    busy = bool(translation_state.get("busy"))
+    rows = translation_state.get("rows") or []
+    has_rows = bool(rows)
+    has_failed = any(row.get("status") == "failed" for row in rows)
+    has_translated = any((row.get("target") or "").strip() for row in rows)
+    for btn_id in TRANSLATION_BUTTON_IDS:
+        widget = items.get(btn_id)
+        if not widget:
+            continue
+        if btn_id == "LoadSubsButton":
+            widget.Enabled = not busy
+        elif btn_id == "RetryFailedButton":
+            widget.Enabled = (not busy) and has_failed
+        elif btn_id == "ApplyToTimelineButton":
+            widget.Enabled = (not busy) and has_translated
+        else:
+            widget.Enabled = (not busy) and has_rows
+
+
+refresh_translation_controls()
     
 def check_or_create_file(file_path):
     if os.path.exists(file_path):
@@ -1434,9 +1967,6 @@ def switch_language(lang):
             continue
         if item_id in items:
             items[item_id].Text = text_value
-            if item_id in ("TranslateTxt", "OriginalTxt"):
-                items[item_id].Text = ""
-                items[item_id].PlaceholderText = text_value 
         elif item_id in azure_items:    
             azure_items[item_id].Text = text_value
         elif item_id in openai_items:    
@@ -1447,8 +1977,12 @@ def switch_language(lang):
             add_model_items[item_id].Text = text_value
         else:
             print(f"[Warning] No control with ID {item_id} exists in items, so the text cannot be set!")
-    # 缓存复选框状态
-    checked = items["LangEnCheckBox"].Checked
+    # 刷新 Tree 头与状态语言
+    _populate_translate_mode_combo(lang)
+    _ensure_translation_tree_headers()
+    rows = translation_state.get("rows") or []
+    for idx in range(len(rows)):
+        update_translation_tree_row(idx)
 
 
 def on_lang_checkbox_clicked(ev):
@@ -1462,12 +1996,11 @@ translator_win.On.LangEnCheckBox.Clicked = on_lang_checkbox_clicked
 
 
 if saved_settings:
-    
+
     items["TargetLangCombo"].CurrentIndex = saved_settings.get("TARGET_LANG", DEFAULT_SETTINGS["TARGET_LANG"])
     items["LangCnCheckBox"].Checked = saved_settings.get("CN", DEFAULT_SETTINGS["CN"])
     items["LangEnCheckBox"].Checked = saved_settings.get("EN", DEFAULT_SETTINGS["EN"])
     items["ProviderCombo"].CurrentIndex = saved_settings.get("PROVIDER", DEFAULT_SETTINGS["PROVIDER"])
-    items["ConcurrencySpinBox"].Value = saved_settings.get("CONCURRENCY", DEFAULT_SETTINGS.get("CONCURRENCY", 10))
     azure_items["AzureApiKey"].Text = saved_settings.get("AZURE_DEFAULT_KEY", DEFAULT_SETTINGS["AZURE_DEFAULT_KEY"])
     azure_items["AzureRegion"].Text = saved_settings.get("AZURE_DEFAULT_REGION", DEFAULT_SETTINGS["AZURE_DEFAULT_REGION"])
     deepL_items["DeepLApiKey"].Text = saved_settings.get("DEEPL_DEFAULT_KEY",DEFAULT_SETTINGS["DEEPL_DEFAULT_KEY"])
@@ -1475,13 +2008,34 @@ if saved_settings:
     openai_items["OpenAIFormatBaseURL"].Text = saved_settings.get("OPENAI_FORMAT_BASE_URL", DEFAULT_SETTINGS["OPENAI_FORMAT_BASE_URL"])
     openai_items["OpenAIFormatApiKey"].Text = saved_settings.get("OPENAI_FORMAT_API_KEY", DEFAULT_SETTINGS["OPENAI_FORMAT_API_KEY"])
     openai_items["OpenAIFormatTemperatureSpinBox"].Value = saved_settings.get("OPENAI_FORMAT_TEMPERATURE", DEFAULT_SETTINGS["OPENAI_FORMAT_TEMPERATURE"])
-    openai_items["SystemPromptTxt"].Text=saved_settings.get("SYSTEM_PROMPT", DEFAULT_SETTINGS["SYSTEM_PROMPT"])
-if items["LangEnCheckBox"].Checked :
+    openai_items["SystemPromptTxt"].Text = saved_settings.get("SYSTEM_PROMPT", DEFAULT_SETTINGS["SYSTEM_PROMPT"])
+    mode_index = saved_settings.get("TRANSLATE_MODE", DEFAULT_SETTINGS.get("TRANSLATE_MODE", 1))
+    if not isinstance(mode_index, int) or not (0 <= mode_index < len(TRANSLATE_SPEED_OPTIONS)):
+        mode_index = DEFAULT_SETTINGS.get("TRANSLATE_MODE", 1)
+    translation_state["speed_key"] = TRANSLATE_SPEED_OPTIONS[mode_index]["key"]
+else:
+    translation_state["speed_key"] = TRANSLATE_SPEED_OPTIONS[1]["key"]
+
+_populate_translate_mode_combo()
+try:
+    items["TranslateModeCombo"].CurrentIndex = next(
+        (idx for idx, opt in enumerate(TRANSLATE_SPEED_OPTIONS) if opt["key"] == translation_state.get("speed_key")),
+        DEFAULT_SETTINGS.get("TRANSLATE_MODE", 1),
+    )
+except Exception:
+    pass
+
+if items["LangEnCheckBox"].Checked:
     switch_language("en")
 else:
     switch_language("cn")
 
 def close_and_save(settings_file):
+    mode_combo = items["TranslateModeCombo"] if "TranslateModeCombo" in items else None
+    try:
+        mode_index = mode_combo.CurrentIndex if mode_combo is not None else DEFAULT_SETTINGS.get("TRANSLATE_MODE", 1)
+    except Exception:
+        mode_index = DEFAULT_SETTINGS.get("TRANSLATE_MODE", 1)
     settings = {
 
         "CN":items["LangCnCheckBox"].Checked,
@@ -1496,7 +2050,7 @@ def close_and_save(settings_file):
         "OPENAI_FORMAT_TEMPERATURE": openai_items["OpenAIFormatTemperatureSpinBox"].Value,
         "TARGET_LANG":items["TargetLangCombo"].CurrentIndex,
         "SYSTEM_PROMPT":openai_items["SystemPromptTxt"].PlainText,
-        "CONCURRENCY": items["ConcurrencySpinBox"].Value,
+        "TRANSLATE_MODE": mode_index,
 
     }
 
@@ -1813,55 +2367,447 @@ def import_srt_to_first_empty(path):
     return True
 
 
-# =============== 并发翻译封装 ===============
-def translate_parallel(texts, provider, target_code,
-                        ctx_win=CONTEXT_WINDOW,
-                       prompt_content=None):
-    total, done = len(texts), 0
-    result = [None] * total
+# =============== 翻译 Tree 数据流 ===============
+def _get_active_subtitle_track(timeline):
+    get_current_track = getattr(timeline, "GetCurrentTrack", None)
+    if callable(get_current_track):
+        try:
+            current = get_current_track("subtitle")
+            if isinstance(current, int) and current > 0:
+                return current
+        except Exception:
+            pass
+    try:
+        track_count = timeline.GetTrackCount("subtitle") or 0
+    except Exception:
+        track_count = 0
+    for track_index in range(1, track_count + 1):
+        try:
+            items = timeline.GetItemListInTrack("subtitle", track_index) or []
+        except Exception:
+            items = []
+        if items:
+            enabled = True
+            try:
+                enabled = timeline.GetIsTrackEnabled("subtitle", track_index) != False
+            except Exception:
+                pass
+            if enabled:
+                return track_index
+    return None
+
+
+def load_timeline_subtitles(show_feedback=True, progress_callback=None):
+    if translation_state.get("busy"):
+        return False
+    try:
+        resolve_obj, project, media_pool, root, timeline, fps_frac = connect_resolve()
+    except Exception as exc:
+        logger.error(
+            "Failed to connect Resolve",
+            extra={"component": "translation", "error": str(exc)},
+        )
+        if show_feedback:
+            show_warning_message(STATUS_MESSAGES.initialize_fault)
+        return False
+
+    if not timeline:
+        if show_feedback:
+            show_warning_message(STATUS_MESSAGES.nosub)
+        translation_state.update(
+            {
+                "rows": [],
+                "project": project,
+                "timeline": None,
+                "fps_frac": FPS_FALLBACK,
+                "start_frame": 0,
+                "last_tokens": 0,
+            }
+        )
+        refresh_translation_tree()
+        refresh_translation_controls()
+        return False
+
+    active_track = _get_active_subtitle_track(timeline)
+    rows = []
+    total_items = 0
+    if active_track is not None:
+        try:
+            track_items = timeline.GetItemListInTrack("subtitle", active_track) or []
+        except Exception:
+            track_items = []
+        total_items = len(track_items)
+        if progress_callback:
+            try:
+                progress_callback(0, total_items)
+            except Exception:
+                pass
+        elif total_items:
+            set_translate_status(
+                f"Loading subtitles... 0/{total_items}",
+                f"加载字幕... 0/{total_items}",
+            )
+        for idx, item in enumerate(track_items, start=1):
+            source_text = item.GetName() or ""
+            try:
+                start_frame = int(item.GetStart() or 0)
+            except Exception:
+                start_frame = 0
+            try:
+                end_frame = int(item.GetEnd() or start_frame)
+            except Exception:
+                end_frame = start_frame
+            rows.append(
+                {
+                    "idx": idx,
+                    "start": start_frame,
+                    "end": end_frame,
+                    "source": source_text,
+                    "target": "",
+                    "status": "pending",
+                    "error": "",
+                    "timeline_item": item,
+                    "track_index": active_track,
+                }
+            )
+            if progress_callback:
+                try:
+                    progress_callback(idx, total_items)
+                except Exception:
+                    pass
+            elif total_items:
+                set_translate_status(
+                    f"Loading subtitles... {idx}/{total_items}",
+                    f"加载字幕... {idx}/{total_items}",
+                )
+
+    translation_state.update(
+        {
+            "rows": rows,
+            "project": project,
+            "timeline": timeline,
+            "fps_frac": fps_frac,
+            "start_frame": timeline.GetStartFrame() or 0,
+            "last_tokens": 0,
+            "active_track_index": active_track,
+            "failed_rows": {},
+        }
+    )
+    refresh_translation_tree(select_index=0 if rows else None)
+    refresh_translation_controls()
+
+    if not rows:
+        if show_feedback:
+            show_warning_message(STATUS_MESSAGES.nosub)
+        set_translate_status("Timeline subtitles not found.", "未找到时间线字幕。")
+        return False
+
+    track_display = active_track if active_track is not None else "-"
+    message_en = f"Loaded {len(rows)} subtitle rows from track #{track_display}."
+    message_zh = f"已从轨道 #{track_display} 加载 {len(rows)} 条字幕。"
+    set_translate_status(message_en, message_zh)
+    logger.info(
+        "Timeline subtitles loaded",
+        extra={
+            "component": "translation",
+            "rows": len(rows),
+            "track": track_display,
+        },
+    )
+    return True
+
+
+def ensure_translation_rows() -> bool:
+    """Ensure translation rows are available in memory.
+
+    Args:
+        None.
+
+    Returns:
+        bool: Whether subtitles rows are ready for后续翻译.
+
+    Raises:
+        None.
+
+    Examples:
+        >>> ensure_translation_rows()
+        True
+    """
+    rows = translation_state.get("rows") or []
+    if rows:
+        return True
+    return load_timeline_subtitles()
+
+
+def _translate_single_row(
+    row_index: int,
+    provider: "BaseProvider",
+    target_code: str,
+    prompt_content: str,
+) -> Tuple[str, int]:
+    """Translate a single subtitle row and return the result with token usage.
+
+    Args:
+        row_index (int): Zero-based index of the row to translate.
+        provider (BaseProvider): Active translation provider.
+        target_code (str): Translation target language code.
+        prompt_content (str): Additional prompt text for providers支持上下文翻译.
+
+    Returns:
+        Tuple[str, int]: Pair of translated text and消耗的令牌数.
+
+    Raises:
+        ValueError: If the provider does not return a textual translation.
+
+    Examples:
+        >>> text, tokens = _translate_single_row(0, provider, "en", "")
+        >>> isinstance(text, str)
+        True
+    """
+    rows = translation_state.get("rows") or []
+    row = rows[row_index]
+    source_text = row.get("source") or ""
+    provider_name = getattr(provider, "name", provider.__class__.__name__)
+    logger.debug(
+        "Translating row",
+        extra={
+            "component": "translation",
+            "row_index": row.get("idx", row_index),
+            "provider": provider_name,
+        },
+    )
+    if isinstance(provider, (OpenAIFormatProvider, GLMProvider)):
+        prefix, suffix = "", ""
+        if CONTEXT_WINDOW > 0:
+            start = max(0, row_index - CONTEXT_WINDOW)
+            prefix = "\n".join(rows[i]["source"] for i in range(start, row_index))
+            suffix = "\n".join(
+                rows[i]["source"]
+                for i in range(row_index + 1, min(len(rows), row_index + 1 + CONTEXT_WINDOW))
+            )
+        if prefix or suffix:
+            result = provider.translate(source_text, target_code, prefix, suffix, prompt_content)
+        else:
+            result = provider.translate(source_text, target_code, prompt_content=prompt_content)
+    else:
+        result = provider.translate(source_text, target_code)
+
+    if isinstance(result, tuple):
+        translated_text, usage = result
+        tokens = usage.get("total_tokens", 0) if isinstance(usage, dict) else 0
+    else:
+        translated_text, tokens = result, 0
+    if not isinstance(translated_text, str):
+        raise ValueError("翻译结果无效，未返回字符串")
+    logger.debug(
+        "Row translated",
+        extra={
+            "component": "translation",
+            "row_index": row.get("idx", row_index),
+            "provider": provider_name,
+            "tokens": tokens,
+        },
+    )
+    return translated_text, tokens
+
+
+def _translate_rows(
+    row_indices: Sequence[int],
+    provider: "BaseProvider",
+    target_code: str,
+    prompt_content: str,
+    progress_key: str,
+) -> Tuple[int, int, int]:
+    """Translate multiple rows concurrently and collect statistics.
+
+    Args:
+        row_indices (Sequence[int]): Row indexes to translate.
+        provider (BaseProvider): Provider handling translation requests.
+        target_code (str): Target language code.
+        prompt_content (str): Additional prompt content.
+        progress_key (str): Key identifying progress label set.
+
+    Returns:
+        Tuple[int, int, int]: Success count, failure count, total tokens.
+
+    Raises:
+        None.
+
+    Examples:
+        >>> _translate_rows([0], provider, "en", "", "all")  # doctest: +SKIP
+    """
+    rows = translation_state.get("rows") or []
+    if not row_indices:
+        return 0, 0, 0
+
+    concurrency = max(1, min(_get_selected_speed_value(), len(row_indices)))
+    labels = TRANSLATE_PROGRESS_LABELS.get(progress_key, TRANSLATE_PROGRESS_LABELS["all"])
+    success_count = 0
+    failed_count = 0
     total_tokens = 0
 
-    try:
-        concurrency = items["ConcurrencySpinBox"].Value
-        if not isinstance(concurrency, int) or concurrency < 1:
-            concurrency = 10
-    except (KeyError, AttributeError):
-        concurrency = 10
-
+    futures: Dict[concurrent.futures.Future, int] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = {}
-        for idx, t in enumerate(texts):
-            if isinstance(provider, (OpenAIFormatProvider, GLMProvider)):
-                if ctx_win > 0:
-                    pre = "\n".join(texts[max(0, idx-ctx_win):idx])
-                    suf = "\n".join(texts[idx+1: idx+1+ctx_win])
-                    fut = pool.submit(provider.translate, t, target_code, pre, suf, prompt_content)
-                else:
-                    fut = pool.submit(provider.translate, t, target_code, prompt_content=prompt_content)
-            else:
-                fut = pool.submit(provider.translate, t, target_code)
-            futures[fut] = idx
+        for idx in row_indices:
+            row = rows[idx]
+            row["status"] = "translating"
+            row["error"] = ""
+            update_translation_tree_row(idx)
+            futures[pool.submit(
+                _translate_single_row,
+                idx,
+                provider,
+                target_code,
+                prompt_content,
+            )] = idx
 
-        for f in concurrent.futures.as_completed(futures):
-            i = futures[f]
+        code_map = {
+            400: STATUS_MESSAGES.bad_request,
+            401: STATUS_MESSAGES.unauthorized,
+            403: STATUS_MESSAGES.forbidden,
+            404: STATUS_MESSAGES.not_found,
+            429: STATUS_MESSAGES.too_many_requests,
+            500: STATUS_MESSAGES.internal_server_error,
+            502: STATUS_MESSAGES.bad_gateway,
+            503: STATUS_MESSAGES.service_unavailable,
+            504: STATUS_MESSAGES.gateway_timeout,
+        }
+        total = len(futures)
+        for done, future in enumerate(concurrent.futures.as_completed(futures), start=1):
+            idx = futures[future]
             try:
-                res = f.result()
-                if isinstance(res, tuple):
-                    text_i, usage = res
-                    tokens = usage.get("total_tokens", 0)
-                else:
-                    text_i, tokens = res, 0
-                result[i] = text_i
+                translated_text, tokens = future.result()
+                rows[idx]["target"] = translated_text
+                rows[idx]["status"] = "success"
+                rows[idx].pop("error", None)
+                success_count += 1
                 total_tokens += tokens
-            except Exception as e:
-                result[i] = f"[失败: {e}]"
-            done += 1
-            pct = int(done / total * 100)
-            en = f"Start translating... {pct}% ({done}/{total})  Tokens used: {total_tokens}"
-            zh = f"开始翻译... {pct}% （{done}/{total}）  已消耗令牌：{total_tokens}"
-            show_dynamic_message(en, zh)
-            
-    return result, total_tokens
+                clear_translation_failure(idx)
+            except requests.exceptions.HTTPError as http_err:
+                failed_count += 1
+                rows[idx]["status"] = "failed"
+                rows[idx]["error"] = str(http_err)
+                code = http_err.response.status_code if http_err.response is not None else None
+                mapped = code_map.get(code)
+                if mapped:
+                    show_warning_message(mapped)
+                logger.warning(
+                    "HTTP error during translation",
+                    extra={
+                        "component": "translation",
+                        "row_index": rows[idx].get("idx", idx),
+                        "status_code": code,
+                        "error": str(http_err),
+                    },
+                )
+                mark_translation_failure(idx, rows[idx].get("error"))
+            except Exception as exc:  # noqa: BLE001
+                failed_count += 1
+                rows[idx]["status"] = "failed"
+                rows[idx]["error"] = str(exc)
+                logger.error(
+                    "Translation failed",
+                    extra={
+                        "component": "translation",
+                        "row_index": rows[idx].get("idx", idx),
+                        "error": str(exc),
+                    },
+                )
+                mark_translation_failure(idx, rows[idx].get("error"))
+            update_translation_tree_row(idx)
+            progress_en = f"{labels['en']}... {done}/{total}  Tokens: {total_tokens}"
+            progress_zh = f"{labels['cn']}... {done}/{total}  令牌: {total_tokens}"
+            set_translate_status(progress_en, progress_zh)
+
+    translation_state["last_tokens"] = total_tokens
+    refresh_translation_controls()
+    return success_count, failed_count, total_tokens
+
+
+def _start_translation(row_indices: Sequence[int], progress_key: str) -> None:
+    """Start translation workflow for指定行.
+
+    Args:
+        row_indices (Sequence[int]): Row indexes selected for translation.
+        progress_key (str): Progress label key (all/retry/selected).
+
+    Returns:
+        None.
+
+    Raises:
+        None.
+
+    Examples:
+        >>> _start_translation([0, 1], "all")  # doctest: +SKIP
+    """
+    if translation_state.get("busy"):
+        return
+    if not row_indices:
+        show_warning_message(("Nothing to translate.", "没有可翻译的行。"))
+        return
+    try:
+        provider, target_code = get_provider_and_target()
+    except Exception:
+        return
+
+    translation_state["last_target_code"] = target_code
+    try:
+        translation_state["last_provider"] = items["ProviderCombo"].CurrentText
+    except Exception:
+        translation_state["last_provider"] = None
+    try:
+        translation_state["last_target_label"] = items["TargetLangCombo"].CurrentText
+    except Exception:
+        translation_state["last_target_label"] = None
+
+    prompt_text = openai_items["SystemPromptTxt"].PlainText
+    system_prompt = _compose_prompt_content(target_code, prompt_text)
+
+    translation_state["busy"] = True
+    refresh_translation_controls()
+    set_translate_status("Starting translation...", "开始翻译...")
+    logger.info(
+        "Translation started",
+        extra={
+            "component": "translation",
+            "rows": len(row_indices),
+            "progress_key": progress_key,
+            "provider": getattr(provider, "name", provider.__class__.__name__),
+            "target_code": target_code,
+        },
+    )
+
+    try:
+        success, failed, tokens = _translate_rows(row_indices, provider, target_code, system_prompt, progress_key)
+    finally:
+        translation_state["busy"] = False
+        refresh_translation_controls()
+
+    total = len(row_indices)
+    summary_en = f"Completed: {success}/{total} succeeded, {failed} failed. Tokens: {tokens}"
+    summary_zh = f"完成：成功 {success}/{total} 条，失败 {failed} 条。令牌：{tokens}"
+    set_translate_status(summary_en, summary_zh)
+    if failed:
+        logger.warning(
+            "Rows failed during translation",
+            extra={
+                "component": "translation",
+                "failed": failed,
+                "total": total,
+                "provider": getattr(provider, "name", provider.__class__.__name__),
+            },
+        )
+    else:
+        logger.info(
+            "Translation batch completed",
+            extra={
+                "component": "translation",
+                "success": success,
+                "total": total,
+                "tokens": tokens,
+                "provider": getattr(provider, "name", provider.__class__.__name__),
+            },
+        )
 
 
 # =============== 主按钮逻辑（核心差异处 ★★★） ===============
@@ -1869,7 +2815,10 @@ def get_provider_and_target():
     """返回 (provider 实例, target_code)，出错时抛 {'en','zh'} 元组"""
     provider_name = items["ProviderCombo"].CurrentText
     target_name   = items["TargetLangCombo"].CurrentText
-    print(provider_name)
+    logger.debug(
+        "Provider selected",
+        extra={"component": "translation", "provider": provider_name},
+    )
 
     if provider_name == OPENAI_FORMAT_PROVIDER:
         if not (openai_items["OpenAIFormatBaseURL"].Text and openai_items["OpenAIFormatApiKey"].Text):
@@ -1915,144 +2864,241 @@ def get_provider_and_target():
         return prov_manager.get(DEEPL_PROVIDER), GOOGLE_LANG_CODE_MAP[target_name]
 
 
-def on_trans_clicked(ev):
-    # ---------- 1 采集字幕 ----------
-    resolve, proj, mpool, root, tl, fps = connect_resolve()
-    subs = get_subtitles(tl)
-    if not subs:
+def on_load_subtitles(ev):
+    if translation_state.get("busy"):
+        return
+    def _progress(current, total):
+        if total:
+            en = f"Loading subtitles... {current}/{total}"
+            zh = f"加载字幕... {current}/{total}"
+        else:
+            en = "Scanning active subtitle track..."
+            zh = "正在检测激活的字幕轨道..."
+        set_translate_status(en, zh)
+    set_translate_status("Loading subtitles...", "正在加载字幕...")
+    load_timeline_subtitles(show_feedback=False, progress_callback=_progress)
+
+
+def on_start_translate(ev):
+    if translation_state.get("busy"):
+        return
+    if not ensure_translation_rows():
+        return
+    rows = translation_state.get("rows") or []
+    indices = list(range(len(rows)))
+    if not indices:
         show_warning_message(STATUS_MESSAGES.nosub)
         return
+    _start_translation(indices, "all")
 
-    # ---------- 2 Provider & 目标语种 ----------
-    provider, target_code = get_provider_and_target()
-    ui_prompt_txt = openai_items["SystemPromptTxt"].PlainText
-    system_prompt = _compose_prompt_content(target_code, ui_prompt_txt)
-    # ---------- 3 连通性轻量检测 ----------
-    items["TransButtonTab1"].Enabled = False
-    show_warning_message(STATUS_MESSAGES.initialize)
+
+def on_retry_failed(ev):
+    if translation_state.get("busy"):
+        return
+    rows = translation_state.get("rows") or []
+    indices = [idx for idx, row in enumerate(rows) if row.get("status") == "failed"]
+    if not indices:
+        show_warning_message(("No failed rows to retry.", "没有可重试的失败行。"))
+        return
+    _start_translation(indices, "retry")
+
+
+def on_translate_selected(ev):
+    if translation_state.get("busy"):
+        return
+    if not ensure_translation_rows():
+        return
+    indices = _selected_row_indices()
+    if not indices:
+        indices = translation_state.get("selected_indices") or []
+    translation_state["selected_indices"] = indices
+    if not indices:
+        show_warning_message(("Please select at least one row.", "请至少选择一行。"))
+        return
+    _start_translation(indices, "selected")
+
+
+def apply_translations_to_timeline() -> Tuple[bool, int, Optional[str]]:
+    """Export translated rows to SRT and import back to the timeline.
+
+    Args:
+        None.
+
+    Returns:
+        Tuple[bool, int, Optional[str]]: (success flag, applied row count, SRT path).
+
+    Raises:
+        None.
+
+    Examples:
+        >>> apply_translations_to_timeline()  # doctest: +SKIP
+    """
+    rows = translation_state.get("rows") or []
+    if not rows:
+        return False, 0, None
+
+    translated_rows = [
+        row for row in rows if (row.get("target") or "").strip()
+    ]
+    if not translated_rows:
+        return False, 0, None
+
     try:
-        # 只 ping 第一条，不保存结果，若异常说明 Key/额度等有问题
-        provider.translate(subs[0]["text"], target_code)
-    except requests.exceptions.HTTPError as e:
-        # 拿到 HTTP 响应码
-        code = e.response.status_code if e.response is not None else None
-        # 状态码到 STATUS_MESSAGES 的映射
-        code_map = {
-            400: STATUS_MESSAGES.bad_request,
-            401: STATUS_MESSAGES.unauthorized,
-            403: STATUS_MESSAGES.forbidden,
-            404: STATUS_MESSAGES.not_found,
-            429: STATUS_MESSAGES.too_many_requests,
-            500: STATUS_MESSAGES.internal_server_error,
-            502: STATUS_MESSAGES.bad_gateway,
-            503: STATUS_MESSAGES.service_unavailable,
-            504: STATUS_MESSAGES.gateway_timeout,
-        }
-        # 显示对应的提示，找不到就用 initialize_fault
-        show_warning_message(code_map.get(code, STATUS_MESSAGES.initialize_fault))
-        # 补充输出服务器返回体，便于诊断 400 之类错误
-        resp_text = ""
-        try:
-            resp_text = e.response.text if e.response is not None else ""
-        except Exception:
-            pass
-        print(f"Initialization failed. HTTP status code: {code}, Exception: {e}, Response: {resp_text}")
-        items["TransButtonTab1"].Enabled = True
-        return
-    except Exception as e:
-        # 其它错误
+        resolve_obj, project, media_pool, root, timeline, fps_frac = connect_resolve()
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Failed to reconnect Resolve",
+            extra={"component": "translation", "error": str(exc)},
+        )
         show_warning_message(STATUS_MESSAGES.initialize_fault)
-        print(f"Initialization failed.  Exception: {e}")
-        items["TransButtonTab1"].Enabled = True
-        return
-    
-    # ---------- 4 并发翻译 ----------
-    show_dynamic_message(
-        f"Start translating... 0% (0/{len(subs)})",
-        f"开始翻译... 0% （0/{len(subs)}）"
-    )
-    texts = [s["text"] for s in subs]
-    translated, total_tokens = translate_parallel(
-        texts, provider, target_code,
-        prompt_content=system_prompt   # ✅ 传入
-    )
-    for s, new_txt in zip(subs, translated):
-        s["text"] = new_txt or ""
+        return False, 0, None
 
-    # ---------- 5 写 SRT 并导入 ----------
-    srt_dir  = os.path.join(SCRIPT_PATH, "srt")
-    srt_path = write_srt(
-        subs,
-        tl.GetStartFrame(),
-        fps,
-        tl.GetName(),
-        target_code,
-        output_dir=srt_dir
-    )
-    if import_srt_to_first_empty(srt_path):
-        show_dynamic_message(
-            f"✅ Finished! 100% ({len(subs)}/{len(subs)})  Tokens:{total_tokens}",
-            f"✅ 翻译完成！100%（{len(subs)}/{len(subs)}）  Tokens:{total_tokens}"
+    if not timeline:
+        show_warning_message(STATUS_MESSAGES.nosub)
+        return False, 0, None
+
+    translation_state["project"] = project
+    translation_state["timeline"] = timeline
+    translation_state["fps_frac"] = fps_frac
+    translation_state["start_frame"] = timeline.GetStartFrame() or 0
+
+    subs = []
+    for row in translated_rows:
+        start_frame = int(row.get("start") or 0)
+        end_frame = int(row.get("end") or start_frame)
+        subs.append(
+            {
+                "start": start_frame,
+                "end": end_frame,
+                "text": row.get("target") or "",
+            }
+        )
+    subs.sort(key=lambda entry: entry["start"])
+
+    target_code = translation_state.get("last_target_code") or _current_target_code()
+    timeline_name = timeline.GetName() if timeline else SCRIPT_NAME
+    srt_dir = os.path.join(SCRIPT_PATH, "srt")
+    try:
+        srt_path = write_srt(
+            subs,
+            translation_state.get("start_frame") or 0,
+            translation_state.get("fps_frac") or FPS_FALLBACK,
+            timeline_name,
+            target_code,
+            output_dir=srt_dir,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Failed to write SRT",
+            extra={"component": "translation", "error": str(exc)},
+        )
+        show_warning_message(STATUS_MESSAGES.initialize_fault)
+        return False, 0, None
+    success = import_srt_to_first_empty(srt_path)
+
+    if success:
+        for idx, row in enumerate(rows):
+            try:
+                target_text = (row.get("target") or "").strip()
+            except Exception:
+                target_text = ""
+            if target_text:
+                row["status"] = "applied"
+                row.pop("error", None)
+                clear_translation_failure(idx)
+                update_translation_tree_row(idx)
+        logger.info(
+            "Translations applied to timeline",
+            extra={
+                "component": "translation",
+                "rows_applied": len(translated_rows),
+                "srt_path": srt_path,
+            },
         )
     else:
-        show_dynamic_message(
-            f"✅ Finished! 100% ({len(subs)}/{len(subs)})  Tokens:{total_tokens}",
-            f"✅ 导入失败！100%（{len(subs)}/{len(subs)}）  Tokens:{total_tokens}"
+        logger.warning(
+            "SRT import failed; keeping exported file",
+            extra={
+                "component": "translation",
+                "rows_exported": len(translated_rows),
+                "srt_path": srt_path,
+            },
+        )
+    refresh_translation_controls()
+    return success, len(translated_rows), srt_path
+
+
+def on_apply_translations(ev):
+    if translation_state.get("busy"):
+        return
+    rows = translation_state.get("rows") or []
+    if not rows:
+        show_warning_message(("Nothing to apply.", "没有可导入的译文。"))
+        return
+    success, applied_count, srt_path = apply_translations_to_timeline()
+    if applied_count == 0:
+        show_warning_message(("No translated subtitles to apply.", "没有译文可导入。"))
+        return
+    srt_name = os.path.basename(srt_path) if srt_path else ""
+    if success:
+        summary_en = f"Applied {applied_count} rows via {srt_name}."
+        summary_zh = f"已通过 {srt_name} 导入 {applied_count} 条字幕。"
+    else:
+        summary_en = f"SRT import failed. Export kept at {srt_name}."
+        summary_zh = f"SRT 导入失败，导出文件保留于 {srt_name}。"
+    set_translate_status(summary_en, summary_zh)
+
+
+translator_win.On.LoadSubsButton.Clicked = on_load_subtitles
+translator_win.On.StartTranslateButton.Clicked = on_start_translate
+translator_win.On.RetryFailedButton.Clicked = on_retry_failed
+translator_win.On.TranslateSelectedButton.Clicked = on_translate_selected
+translator_win.On.ApplyToTimelineButton.Clicked = on_apply_translations
+def _on_translate_mode_changed(ev):
+    combo = items.get("TranslateModeCombo")
+    if not combo:
+        return
+    try:
+        idx = combo.CurrentIndex
+    except Exception:
+        idx = None
+    if idx is None or idx < 0 or idx >= len(TRANSLATE_SPEED_OPTIONS):
+        return
+    translation_state["speed_key"] = TRANSLATE_SPEED_OPTIONS[idx]["key"]
+translator_win.On.TranslateModeCombo.CurrentIndexChanged = _on_translate_mode_changed
+def _on_translate_tree_item_clicked(ev):
+    translation_state["selected_indices"] = _selected_row_indices()
+translator_win.On.TranslateTree.ItemClicked = _on_translate_tree_item_clicked
+
+
+def _initial_load_translation_rows():
+    def _progress(current, total):
+        if total:
+            msg = f"Loading subtitles... {current}/{total}\n加载字幕... {current}/{total}"
+        else:
+            msg = "Scanning active subtitle track...\n正在检测激活的字幕轨道..."
+        _set_loading_message(msg)
+        set_translate_status(
+            f"Loading subtitles... {current}/{total}" if total else "Scanning active subtitle track...",
+            f"加载字幕... {current}/{total}" if total else "正在检测激活的字幕轨道..."
         )
 
-    items["TransButtonTab1"].Enabled = True
-translator_win.On.TransButtonTab1.Clicked = on_trans_clicked
-# ---------------- 单句翻译按钮 ----------------
-def on_trans2_clicked(ev):
-    """
-    翻译 OriginalTxt 单行文本 ➜ TranslateTxt
-    """
-    # ---------- 0 读取并检查源文本 ----------
-    src = items["OriginalTxt"].Text
-    # ---------- 1 Provider & 目标语言 ----------
-    try:
-        provider, target_code = get_provider_and_target()
-    except Exception:
-        return
-    print(provider)
-    items["TransButtonTab2"].Enabled = False
-    # ---------- 2 轻量检测 & 翻译 ----------
-    try:
-        # 若 provider 是 OpenAIFormatProvider，translate 返回 (text, usage)
-        if isinstance(provider, (OpenAIFormatProvider, GLMProvider)):
-            ui_prompt_txt = openai_items["SystemPromptTxt"].PlainText
-            system_prompt = _compose_prompt_content(target_code, ui_prompt_txt)
-            text_out, _ = provider.translate(src, target_code, prompt_content=system_prompt)
-        else:
-            res = provider.translate(src, target_code)
-            # 有些 provider 返回 None，应特殊处理
-            if not res or not isinstance(res, str):
-                raise ValueError("翻译结果无效，未返回字符串")
-            text_out = res
-        show_warning_message(STATUS_MESSAGES.finished)
-        items["TranslateTxt"].Text = text_out
-
-    except requests.exceptions.HTTPError as e:
-        code = e.response.status_code if e.response else None
-        code_map = {
-            400: STATUS_MESSAGES.bad_request,
-            401: STATUS_MESSAGES.unauthorized,
-            403: STATUS_MESSAGES.forbidden,
-            404: STATUS_MESSAGES.not_found,
-            429: STATUS_MESSAGES.too_many_requests,
-            500: STATUS_MESSAGES.internal_server_error,
-            502: STATUS_MESSAGES.bad_gateway,
-            503: STATUS_MESSAGES.service_unavailable,
-            504: STATUS_MESSAGES.gateway_timeout,
-        }
-        show_warning_message(code_map.get(code, STATUS_MESSAGES.initialize_fault))
-        print(f"HTTPError {code}: {e}")
-
-    except Exception as e:
-        show_warning_message(STATUS_MESSAGES.initialize_fault)
-        print("Translation failed:", e)
-    items["TransButtonTab2"].Enabled = True
-translator_win.On.TransButtonTab2.Clicked = on_trans2_clicked
+    _set_loading_message("Loading subtitles...\n加载字幕...")
+    set_translate_status("Loading subtitles...", "正在加载字幕...")
+    count = 0
+    track = "-"
+    success = load_timeline_subtitles(show_feedback=False, progress_callback=_progress)
+    if success:
+        count = len(translation_state.get("rows") or [])
+        track = translation_state.get("active_track_index") or "-"
+        msg = f"Loaded {count} subtitles from track #{track}.\n已从轨道 #{track} 加载 {count} 条字幕。"
+    else:
+        msg = "No subtitles found on active subtitle track.\n未在激活字幕轨道发现字幕。"
+    _set_loading_message(msg)
+    set_translate_status(
+        f"Loaded {count} subtitles from track #{track}." if success else "No subtitles found on active subtitle track.",
+        f"已从轨道 #{track} 加载 {count} 条字幕。" if success else "未在激活字幕轨道发现字幕。"
+    )
 # =============== 8  关闭窗口保存设置 ===============
 def on_close(ev):
     import shutil
@@ -2060,9 +3106,15 @@ def on_close(ev):
     if os.path.exists(output_dir):
         try:
             shutil.rmtree(output_dir)  # ✅ 删除整个文件夹及其中内容
-            print(f"🧹 :{output_dir}")
+            logger.info(
+                "Temporary directory removed",
+                extra={"component": "cleanup", "path": output_dir},
+            )
         except Exception as e:
-            print(f"⚠️ Failed to delete the dir.：{e}")
+            logger.warning(
+                "Failed to delete temporary directory",
+                extra={"component": "cleanup", "error": str(e), "path": output_dir},
+            )
     close_and_save(settings_file)
     dispatcher.ExitLoop()
 
@@ -2072,7 +3124,36 @@ def on_add_model_close(ev):
     openai_format_config_window.Show()
     add_model_window.Hide(); 
 add_model_window.On.AddModelWin.Close = on_add_model_close
+
+
+def main() -> None:
+    """Provide a minimal standalone entry point for手动自检.
+
+    Args:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        None.
+
+    Examples:
+        >>> main()  # doctest: +SKIP
+    """
+    configure_logging()
+    logger.info(
+        "Standalone entry executed",
+        extra={"component": "bootstrap", "event": "standalone_entry"},
+    )
+
+
+if __name__ == "__main__":
+    main()
 # =============== 9  运行 GUI ===============
+_initial_load_translation_rows()
+time.sleep(0.3)
+_loading_timer_stop = True
 loading_win.Hide() 
 translator_win.Show(); 
 dispatcher.RunLoop(); 
