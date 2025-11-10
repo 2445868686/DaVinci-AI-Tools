@@ -34,3 +34,5 @@ DaVinci-V2V/DaVinci V2V/config/settings.json
 # === End DaVinci-V2V/.gitignore ===
 
 DaVinci-Sub-Tool/config/subedit_settings.json
+
+DaVinci-Bath-Render/DaVinci Bath Render/config/setting.json
