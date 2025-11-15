@@ -1,11 +1,11 @@
 
 local SCRIPT_NAME = "DaVinci Sub Tool"
-local SCRIPT_VERSION = "1.1.0"
+local SCRIPT_VERSION = "1.1.1"
 local SCRIPT_AUTHOR = "HEIBA"
 print(string.format("%s | %s | %s", SCRIPT_NAME, SCRIPT_VERSION, SCRIPT_AUTHOR))
 local SCRIPT_KOFI_URL = "https://ko-fi.com/heiba"
+local SCRIPT_TAOBAO_URL = "https://shop120058726.taobao.com/"
 local SCRIPT_BILIBILI_URL = "https://space.bilibili.com/385619394"
-local SCRIPT_PAYPAL_URL ="https://paypal.me/heibashop"
 
 local App = {
     Utils = {},
@@ -261,7 +261,7 @@ local uiText = {
         lang_cn = "简体中文",
         lang_en = "EN",
         tabs = { "编辑", "翻译", "设置" },
-        donation = "☕用一杯咖啡为创意充电☕",
+        donation = "☕ 探索更多功能 ☕",
         copyright = " © 2025, 版权所有 " .. SCRIPT_AUTHOR,
         translate_provider_label = "服务商",
         translate_target_label = "翻译为",
@@ -326,7 +326,7 @@ local uiText = {
         lang_cn = "简体中文",
         lang_en = "EN",
         tabs = { "Edit", "Translate", "Settings" },
-        donation = "☕ Fuel creativity with a coffee ☕",
+        donation = "☕ Explore More Features ☕",
         copyright = " © 2025, copyright by " .. SCRIPT_AUTHOR,
         translate_provider_label = "Provider",
         translate_target_label = "To",
@@ -5846,7 +5846,7 @@ end
 
 function win.On.DonationButton.Clicked(ev)
     if UI.currentLanguage() == "cn" then
-        UI.showDonationWindow()
+        Utils.openExternalUrl(SCRIPT_TAOBAO_URL)
     else
         Utils.openExternalUrl(SCRIPT_KOFI_URL)
     end
@@ -5903,7 +5903,7 @@ function win.On.CopyrightButton.Clicked(ev)
     elseif state.language == "en" then
         preferEnglish = true
     end
-    local targetUrl = preferEnglish and SCRIPT_KOFI_URL or SCRIPT_BILIBILI_URL
+    local targetUrl = preferEnglish and SCRIPT_KOFI_URL or SCRIPT_TAOBAO_URL
     Utils.openExternalUrl(targetUrl)
 end
 

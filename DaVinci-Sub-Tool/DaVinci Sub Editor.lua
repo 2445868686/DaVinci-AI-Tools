@@ -1,10 +1,9 @@
 local SCRIPT_NAME = "DaVinci Sub Editor"
-local SCRIPT_VERSION = "1.0.8-Free" -- 标记为免费版
+local SCRIPT_VERSION = "1.0.9-Free" -- 标记为免费版
 local SCRIPT_AUTHOR = "HEIBA"
 print(string.format("%s | %s | %s", SCRIPT_NAME, SCRIPT_VERSION, SCRIPT_AUTHOR))
 local SCRIPT_KOFI_URL = "https://ko-fi.com/s/5e9dcdeae5"
-local SCRIPT_TAOBAO_URL = "https://e.tb.cn/h.SkbbnrU189YGw8e?tk=5FXmfWnLzCJ"
-local SCRIPT_PAYPAL_URL ="https://paypal.me/heibashop"
+local SCRIPT_TAOBAO_URL = "https://shop120058726.taobao.com/"
 
 local App = {
     Utils = {},
@@ -217,7 +216,7 @@ local uiText = {
         lang_en = "EN",
         contact = "联系邮箱: heibagou@hotmail.com",
         tabs = { "编辑", "翻译", "设置" },
-        donation = "☕用一杯咖啡为创意充电☕",
+        donation = "☕ 探索更多功能 ☕",
         copyright = " © 2025, 版权所有 " .. SCRIPT_AUTHOR,
         translate_provider_label = "服务商",
         translate_target_label = "翻译为",
@@ -289,7 +288,7 @@ local uiText = {
         lang_en = "EN",
         contact = "Contact: heibagou@hotmail.com",
         tabs = { "Edit", "Translate", "Settings" },
-        donation = "☕ Fuel creativity with a coffee ☕",
+        donation = "☕ Explore More Features ☕",
         copyright = " © 2025, copyright by " .. SCRIPT_AUTHOR,
         translate_provider_label = "Provider",
         translate_target_label = "To",
@@ -3880,7 +3879,7 @@ end
 
 function win.On.DonationButton.Clicked(ev)
     if UI.currentLanguage() == "cn" then
-        UI.showDonationWindow()
+        Utils.openExternalUrl(SCRIPT_TAOBAO_URL)
     else
         Utils.openExternalUrl(SCRIPT_KOFI_URL)
     end
