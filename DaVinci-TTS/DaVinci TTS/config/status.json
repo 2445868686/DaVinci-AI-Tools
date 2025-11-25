@@ -55,6 +55,10 @@
     "Rendering ...",
     "等待渲染..."
   ],
+  "edge_voices": [
+    "The edge_voices.json file is missing.",
+    "缺少edge_voices.json文件."
+  ],
   "voices_list": [
     "The voices_list.json file is missing.",
     "缺少voices_list.json文件."

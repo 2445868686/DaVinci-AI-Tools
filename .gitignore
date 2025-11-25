@@ -35,4 +35,5 @@ DaVinci-V2V/DaVinci V2V/config/settings.json
 
 DaVinci-Sub-Tool/config/subedit_settings.json
 
-DaVinci-Bath-Render/DaVinci Bath Render/config/setting.json
+DaVinci-Batch-Render/DaVinci Batch Render/config/setting.json
+DaVinci-Image-Edit/DaVinci Image Edit/config/settings.json

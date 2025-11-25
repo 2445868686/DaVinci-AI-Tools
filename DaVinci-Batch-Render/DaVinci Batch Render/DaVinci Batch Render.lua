@@ -37,7 +37,7 @@ do
     local Config = {}
 
     Config.SCRIPT_NAME    = "DaVinci Batch Render"
-    Config.SCRIPT_VERSION = "1.1.0"
+    Config.SCRIPT_VERSION = "1.1.1"
     Config.SCRIPT_AUTHOR  = "HEIBA"
     Config.SCRIPT_DIR     = SCRIPT_DIR
 
@@ -1730,9 +1730,10 @@ do
                 )
             else
                 local endFrame = startFrame + durationFrames
-                local displayEndFrame = endFrame + timelineStartFrame
+                local inclusiveEndFrame = math.max(startFrame, endFrame - 1)
+                local displayEndFrame = inclusiveEndFrame + timelineStartFrame
+                local endTc = App.Helpers:frames_to_timecode_precise(displayEndFrame, fpsFraction)
                 if not has_media_between(trackCollections.video, startFrame, endFrame, timelineStartFrame) then
-                    local endTc = App.Helpers:frames_to_timecode_precise(displayEndFrame, fpsFraction)
                     App.Logger:append_localized("log_segment_skipped", startTc, endTc)
                 else
                     segmentIndex = segmentIndex + 1
@@ -1741,7 +1742,7 @@ do
                         startFrame = startFrame,
                         endFrame = endFrame,
                         startTimecode = startTc,
-                        endTimecode = App.Helpers:frames_to_timecode_precise(displayEndFrame, fpsFraction),
+                        endTimecode = endTc,
                         name = string.format("%s_%03d", basePrefix, segmentIndex),
                         statusKey = "pending",
                         statusExtra = nil
@@ -1796,8 +1797,9 @@ do
         if not (timeline and timeline.SetMarkInOut) then
             return false
         end
+        local markOut = math.max(row.startFrame, row.endFrame - 1)
         local ok, result = pcall(function()
-            return timeline:SetMarkInOut(row.startFrame, row.endFrame, "all")
+            return timeline:SetMarkInOut(row.startFrame, markOut, "all")
         end)
         if ok and result == true then
             return true
@@ -1929,7 +1931,7 @@ do
         local customName = string.format("%s_%03d", prefix, row.index or 0)
         row.name = customName
         local markIn = to_display_frame(row.startFrame)
-        local markOut = to_display_frame(row.endFrame)
+        local markOut = to_display_frame(math.max(row.startFrame, row.endFrame - 1))
 
         -- 仅设置范围、目录、文件名；其余参数沿用 Deliver 页当前设置
         return {
@@ -2424,7 +2426,7 @@ do
             local ok, timer = pcall(function()
                 return ui:Timer{
                     ID = "RenderStatusTimer",
-                    Interval = 50,
+                    Interval = 1000,
                     SingleShot = false,
                     TimerType = "CoarseTimer"
                 }
