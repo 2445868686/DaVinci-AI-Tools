@@ -570,6 +570,38 @@ except ImportError:
     except ImportError as e:
         raise ImportError("Unable to import DaVinciResolveScript or python_get_resolve after adding paths") from e
 
+
+def load_json_file(path: str, default):
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def normalize_gender(gender_value: str) -> str:
+    if not gender_value:
+        return "Neutral"
+    return gender_value.split(",")[0].strip()
+
+
+def build_edge_voice_dict(edge_voice_list):
+    voice_map = {}
+    for voice_info in edge_voice_list:
+        locale = voice_info.get("Locale")
+        short_name = voice_info.get("ShortName") or voice_info.get("Name")
+        if not locale or not short_name:
+            continue
+        display_name = voice_info.get("LocalName") or voice_info.get("DisplayName") or short_name
+        gender = normalize_gender(voice_info.get("Gender"))
+        entry = voice_map.setdefault(
+            locale,
+            {"language": voice_info.get("LocaleName", locale), "voices": []}
+        )
+        entry["voices"].append({short_name: {"Gender": gender, "Name": display_name}})
+    return voice_map
+
+
 class STATUS_MESSAGES:
     synthesis_failed    = ("Synthesis failed!", "合成失败！")
     loaded_to_timeline  = ("Successfully loaded to timeline!", "成功加载到时间线！")
@@ -604,6 +636,7 @@ def get_script_path():
         return os.getcwd()
 
 config_dir = os.path.join(script_path, 'config')
+voices_dir = os.path.join(script_path, 'voices')
 settings_file = os.path.join(config_dir, 'TTS_settings.json')
 
 check_or_create_file(settings_file)
@@ -1396,11 +1429,14 @@ style_degree = None
 stream = None
 
 # 加载Voice
-voice_file = os.path.join(config_dir, 'voices_list.json')
-with open(voice_file, "r", encoding="utf-8") as file:
-    voices_data = json.load(file)
+voice_file = os.path.join(voices_dir, 'voices_list.json')
+voices_data = load_json_file(voice_file, {})
+
+edge_voice_file = os.path.join(voices_dir, "edge_voices.json")
+edge_voice_list = load_json_file(edge_voice_file, [])
+edgeTTS_voices = build_edge_voice_dict(edge_voice_list)
+
 azure_voices = voices_data.get("azure_voice", {})
-edgeTTS_voices = voices_data.get("edge_voice", {})
 openai_voices = voices_data.get("openai_voice", {}).get("voices", [])
 minimax_voices = voices_data.get("minimax_system_voice", [])
 minimax_clone_voices = voices_data.get("minimax_clone_voices", [])

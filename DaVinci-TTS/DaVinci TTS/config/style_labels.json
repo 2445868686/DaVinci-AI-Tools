@@ -1,5 +1,5 @@
 {
-  "advertisement_upbeat": { "cn": "广告推销", "en": "Advertisement Upbeat" },
+  "advertisement-upbeat": { "cn": "广告推销", "en": "Advertisement Upbeat" },
   "affectionate": { "cn": "深情", "en": "Affectionate" },
   "angry": { "cn": "愤怒", "en": "Angry" },
   "assistant": { "cn": "助手", "en": "Assistant" },
@@ -39,5 +39,6 @@
   "livecommercial": { "cn": "直播带货", "en": "Live Commercial" },
   "cute": { "cn": "可爱", "en": "Cute" },
   "warm": { "cn": "温暖", "en": "Warm" },
-  "default": { "cn": "默认", "en": "Default" }
+  "default": { "cn": "默认", "en": "Default" },
+  "relieved": { "cn": "如释重负", "en": "Relieved" }
 }
