@@ -282,7 +282,8 @@ ul {
           </p>
           <p>
             若未安装，则会弹出 "<strong>Python was not found</strong>"
-            消息，请根据提示下载并安装，安装完成后进入<a href="#step-2">步骤 2：安装插件</a>！
+            消息，请根据提示下载并安装，安装时请务必选择 Python 3.12
+            及以下版本，安装完成后进入<a href="#step-2">步骤 2：安装插件</a>！
           </p>
           <p>
             <strong>⚠️ Windows 用户：</strong>安装 Python 时请务必勾选 "<span
@@ -390,9 +391,9 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
             <ul>
               <li><strong>功能</strong>：一个高级的混合模式，仅在<strong>不使用</strong>“OpenAI API”时可用。</li>
               <li><strong>工作原理</strong>：它首先使用<strong>本地模型</strong>生成带有精确时间戳的草稿，然后调用 OpenAI API 获取更准确的文本内容，最后将两者智能地结合，生成时间精准且内容更优化的字幕。</li>
-              <li><strong>要求</strong>：同样需要配置 OpenAI API 密钥。</li>
-            </ul>
-          </div>
+              <li><strong>要求</strong>：无需配置 OpenAI API 密钥，启用后插件会自动完成优化。</li>
+          </ul>
+        </div>
 
           <button type="button" class="collapsible" id="ui-zh-6">6. 语言</button>
           <div class="collapsible-content">
@@ -469,8 +470,8 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
         </section>
 
         <section id="api-config-zh">
-          <h2>二、 OpenAI API 配置窗口</h2>
-          <p>当您勾选 “使用 OpenAI API” 或 “AI 字幕优化” 时，会弹出此窗口。</p>
+        <h2>二、 OpenAI API 配置窗口</h2>
+        <p>当您勾选 “使用 OpenAI API” 时，会弹出此窗口。</p>
           <ul>
             <li><strong>Base URL</strong>：API 的服务器地址。如果您使用官方 OpenAI，通常留空或填写 <code>https://api.openai.com</code>。如果您有特殊的代理或第三方服务，请填写对应的地址。</li>
             <li><strong>API Key</strong>：您的 OpenAI 密钥。</li>
@@ -577,7 +578,8 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
           <p>
             If it is not installed, a "<strong>Python was not found</strong>"
             message will pop up. Follow the pop-up instructions to download and
-            install it. After installation, proceed to
+            install it, and make sure to pick Python 3.12 or any earlier
+            version. After installation, proceed to
             <a href="#step-2-en">Step 2: Install Plugin</a>!
           </p>
           <p>
@@ -689,9 +691,9 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
             <ul>
               <li><strong>Function</strong>: An advanced hybrid mode, available only when <strong>not</strong> using the "Use OpenAI API" option.</li>
               <li><strong>How it works</strong>: It first uses a <strong>local model</strong> to generate a draft with precise timestamps, then calls the OpenAI API to get more accurate text content, and finally intelligently combines both to produce subtitles that are both time-accurate and content-optimized.</li>
-              <li><strong>Requirement</strong>: Also requires an OpenAI API key.</li>
-            </ul>
-          </div>
+              <li><strong>Requirement</strong>: No OpenAI API key is needed; once enabled the plugin handles the optimization automatically.</li>
+          </ul>
+        </div>
 
           <button type="button" class="collapsible" id="ui-en-6">6. Language</button>
           <div class="collapsible-content">
@@ -770,8 +772,8 @@ C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></
         </section>
 
         <section id="api-config-en">
-          <h2>II. OpenAI API Configuration Window</h2>
-          <p>This window appears when you check "Use OpenAI API" or "AI Correct."</p>
+        <h2>II. OpenAI API Configuration Window</h2>
+        <p>This window appears when you check "Use OpenAI API."</p>
           <ul>
             <li><strong>Base URL</strong>: The server address for the API. If you are using the official OpenAI, leave it blank or enter <code>https://api.openai.com</code>. If you use a proxy or third-party service, enter the corresponding address.</li>
             <li><strong>API Key</strong>: Your OpenAI secret key.</li>

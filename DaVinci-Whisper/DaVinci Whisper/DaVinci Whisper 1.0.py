@@ -1,5 +1,5 @@
 SCRIPT_NAME    = "DaVinci Whisper"
-SCRIPT_VERSION = " 1.4" # Updated version
+SCRIPT_VERSION = " 1.5" # Updated version
 SCRIPT_AUTHOR  = "HEIBA"
 print(f"{SCRIPT_NAME} | {SCRIPT_VERSION.strip()} | {SCRIPT_AUTHOR}")
 SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
@@ -8,7 +8,7 @@ X_CENTER = (SCREEN_WIDTH  - WINDOW_WIDTH ) // 2
 Y_CENTER = (SCREEN_HEIGHT - WINDOW_HEIGHT) // 2
 
 SCRIPT_KOFI_URL      = "https://ko-fi.com/heiba"
-SCRIPT_BILIBILI_URL  = "https://shop120058726.taobao.com"
+SCRIPT_TAOBAO_URL  = "https://shop120058726.taobao.com"
 
 MODEL_LINK_EN ="https://drive.google.com/drive/folders/16FLicjnstLhrl3yKgCHOvle5-3_mLii5?usp=sharing"
 MODEL_LINK_CN ="https://pan.baidu.com/s/1kthNbHJAggTUT2cv9nKaUg?pwd=8888"
@@ -65,6 +65,8 @@ import unicodedata
 import io
 import threading
 import json
+import uuid
+import hashlib
 from fractions import Fraction
 from itertools import tee
 from difflib import SequenceMatcher
@@ -215,9 +217,6 @@ if os.path.exists(LANGUAGE_SUPPORT):
         LANGUAGE_MAP = json.load(f)
 
 DEFAULT_SETTINGS = {
-
-    "OPENAI_FORMAT_BASE_URL": "",
-    "OPENAI_FORMAT_API_KEY": "",
     "PROVIDER":False,
     "MODEL": 0,
     "LANGUAGE": 0,
@@ -478,7 +477,61 @@ class SupabaseClient:
         return None
 
 
+def get_machine_id() -> str:
+    system = platform.system()
+    if system == "Linux":
+        for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+            if os.path.exists(path):
+                try:
+                    return open(path, "r", encoding="utf-8").read().strip()
+                except Exception:
+                    continue
+    elif system == "Windows":
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Cryptography"
+            )
+            value, _ = winreg.QueryValueEx(key, "MachineGuid")
+            return value
+        except Exception:
+            pass
+    elif system == "Darwin":
+        try:
+            output = subprocess.check_output(
+                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                stderr=subprocess.DEVNULL
+            ).decode()
+            match = re.search(r'"IOPlatformUUID" = "([^"]+)"', output)
+            if match:
+                return match.group(1)
+        except Exception:
+            pass
+
+    mac = uuid.getnode()
+    return hashlib.sha256(str(mac).encode("utf-8")).hexdigest()
+
+
 supabase_client = SupabaseClient(base_url=SUPABASE_URL, anon_key=SUPABASE_ANON_KEY)
+
+SILICONFLOW_SUPABASE_PROVIDER = "SILICONFLOUW"
+USERID = get_machine_id()
+_siliconflow_key_cache: Optional[str] = None
+_siliconflow_key_lock = threading.Lock()
+
+
+def get_siliconflow_api_key() -> str:
+    global _siliconflow_key_cache
+    if _siliconflow_key_cache:
+        return _siliconflow_key_cache
+    with _siliconflow_key_lock:
+        if not _siliconflow_key_cache:
+            _siliconflow_key_cache = supabase_client.fetch_provider_secret(
+                SILICONFLOW_SUPABASE_PROVIDER,
+                user_id=USERID
+            )
+    return _siliconflow_key_cache
 
 def _check_for_updates():
     global _loading_confirmation_pending, _loading_notice_text
@@ -846,8 +899,8 @@ class FasterWhisperProvider(TranscriptionProvider):
     def _transcribe_audio(self,
                         file_path: str,
                         api_key: str,
-                        base_url: str = "https://api.openai.com",
-                        model_name: str = "gpt-4o-mini-transcribe",
+                        base_url: str = "https://api.siliconflow.cn",
+                        model_name: str = "TeleAI/TeleSpeechASR",
                         language: Optional[str] = None,
                         hotwords: Optional[str] = None,
                         retries: int = 3,
@@ -1084,15 +1137,18 @@ class FasterWhisperProvider(TranscriptionProvider):
                     print(whisper_tokens)
                     print("----------------whisper_tokens----------------")
                     # 缺少 API Key 时，直接回退避免无意义的联网尝试
-                    api_key_for_refine = kwargs.get("api_key", "")
+                    api_key_for_refine = (kwargs.get("api_key") or "").strip()
+                    if not api_key_for_refine:
+                        api_key_for_refine = get_siliconflow_api_key()
                     if not api_key_for_refine:
                         raise RuntimeError("Missing API key")
+                    remote_base_url = (kwargs.get("base_url") or "https://api.siliconflow.cn").rstrip('/')
 
                     # 在线 refine（分片上传+合并）
                     gpt_text = self._transcribe_audio(
                         file_path = input_audio,
                         api_key   = api_key_for_refine,
-                        base_url  = kwargs.get("base_url", "https://api.openai.com/").rstrip('/'),
+                        base_url  = remote_base_url,
                         language  = None,
                         hotwords  = None,
                         progress_callback = _net_progress
@@ -1628,40 +1684,6 @@ msgbox = dispatcher.AddWindow(
             ),
         ]
     )
-openai_config_window = dispatcher.AddWindow(
-    {
-        "ID": "OpenAIConfigWin",
-        "WindowTitle": "OpenAI API",
-        "Geometry": [900, 400, 350, 150],
-        "Hidden": True,
-        "StyleSheet": """
-        * {
-            font-size: 14px; /* 全局字体大小 */
-        }
-    """
-    },
-    [
-        ui.VGroup(
-            [
-                ui.Label({"ID": "OpenAIFormatLabel","Text": "填写OpenAI API信息", "Alignment": {"AlignHCenter": True, "AlignVCenter": True}}),
-                ui.HGroup({"Weight": 1}, [
-                    ui.Label({"ID": "OpenAIFormatBaseURLLabel", "Text": "Base URL", "Alignment": {"AlignRight": False}, "Weight": 0.2}),
-                    ui.LineEdit({"ID": "OpenAIFormatBaseURL", "Text":"","PlaceholderText": "https://api.openai.com", "Weight": 0.8}),
-                ]),
-                ui.HGroup({"Weight": 1}, [
-                    ui.Label({"ID": "OpenAIFormatApiKeyLabel", "Text": "API Key", "Alignment": {"AlignRight": False}, "Weight": 0.2}),
-                    ui.LineEdit({"ID": "OpenAIFormatApiKey", "Text": "", "EchoMode": "Password", "Weight": 0.8}),
-                    
-                ]),
-                ui.HGroup({"Weight": 1}, [
-                    ui.Button({"ID": "OpenAIConfirm", "Text": "确定","Weight": 1}),
-                    ui.Button({"ID": "OpenAIRegisterButton", "Text": "注册","Weight": 1}),
-                ]),
-                
-            ]
-        )
-    ]
-)
 match_window = dispatcher.AddWindow(
     {
         "ID": "ScriptMatchWin",
@@ -1745,9 +1767,6 @@ translations = {
         "CopyrightButton":f"更多功能 © 2025 {SCRIPT_AUTHOR} 版权所有",
         "OnlineCheckBox": "使用 API",
         "AICorrectCheckBox": "AI字幕优化 (beta)",
-        "OpenAIFormatLabel":"填写 OpenAI Format API 信息",
-        "OpenAIConfirm":"确定",
-        "OpenAIRegisterButton":"注册",
         },
     "en": {
         "TitleLabel":"Create subtitles from audio", 
@@ -1773,9 +1792,6 @@ translations = {
         "TrimPunctCheckBox":"No End Punct.",
         "OnlineCheckBox": "Use API",
         "AICorrectCheckBox": "AI Correct (beta)",
-        "OpenAIFormatLabel":"OpenAI Format API",
-        "OpenAIConfirm":"Confirm",
-        "OpenAIRegisterButton":"Register",
         }
 }
 placeholder_translations = {
@@ -1803,7 +1819,6 @@ STATUS_MESSAGES = {
 ""
 items = whisper_win.GetItems()
 msg_items = msgbox.GetItems()
-openai_items = openai_config_window.GetItems()
 match_items = match_window.GetItems()
 
 tree_widget = items.get("SubtitleTree")
@@ -1881,10 +1896,6 @@ def populate_models(use_openai):
     items["AICorrectCheckBox"].Enabled = not use_openai
     items["DownloadButton"].Enabled = not use_openai
     items["AICorrectCheckBox"].Checked = False
-    if use_openai:
-        openai_config_window.Show() 
-    else:
-        openai_config_window.Hide()
     items["ModelCombo"].Clear()
     for model in provider.get_available_models():
         items["ModelCombo"].AddItem(model)
@@ -1894,11 +1905,9 @@ def on_ai_correct_clicked(ev):
     if checked:
         items["MatchTextCheckBox"].Checked = False
         items["MatchTextCheckBox"].Enabled = False
-        openai_config_window.Show()
         match_window.Hide()
     else:
         items["MatchTextCheckBox"].Enabled = True
-        openai_config_window.Hide()
 
 whisper_win.On.AICorrectCheckBox.Clicked = on_ai_correct_clicked
 
@@ -1941,8 +1950,6 @@ def switch_language(lang):
     for item_id, text_value in translations[lang].items():
         if item_id in items:
             items[item_id].Text = text_value
-        elif item_id in openai_items:    
-            openai_items[item_id].Text = text_value
         elif item_id in match_items:   
             match_items[item_id].Text = text_value
         else:
@@ -1965,12 +1972,6 @@ def on_lang_checkbox_clicked(ev):
 whisper_win.On.LangCnCheckBox.Clicked = on_lang_checkbox_clicked
 whisper_win.On.LangEnCheckBox.Clicked = on_lang_checkbox_clicked
 
-def on_openai_close(ev):
-    print("OpenAI API 配置完成")
-    openai_config_window.Hide()
-openai_config_window.On.OpenAIConfirm.Clicked = on_openai_close
-openai_config_window.On.OpenAIConfigWin.Close = on_openai_close
-
 def load_settings(settings_file):
     if os.path.exists(settings_file):
         with open(settings_file, 'r') as file:
@@ -1987,8 +1988,6 @@ def load_settings(settings_file):
 saved_settings = load_settings(SETTINGS)
 
 if saved_settings:
-    openai_items["OpenAIFormatBaseURL"].Text = saved_settings.get("OPENAI_FORMAT_BASE_URL", DEFAULT_SETTINGS["OPENAI_FORMAT_BASE_URL"])
-    openai_items["OpenAIFormatApiKey"].Text = saved_settings.get("OPENAI_FORMAT_API_KEY", DEFAULT_SETTINGS["OPENAI_FORMAT_API_KEY"])
     #items["OnlineCheckBox"].Checked = saved_settings.get("PROVIDER", DEFAULT_SETTINGS["PROVIDER"])
     items["ModelCombo"].CurrentIndex = saved_settings.get("MODEL", DEFAULT_SETTINGS["MODEL"])
     items["LangCombo"].CurrentIndex = saved_settings.get("LANGUAGE", DEFAULT_SETTINGS["LANGUAGE"])
@@ -2809,8 +2808,6 @@ def on_create_clicked(ev):
 
         transcribe_params = {
             "input_audio": audio_path,
-            "base_url":openai_items["OpenAIFormatBaseURL"].Text,
-            "api_key":openai_items["OpenAIFormatApiKey"].Text,
             "model_name": items["ModelCombo"].CurrentText,
             "language": LANGUAGE_MAP.get(items["LangCombo"].CurrentText),
             "output_dir": SUB_TEMP_DIR,
@@ -2867,14 +2864,12 @@ def on_download_clicked(ev):
 whisper_win.On.DownloadButton.Clicked = on_download_clicked
     
 def on_open_link_button_clicked(ev):
-    url = SCRIPT_KOFI_URL if items["LangEnCheckBox"].Checked else SCRIPT_BILIBILI_URL
+    url = SCRIPT_KOFI_URL if items["LangEnCheckBox"].Checked else SCRIPT_TAOBAO_URL
     webbrowser.open(url)
 whisper_win.On.CopyrightButton.Clicked = on_open_link_button_clicked
 
 def save_file():
     settings = {
-        "OPENAI_FORMAT_BASE_URL": openai_items["OpenAIFormatBaseURL"].Text,
-        "OPENAI_FORMAT_API_KEY": openai_items["OpenAIFormatApiKey"].Text,
         "PROVIDER":items["OnlineCheckBox"].Checked,
         "MODEL": items["ModelCombo"].CurrentIndex,
         "LANGUAGE": items["LangCombo"].CurrentIndex,
