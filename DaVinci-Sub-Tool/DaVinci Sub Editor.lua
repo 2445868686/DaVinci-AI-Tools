@@ -1,5 +1,5 @@
 local SCRIPT_NAME = "DaVinci Sub Editor"
-local SCRIPT_VERSION = "1.0.9-Free" -- 标记为免费版
+local SCRIPT_VERSION = "1.1.0-Free" -- 标记为免费版
 local SCRIPT_AUTHOR = "HEIBA"
 print(string.format("%s | %s | %s", SCRIPT_NAME, SCRIPT_VERSION, SCRIPT_AUTHOR))
 local SCRIPT_KOFI_URL = "https://ko-fi.com/s/5e9dcdeae5"
@@ -817,6 +817,40 @@ function Utils.getTempDir()
     return Utils.joinPath(Utils.scriptDir(), "temp")
 end
 
+-- 仅保留 ASCII 的安全文件名，避免 Windows 路径编码问题
+function Utils.safeAsciiFilename(name)
+    name = tostring(name or "timeline")
+    local buf = {}
+    for i = 1, #name do
+        local b = name:byte(i)
+        if not b then break end
+        if (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) then
+            buf[#buf + 1] = string.char(b)
+        elseif b == 45 or b == 95 then -- '-' or '_'
+            buf[#buf + 1] = string.char(b)
+        else
+            buf[#buf + 1] = "_"
+        end
+    end
+    local cleaned = table.concat(buf)
+    cleaned = cleaned:gsub("_+", "_"):gsub("^_+", ""):gsub("_+$", "")
+    if cleaned == "" then cleaned = "timeline" end
+    return cleaned
+end
+
+-- 简单 32 位哈希，用于区分同名时间线（不依赖非 ASCII）
+function Utils.shortHash(text)
+    text = tostring(text or "")
+    local h = 5381
+    for i = 1, #text do
+        local b = text:byte(i)
+        if b then
+            h = ((h * 33) % 0x100000000 + b) % 0x100000000
+        end
+    end
+    return string.format("%08X", h)
+end
+
 function Utils.makeTempPath(ext)
     local dir = Utils.getTempDir()
     Utils.ensureDir(dir)
@@ -1528,7 +1562,15 @@ function Subtitle.nextSrtPathForTimeline(timeline)
     if timeline and timeline.GetName then
         tlName = timeline:GetName() or tlName
     end
-    local safeName = Utils.sanitizeFilename(tlName)
+    local safeName
+    local useAsciiTempFilename = IS_WINDOWS
+    if useAsciiTempFilename then
+        local asciiName = Utils.safeAsciiFilename(tlName)
+        local hash = Utils.shortHash(tlName)
+        safeName = string.format("%s_%s", asciiName, hash)
+    else
+        safeName = Utils.sanitizeFilename(tlName)
+    end
     local rand = state.sessionCode or "0000"
 
     local prefix = string.format("%s_subtitle_update_%s_", safeName, rand)
