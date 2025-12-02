@@ -1,6 +1,6 @@
 # ================= 用户配置 =================
 SCRIPT_NAME    = "Sub AI Translator"
-SCRIPT_VERSION = " 1.6"
+SCRIPT_VERSION = " 1.7"
 SCRIPT_AUTHOR  = "HEIBA"
 print(f"{SCRIPT_NAME} | {SCRIPT_VERSION.strip()} | {SCRIPT_AUTHOR}")
 SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
@@ -83,8 +83,8 @@ DEFAULT_SETTINGS = {
     "OPENAI_FORMAT_TEMPERATURE":0.3,
     "SYSTEM_PROMPT":SYSTEM_PROMPT,
     "TARGET_LANG":0,
-    "CN":True,
-    "EN":False,
+    "CN":False,
+    "EN":True,
     "TRANSLATE_MODE": 1,
 }
 # ===========================================
@@ -177,6 +177,30 @@ TRANSLATION_ROW_COLORS = {
 }
 
 TRANSLATION_ROW_TRANSPARENT = {"R": 0.0, "G": 0.0, "B": 0.0, "A": 0.0}
+
+TRANSLATE_EDITOR_PLACEHOLDER = {
+    "en": "Edit translation here...",
+    "cn": "在此修改译文...",
+}
+
+UPDATE_VERSION_LINE = {
+    "version": {
+        "cn": "发现新版本：{current} → {latest}\n请前往购买页面下载最新版本。",
+        "en": "Update: {current} → {latest}\nDownload on your purchase page.",
+    },
+    "loading": {
+        "cn": "正在加载 {count} 条字幕...",
+        "en": "Loading {count} subtitles...",
+    },
+    "waiting": {
+        "cn": "请稍等... {elapsed} 秒",
+        "en": "Please wait... {elapsed}s",
+    },
+    "loaded": {
+        "cn": "已从轨道 #{track} 加载 {count} 条字幕。",
+        "en": "Loaded {count} subtitles from track #{track}.",
+    },
+}
 
 def configure_logging() -> logging.Logger:
     """Configure and return the module logger.
@@ -358,31 +382,114 @@ _loading_timer_stop = False
 _loading_confirmation_pending = False
 _loading_notice_text = ""
 _loading_progress_message = ""
+_loading_total_subtitles = None
+_loading_stage = "update"  # "update" during version check, "load" when loading subtitles
 _loading_progress_lock = threading.Lock()
 _loading_thread_started = False
+
+
+def _get_update_lang() -> str:
+    """
+    返回更新提示的语言，优先使用已保存的 UI 语言偏好。
+    """
+    try:
+        settings_path = os.path.join(SCRIPT_PATH, "config", "translator_settings.json")
+        with open(settings_path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+            if data.get("EN"):
+                return "en"
+            if data.get("CN"):
+                return "cn"
+    except Exception:
+        pass
+    return "en" if DEFAULT_SETTINGS.get("EN") else "cn"
 
 
 def _compose_loading_text(elapsed=None):
     notice = _loading_notice_text.strip()
     with _loading_progress_lock:
         progress = (_loading_progress_message or "").strip()
-    if progress:
-        base_text = progress
+        subtitle_total = _loading_total_subtitles
+        stage = _loading_stage
+    lang_key = _get_update_lang()
+
+    if stage == "done":
+        base_text = progress or notice or ""
+        return base_text.strip()
+
+    if stage == "update":
+        tpl = UPDATE_VERSION_LINE.get("waiting", {})
+        template = tpl.get(lang_key) or tpl.get("en", "")
+        try:
+            base_text = template.format(elapsed=int(elapsed) if elapsed is not None else 0)
+        except Exception:
+            base_text = template or "Please wait..."
     else:
-        base_text = "Loading subtitles...\n加载字幕..."
+        loading_tpl = UPDATE_VERSION_LINE.get("loading", {})
+        template = ""
+        if isinstance(loading_tpl, dict):
+            template = loading_tpl.get(lang_key) or loading_tpl.get("en", "")
+        count_display = subtitle_total if subtitle_total is not None else "..."
+        try:
+            if template:
+                base_text = template.format(count=count_display)
+            else:
+                base_text = "Loading subtitles..." if lang_key == "en" else "正在加载字幕..."
+        except Exception:
+            base_text = template or ("Loading subtitles..." if lang_key == "en" else "正在加载字幕...")
+    if progress:
+        base_text = f"{base_text}\n{progress}"
     if notice:
         base_text = f"{notice}\n\n{base_text}"
     return base_text
 
 
-def _set_loading_message(message):
-    global _loading_progress_message
+def _set_loading_message(message, *, count=None):
+    global _loading_progress_message, _loading_total_subtitles
     with _loading_progress_lock:
         _loading_progress_message = message or ""
+        if count is not None:
+            try:
+                _loading_total_subtitles = max(0, int(count))
+            except Exception:
+                _loading_total_subtitles = count
     try:
         _loading_items["LoadLabel"].Text = _compose_loading_text()
     except Exception:
         pass
+
+
+def _set_loading_stage(stage: str, *, count=None):
+    """Switch loading window stage (update / load) and refresh UI."""
+    global _loading_stage, _loading_start_ts, _loading_progress_message, _loading_total_subtitles
+    _loading_stage = stage or "update"
+    _loading_start_ts = time.time()
+    if stage == "load":
+        _loading_progress_message = ""
+        _loading_total_subtitles = None
+        try:
+            _loading_items["UpdateLabel"].Visible = False
+            _loading_items["LoadLabel"].Visible = True
+        except Exception:
+            pass
+    elif stage == "done":
+        _loading_total_subtitles = None
+    _set_loading_message(_loading_progress_message, count=count)
+
+
+def _format_loaded_message(count, track):
+    tpl = UPDATE_VERSION_LINE.get("loaded", {})
+    lang = _get_update_lang()
+    en_tpl = tpl.get("en", "") if isinstance(tpl, dict) else ""
+    cn_tpl = tpl.get("cn", "") if isinstance(tpl, dict) else ""
+    en_msg = (en_tpl or "Loaded {count} subtitles from track #{track}.").format(
+        count=count, track=track
+    )
+    cn_msg = (cn_tpl or "已从轨道 #{track} 加载 {count} 条字幕。").format(
+        count=count, track=track
+    )
+    display = en_msg if lang == "en" else cn_msg
+    return display, en_msg, cn_msg
 
 
 def _on_loading_confirm(ev):
@@ -393,8 +500,11 @@ def _on_loading_confirm(ev):
     try:
         _loading_items["ConfirmButton"].Enabled = False
         _loading_items["ConfirmButton"].Visible = False
+        _loading_items["UpdateLabel"].Visible = False
+        _loading_items["LoadLabel"].Visible = True
     except Exception:
         pass
+    _set_loading_stage("load")
     dispatcher.ExitLoop()
 
 def _loading_timer_worker():
@@ -429,11 +539,12 @@ def initialize_application() -> None:
     global _loading_notice_text
     global _loading_progress_message
     global _loading_thread_started
+    global _loading_total_subtitles
 
     configure_logging()
 
     if _loading_thread_started:
-        _set_loading_message("Loading subtitles...\n加载字幕...")
+        _set_loading_stage("update")
         return
 
     loading_win.Show()
@@ -443,12 +554,14 @@ def initialize_application() -> None:
     _loading_confirmation_pending = False
     _loading_notice_text = ""
     _loading_progress_message = ""
+    _loading_total_subtitles = 0
+    _loading_stage = "update"
     loading_win.On.ConfirmButton.Clicked = _on_loading_confirm
 
     thread = threading.Thread(target=_loading_timer_worker, daemon=True)
     thread.start()
     _loading_thread_started = True
-    _set_loading_message("Loading subtitles...\n加载字幕...")
+    _set_loading_stage("update")
     logger.info(
         "Loading window initialized",
         extra={"component": "loading_ui", "event": "initialized"},
@@ -662,6 +775,7 @@ for key, (en, zh) in status_data.items():
 
 def _check_for_updates():
     global _loading_confirmation_pending, _loading_notice_text
+    _set_loading_stage("update")
     current_version = (SCRIPT_VERSION or "").strip()
     result = supabase_client.check_update(SCRIPT_NAME)
     if not result:
@@ -671,20 +785,29 @@ def _check_for_updates():
     if not latest_version or latest_version == current_version:
         return
 
+    ui_lang = _get_update_lang()
+    fallback_lang = "en" if ui_lang == "cn" else "cn"
+
     messages = []
-    for key in ("cn", "en"):
-        text = (result.get(key) or "").strip()
-        if text:
-            messages.append(text)
+    primary = (result.get(ui_lang) or "").strip()
+    fallback = (result.get(fallback_lang) or "").strip()
+    if primary:
+        messages.append(primary)
+    elif fallback:
+        messages.append(fallback)
 
     readable_current = current_version or "未知"
-    version_line = f"Update: {readable_current} → {latest_version}\nDownload on your purchase page."
+    version_tpl = UPDATE_VERSION_LINE.get("version", {})
+    template = version_tpl.get(ui_lang) or version_tpl.get("en", "")
+    version_line = template.format(current=readable_current, latest=latest_version)
     messages.append(version_line)
     notice_text = "\n".join(messages).strip()
 
     try:
         _loading_items["UpdateLabel"].Text = notice_text
         _loading_items["UpdateLabel"].Visible = True
+        _loading_items["LoadLabel"].Visible = False
+        _loading_items["UpdateLabel"].StyleSheet = "color:#ff5555; font-size:20px;"
     except Exception:
         pass
 
@@ -1137,6 +1260,14 @@ translator_win = dispatcher.AddWindow(
                             "Weight": 1,
                         }
                     ),
+                    ui.TextEdit(
+                        {
+                            "ID": "TranslateSubtitleEditor",
+                            "Weight": 0,
+                            "PlaceholderText": "在此修改译文...",
+                            "WordWrap": True,
+                        }
+                    ),
                     ui.Label(
                         {
                             "ID": "TranslateStatusLabel",
@@ -1565,6 +1696,8 @@ translation_state = {
 }
 
 
+_translate_editor_programmatic = False
+
 
 def _current_language_key():
     try:
@@ -1596,6 +1729,41 @@ def set_translate_status(en_text: str = "", zh_text: str = "") -> None:
     widget = items.get("TranslateStatusLabel")
     if widget is not None:
         widget.Text = text or ""
+
+
+def _translate_editor_placeholder_for_lang(lang=None):
+    if lang is None:
+        lang = _current_language_key()
+    return TRANSLATE_EDITOR_PLACEHOLDER.get(lang, TRANSLATE_EDITOR_PLACEHOLDER["en"])
+
+
+def _apply_translate_editor_placeholder(lang=None):
+    editor = items.get("TranslateSubtitleEditor")
+    if not editor:
+        return
+    placeholder = _translate_editor_placeholder_for_lang(lang)
+    try:
+        editor.PlaceholderText = placeholder
+    except Exception:
+        pass
+
+
+def _set_translate_editor_text(text):
+    editor = items.get("TranslateSubtitleEditor")
+    if not editor:
+        return
+    global _translate_editor_programmatic
+    _translate_editor_programmatic = True
+    try:
+        try:
+            editor.Text = text or ""
+        except Exception:
+            try:
+                editor.PlainText = text or ""
+            except Exception:
+                pass
+    finally:
+        _translate_editor_programmatic = False
 
 
 def _format_tc(frame_value: int) -> str:
@@ -1688,6 +1856,8 @@ def clear_translation_failure(row_index):
 def refresh_translation_tree(select_index=None):
     tree = items.get("TranslateTree")
     if not tree:
+        _set_translate_editor_text("")
+        translation_state["selected_indices"] = []
         return
     rows = translation_state.get("rows") or []
     try:
@@ -1720,6 +1890,7 @@ def refresh_translation_tree(select_index=None):
         translation_state["selected_indices"] = [select_index]
     else:
         translation_state["selected_indices"] = []
+    _update_editor_from_selection()
     try:
         tree.SetUpdatesEnabled(True)
     except Exception:
@@ -1773,6 +1944,19 @@ def _selected_row_indices():
             if idx is not None and 0 <= idx < len(rows):
                 selected.append(idx)
     return sorted(set(selected))
+
+
+def _update_editor_from_selection():
+    rows = translation_state.get("rows") or []
+    indices = translation_state.get("selected_indices") or []
+    if not indices:
+        _set_translate_editor_text("")
+        return
+    idx = indices[-1]
+    if 0 <= idx < len(rows):
+        _set_translate_editor_text(rows[idx].get("target") or "")
+    else:
+        _set_translate_editor_text("")
 
 
 def _current_speed_option():
@@ -1879,6 +2063,9 @@ def refresh_translation_controls():
             widget.Enabled = (not busy) and has_translated
         else:
             widget.Enabled = (not busy) and has_rows
+    editor = items.get("TranslateSubtitleEditor")
+    if editor:
+        editor.Enabled = (not busy) and has_rows
 
 
 refresh_translation_controls()
@@ -1965,6 +2152,7 @@ def switch_language(lang):
     rows = translation_state.get("rows") or []
     for idx in range(len(rows)):
         update_translation_tree_row(idx)
+    _apply_translate_editor_placeholder(lang)
 
 
 def on_lang_checkbox_clicked(ev):
@@ -2412,11 +2600,6 @@ def load_timeline_subtitles(show_feedback=True, progress_callback=None):
                 progress_callback(0, total_items)
             except Exception:
                 pass
-        elif total_items:
-            set_translate_status(
-                f"Loading subtitles... 0/{total_items}",
-                f"加载字幕... 0/{total_items}",
-            )
         for idx, item in enumerate(track_items, start=1):
             source_text = item.GetName() or ""
             try:
@@ -2445,11 +2628,6 @@ def load_timeline_subtitles(show_feedback=True, progress_callback=None):
                     progress_callback(idx, total_items)
                 except Exception:
                     pass
-            elif total_items:
-                set_translate_status(
-                    f"Loading subtitles... {idx}/{total_items}",
-                    f"加载字幕... {idx}/{total_items}",
-                )
 
     translation_state.update(
         {
@@ -2690,6 +2868,7 @@ def _translate_rows(
             set_translate_status(progress_en, progress_zh)
 
     translation_state["last_tokens"] = total_tokens
+    _update_editor_from_selection()
     refresh_translation_controls()
     return success_count, failed_count, total_tokens
 
@@ -2845,7 +3024,7 @@ def on_load_subtitles(ev):
             en = "Scanning active subtitle track..."
             zh = "正在检测激活的字幕轨道..."
         set_translate_status(en, zh)
-    set_translate_status("Loading subtitles...", "正在加载字幕...")
+    set_translate_status("Preparing to load subtitles...", "正在准备加载字幕...")
     load_timeline_subtitles(show_feedback=False, progress_callback=_progress)
 
 
@@ -3038,37 +3217,70 @@ def _on_translate_mode_changed(ev):
 translator_win.On.TranslateModeCombo.CurrentIndexChanged = _on_translate_mode_changed
 def _on_translate_tree_item_clicked(ev):
     translation_state["selected_indices"] = _selected_row_indices()
+    _update_editor_from_selection()
 translator_win.On.TranslateTree.ItemClicked = _on_translate_tree_item_clicked
+
+def _on_translate_editor_text_changed(ev):
+    if _translate_editor_programmatic:
+        return
+    rows = translation_state.get("rows") or []
+    indices = translation_state.get("selected_indices") or []
+    if not indices:
+        return
+    idx = indices[-1]
+    if idx is None or idx < 0 or idx >= len(rows):
+        return
+    editor = items.get("TranslateSubtitleEditor")
+    if not editor:
+        return
+    try:
+        text = editor.PlainText
+    except Exception:
+        try:
+            text = editor.Text
+        except Exception:
+            text = ""
+    text = text or ""
+    rows[idx]["target"] = text
+    rows[idx]["error"] = ""
+    if rows[idx].get("status") not in ("translating",):
+        rows[idx]["status"] = "success" if text.strip() else "pending"
+    update_translation_tree_row(idx)
+    clear_translation_failure(idx)
+    refresh_translation_controls()
+translator_win.On.TranslateSubtitleEditor.TextChanged = _on_translate_editor_text_changed
 
 
 def _initial_load_translation_rows():
     def _progress(current, total):
+        # Keep loading window to a single line; just update count for the template.
         if total:
-            msg = f"Loading subtitles... {current}/{total}\n加载字幕... {current}/{total}"
+            _set_loading_message("", count=total)
         else:
-            msg = "Scanning active subtitle track...\n正在检测激活的字幕轨道..."
-        _set_loading_message(msg)
+            _set_loading_message("", count=None)
+        # Show basic context in main UI.
         set_translate_status(
             f"Loading subtitles... {current}/{total}" if total else "Scanning active subtitle track...",
             f"加载字幕... {current}/{total}" if total else "正在检测激活的字幕轨道..."
         )
 
-    _set_loading_message("Loading subtitles...\n加载字幕...")
-    set_translate_status("Loading subtitles...", "正在加载字幕...")
+    _set_loading_stage("load")
+    set_translate_status("Preparing to load subtitles...", "正在准备加载字幕...")
     count = 0
     track = "-"
     success = load_timeline_subtitles(show_feedback=False, progress_callback=_progress)
     if success:
         count = len(translation_state.get("rows") or [])
         track = translation_state.get("active_track_index") or "-"
-        msg = f"Loaded {count} subtitles from track #{track}.\n已从轨道 #{track} 加载 {count} 条字幕。"
+        display_msg, en_msg, cn_msg = _format_loaded_message(count, track)
+        msg = display_msg
     else:
         msg = "No subtitles found on active subtitle track.\n未在激活字幕轨道发现字幕。"
-    _set_loading_message(msg)
-    set_translate_status(
-        f"Loaded {count} subtitles from track #{track}." if success else "No subtitles found on active subtitle track.",
-        f"已从轨道 #{track} 加载 {count} 条字幕。" if success else "未在激活字幕轨道发现字幕。"
-    )
+        en_msg = "No subtitles found on active subtitle track."
+        cn_msg = "未在激活字幕轨道发现字幕。"
+    _set_loading_stage("done")
+    _set_loading_message(msg, count=None)
+    set_translate_status(en_msg, cn_msg)
 # =============== 8  关闭窗口保存设置 ===============
 def on_close(ev):
     import shutil
