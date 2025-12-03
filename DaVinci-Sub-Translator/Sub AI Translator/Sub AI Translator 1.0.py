@@ -1,6 +1,6 @@
 # ================= 用户配置 =================
 SCRIPT_NAME    = "Sub AI Translator"
-SCRIPT_VERSION = " 1.7"
+SCRIPT_VERSION = " 1.8"
 SCRIPT_AUTHOR  = "HEIBA"
 print(f"{SCRIPT_NAME} | {SCRIPT_VERSION.strip()} | {SCRIPT_AUTHOR}")
 SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
@@ -2970,8 +2970,10 @@ def get_provider_and_target():
     )
 
     if provider_name == OPENAI_FORMAT_PROVIDER:
-        if not (openai_items["OpenAIFormatBaseURL"].Text and openai_items["OpenAIFormatApiKey"].Text):
+        # 必填校验：未填写 BaseURL 或 Key 时直接阻断翻译
+        if not (openai_items["OpenAIFormatBaseURL"].Text.strip() and openai_items["OpenAIFormatApiKey"].Text.strip()):
             show_warning_message(STATUS_MESSAGES.enter_api_key)
+            raise ValueError("OpenAI Format missing base url or api key")
         
         model = openai_items["OpenAIFormatModelName"].PlaceholderText.strip()
         base_url   = openai_items["OpenAIFormatBaseURL"].Text.strip() or OPENAI_FORMAT_BASE_URL
@@ -3004,8 +3006,10 @@ def get_provider_and_target():
         return prov_manager.get(GOOGLE_PROVIDER), GOOGLE_LANG_CODE_MAP[target_name]
 
     if provider_name == DEEPL_PROVIDER:
+        # DeepL 缺少 Key 时阻断翻译
         if not deepL_items["DeepLApiKey"].Text.strip():
             show_warning_message(STATUS_MESSAGES.enter_api_key)
+            raise ValueError("DeepL missing api key")
         prov_manager.update_cfg(
             DEEPL_PROVIDER,
             api_key = deepL_items["DeepLApiKey"].Text.strip()
