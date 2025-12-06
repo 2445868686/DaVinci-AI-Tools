@@ -1,5 +1,5 @@
 local SCRIPT_NAME = "DaVinci Sub Editor"
-local SCRIPT_VERSION = "1.1.0-Free" -- 标记为免费版
+local SCRIPT_VERSION = "1.1.1-Free" -- 标记为免费版
 local SCRIPT_AUTHOR = "HEIBA"
 print(string.format("%s | %s | %s", SCRIPT_NAME, SCRIPT_VERSION, SCRIPT_AUTHOR))
 local SCRIPT_KOFI_URL = "https://ko-fi.com/s/5e9dcdeae5"
@@ -165,7 +165,7 @@ App.State = {
     highlightedRows = {},
     updateInfo = nil,
     loadingLabel = nil,
-    autoFollow = true,
+    autoFollow = false,
     lastFollowIndex = nil,
     manualJumpFrame = nil,
     manualJumpAt = nil,
@@ -198,6 +198,7 @@ local languageProgrammatic = false
 local unpack = table.unpack or unpack
 local configDir
 local settingsFile
+local show_upgrade_message
 
 local uiText = {
     cn = {
@@ -225,7 +226,7 @@ local uiText = {
         translate_trans_button = "开始翻译",
         translate_update_button = "译文导入时间线",
         translate_selected_button = "翻译选中行",
-        auto_follow_check = "跟随播放头",
+        auto_follow_check = "字幕跟随播放头",
         translate_retry_failed_button = "重试失败字幕",
         translate_editor_placeholder = "在此编辑译文内容",
         openai_config_label = "OpenAI Format",
@@ -271,6 +272,7 @@ local uiText = {
         upgrade_language = "免费版仅支持翻译为 中文（普通话） 和 English\n\n请升级至完整版",
         upgrade_concurrency = "免费版仅支持 低速 模式\n\n请升级至完整版以使用高速模式",
         upgrade_config = "配置功能为完整版提供\n\n请升级至完整版",
+        upgrade_auto_follow = "字幕跟随播放头为完整版功能\n\n请升级后使用",
     },
     en = {
         find_next_button = "Next",
@@ -297,7 +299,7 @@ local uiText = {
         translate_trans_button = "Translate",
         translate_update_button = "Import Translation to Timeline",
         translate_selected_button = "Translate Selected",
-        auto_follow_check = "Follow Playhead",
+        auto_follow_check = "Subtitles Follow Playhead",
         translate_retry_failed_button = "Retry Failed",
         translate_editor_placeholder = "Edit translation here",
         openai_config_label = "OpenAI Format",
@@ -343,6 +345,7 @@ local uiText = {
         upgrade_language = "The free version only supports translation to '中文（普通话）' and 'English'. \n\nPlease upgrade to the full version.",
         upgrade_concurrency = "The free version only supports 'Low' speed mode.\n\nPlease upgrade to the full version.",
         upgrade_config = "Configuration is a full version feature. \n\nPlease upgrade to the full version.",
+        upgrade_auto_follow = "Subtitles Follow Playhead is available in the full version only.\n\nPlease upgrade to use it.",
     }
 }
 
@@ -2156,7 +2159,11 @@ end
 if it.AutoFollowCheck then
     it.AutoFollowCheck.Checked = state.autoFollow and true or false
     function win.On.AutoFollowCheck.Clicked(ev)
-        state.autoFollow = it.AutoFollowCheck.Checked == true
+        if it.AutoFollowCheck.Checked then
+            show_upgrade_message("upgrade_auto_follow")
+        end
+        state.autoFollow = false
+        it.AutoFollowCheck.Checked = false
         state.lastFollowIndex = nil
         state.manualJumpFrame = nil
         state.manualJumpAt = nil
@@ -2273,7 +2280,7 @@ local function show_dynamic_message(en_text, zh_text, en_title, zh_title)
 end
 
 -- 新增：显示升级提示的辅助函数
-local function show_upgrade_message(reasonKey)
+function show_upgrade_message(reasonKey)
     local en_title = UI.uiString("upgrade_title")
     local cn_title = UI.uiString("upgrade_title")
     
@@ -2293,6 +2300,9 @@ local function show_upgrade_message(reasonKey)
     elseif reasonKey == "upgrade_config" then
         en_text = UI.uiString("upgrade_config")
         cn_text = UI.uiString("upgrade_config")
+    elseif reasonKey == "upgrade_auto_follow" then
+        en_text = UI.uiString("upgrade_auto_follow")
+        cn_text = UI.uiString("upgrade_auto_follow")
     end
     
     show_dynamic_message(en_text, cn_text, en_title, cn_title)
