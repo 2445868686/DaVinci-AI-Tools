@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DaVinci Resolve Image AI 安装与使用指南 / EN</title>
+  <style>
+    body { margin:0; padding:0; font-family:"Segoe UI",Tahoma,Geneva,Verdana,sans-serif; background:#f0f2f5; color:#555; }
+    .sidebar { position:fixed; top:0; left:0; width:250px; height:100%; background:#fff; border-right:1px solid #e0e0e0; padding:20px; overflow-y:auto; box-shadow:2px 0 5px rgba(0,0,0,0.1); }
+    .sidebar h2 { font-size:1.8em; margin:0 0 20px; color:#333; text-align:center; border-bottom:1px solid #e0e0e0; padding-bottom:10px; }
+    .sidebar ul { list-style:none; padding:0; }
+    .sidebar li { margin:10px 0; font-size:0.95em; }
+    .sidebar li ul { margin-top:5px; margin-left:15px; }
+    .sidebar a { text-decoration:none; color:#007bff; transition:color 0.3s; }
+    .sidebar a:hover { color:#0056b3; }
+    .content { margin-left:270px; padding:40px; }
+    .container { background:#fff; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.1); padding:30px; margin-bottom:40px; }
+    header { text-align:center; padding-bottom:20px; border-bottom:1px solid #e0e0e0; margin-bottom:30px; }
+    header h1 { margin:0; font-size:2em; color:#333; }
+    h2 { color:#007bff; margin-top:30px; border-left:4px solid #007bff; padding-left:10px; }
+    h3 { color:#333; margin-top:20px; }
+    p, ul { line-height:1.8; margin:15px 0; }
+    ul { padding-left:20px; }
+    code { background:#f9f9f9; padding:4px 8px; border-radius:4px; font-family:Consolas,Monaco,"Courier New",monospace; }
+    footer { text-align:center; font-size:0.9em; color:#888; margin-top:40px; border-top:1px solid #e0e0e0; padding-top:20px; }
+    @media (max-width:768px){ .sidebar{ position:relative; width:100%; height:auto; box-shadow:none; border-right:none; border-bottom:1px solid #e0e0e0;} .content{ margin-left:0; padding:20px;} }
+    .lang { display:none; } .lang.active { display:block; }
+    .lang-switcher { position:fixed; top:15px; right:20px; z-index:1000; }
+    .lang-switcher button { cursor:pointer; border:1px solid #007bff; background:#fff; color:#007bff; font-size:0.9em; padding:6px 12px; border-radius:20px; transition:all 0.3s; margin-left:6px; }
+    .lang-switcher button.active, .lang-switcher button:hover { background:#007bff; color:#fff; }
+  </style>
+</head>
+<body>
+  <div class="lang-switcher">
+    <button id="btn-zh" class="active">中文</button>
+    <button id="btn-en">English</button>
+  </div>
+
+  <!-- Chinese -->
+  <div id="lang-zh" class="lang active">
+    <nav class="sidebar">
+      <h2>目录</h2>
+      <ul>
+        <li><strong>安装指南</strong>
+          <ul>
+            <li><a href="#install-step-1">步骤 1：复制脚本文件</a></li>
+            <li><a href="#install-step-2">步骤 2：在 Resolve 中启用</a></li>
+          </ul>
+        </li>
+        <li><strong>使用指南</strong>
+          <ul>
+            <li><a href="#overview-zh">1. 功能简介</a></li>
+            <li><a href="#interface-zh">2. 界面结构</a></li>
+            <li><a href="#generate-zh">3. 文生图 / 图生图</a></li>
+            <li><a href="#edit-zh">4. 图片编辑</a></li>
+            <li><a href="#settings-zh">5. 设置</a></li>
+            <li><a href="#faq-zh">6. 常见问题</a></li>
+          </ul>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="content">
+      <div class="container" id="install-guide-zh">
+        <header><h1>DaVinci Resolve Image AI 安装指南</h1></header>
+        <section id="install-step-1">
+          <h2>步骤 1：复制脚本文件</h2>
+          <p>将 <code>DaVinci Image AI</code> 文件夹放入 Resolve 脚本目录。如果本文件与脚本已在同一目录，可跳过。</p>
+          <h3>Windows 路径</h3>
+          <p><code>C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></p>
+          <h3>macOS 路径</h3>
+          <p><code>~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility</code></p>
+        </section>
+        <section id="install-step-2">
+          <h2>步骤 2：在 Resolve 中启用</h2>
+          <ul>
+            <li>启动或切回 DaVinci Resolve。</li>
+            <li>依次选择 <code>工作区</code> → <code>脚本</code> → <strong>DaVinci Image AI</strong>。</li>
+          </ul>
+        </section>
+      </div>
+
+      <div class="container" id="usage-guide-zh">
+        <header><h1>DaVinci Resolve Image AI 使用指南</h1></header>
+        <section id="overview-zh">
+          <h2>功能简介</h2>
+          <p>集成 Google Gemini 与 Seed Dream，支持文生图、图生图、从时间线提取帧后编辑，结果可预览、保存并加入媒体池。中英双语 UI，配置好 API Key 即可使用。</p>
+        </section>
+        <section id="interface-zh">
+          <h2>界面结构</h2>
+          <ul>
+            <li><strong>图片生成</strong>：服务商、画幅/清晰度、提示词、生成按钮、结果预览。</li>
+            <li><strong>图片编辑</strong>：原图/结果预览、提示词、服务商配置、生成按钮、状态栏。</li>
+            <li><strong>设置</strong>：保存路径、Google/Seed Dream 配置、语言切换。</li>
+            <li><strong>状态栏</strong>：显示校验、请求、保存等提示。</li>
+          </ul>
+        </section>
+        <section id="generate-zh">
+          <h2>文生图 / 图生图</h2>
+          <ul>
+            <li>在“图片生成”页输入提示词，选择服务商（Google Gemini/Pro 或 Seed Dream），画幅、清晰度后点击 <code>生成</code>。</li>
+            <li>生成结果会显示在预览区并保存到设置的目录，可点击 <code>添加到媒体池</code> 导入媒体池。</li>
+            <li>图生图：先上传图片或 <code>提取当前帧</code>，再输入提示词生成新图。</li>
+          </ul>
+        </section>
+        <section id="edit-zh">
+          <h2>图片编辑</h2>
+          <ul>
+            <li>在“图片编辑”页点击 <code>选择图片</code> 或 <code>提取当前帧</code> 选取原图。</li>
+            <li>描述想要的修改，选择服务商后点击 <code>开始生成</code>，编辑结果会显示在预览区。</li>
+            <li>可用“继续编辑”将结果设为新原图迭代调整；保存路径按设置页为准。</li>
+          </ul>
+        </section>
+        <section id="settings-zh">
+          <h2>设置</h2>
+          <ul>
+            <li><strong>保存路径</strong>：指定生成/编辑后图片的存放位置。</li>
+            <li><strong>Google 配置</strong>：Base URL（默认 <code>https://generativelanguage.googleapis.com</code>）与 API Key。</li>
+            <li><strong>Seed Dream 配置</strong>：服务地址、API Key、默认模型。</li>
+            <li><strong>语言</strong>：切换中/英文界面。</li>
+          </ul>
+        </section>
+        <section id="faq-zh">
+          <h2>常见问题</h2>
+          <h3>预览有图但提示“请先选择一张图片”？</h3>
+          <p>生成按钮检查的是源文件路径，若原文件被清除/删除需重新上传或提取帧。</p>
+          <h3>提取时间线帧尺寸过大？</h3>
+          <p>脚本提取后会尝试压缩预览，仍嫌大可在导出后再下采样，或降低时间线分辨率后再提取。</p>
+          <h3>API 报错或无响应？</h3>
+          <p>检查 Base URL、API Key 及网络/代理配置，稍后重试。</p>
+        </section>
+      </div>
+      <footer>&copy; 2025 HB. All Rights Reserved.</footer>
+    </div>
+  </div>
+
+  <!-- English -->
+  <div id="lang-en" class="lang">
+    <nav class="sidebar">
+      <h2>Contents</h2>
+      <ul>
+        <li><strong>Installation Guide</strong>
+          <ul>
+            <li><a href="#install-step-1-en">Step 1: Copy the Script</a></li>
+            <li><a href="#install-step-2-en">Step 2: Enable inside Resolve</a></li>
+          </ul>
+        </li>
+        <li><strong>Usage Guide</strong>
+          <ul>
+            <li><a href="#overview-en">1. Overview</a></li>
+            <li><a href="#interface-en">2. Interface Layout</a></li>
+            <li><a href="#generate-en">3. Text-to-Image / Image-to-Image</a></li>
+            <li><a href="#edit-en">4. Image Edit</a></li>
+            <li><a href="#settings-en">5. Settings</a></li>
+            <li><a href="#faq-en">6. FAQ</a></li>
+          </ul>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="content">
+      <div class="container" id="install-guide-en">
+        <header><h1>DaVinci Resolve Image AI Installation Guide</h1></header>
+        <section id="install-step-1-en">
+          <h2>Step 1: Copy the Script</h2>
+          <p>Place the <code>DaVinci Image AI</code> folder in the Resolve script directory. If this guide sits beside the script already, skip the copy.</p>
+          <h3>Windows Path</h3>
+          <p><code>C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility</code></p>
+          <h3>macOS Path</h3>
+          <p><code>~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility</code></p>
+        </section>
+        <section id="install-step-2-en">
+          <h2>Step 2: Enable inside Resolve</h2>
+          <ul>
+            <li>Launch DaVinci Resolve.</li>
+            <li>Go to <code>Workspace</code> → <code>Scripts</code> → <strong>DaVinci Image AI</strong>.</li>
+          </ul>
+        </section>
+      </div>
+
+      <div class="container" id="usage-guide-en">
+        <header><h1>DaVinci Resolve Image AI Usage Guide</h1></header>
+        <section id="overview-en">
+          <h2>Overview</h2>
+          <p>Integrates Google Gemini and Seed Dream for text-to-image and image-to-image workflows. Generate from prompts, edit existing images (including timeline frames), preview results, save, and add to the media pool. Chinese/English UI included—configure API keys and go.</p>
+        </section>
+        <section id="interface-en">
+          <h2>Interface Layout</h2>
+          <ul>
+            <li><strong>Generate</strong>: Provider selection, aspect/quality, prompt input, generate button, result preview.</li>
+            <li><strong>Edit</strong>: Original/result previews, prompt input, provider config, generate button, status line.</li>
+            <li><strong>Settings</strong>: Save path, Google/Seed Dream configs, language toggle.</li>
+            <li><strong>Status</strong>: Shows validation, request, and save messages.</li>
+          </ul>
+        </section>
+        <section id="generate-en">
+          <h2>Text-to-Image / Image-to-Image</h2>
+          <ul>
+            <li>On the “Generate” tab, enter a prompt, choose provider (Google Gemini/Pro or Seed Dream), aspect, and quality, then click <code>Generate</code>.</li>
+            <li>Results preview in-place and save to your configured folder; use <code>Add to Media Pool</code> to import to the pool.</li>
+            <li>For image-to-image, upload an image or <code>Grab Current Frame</code>, then generate with your prompt.</li>
+          </ul>
+        </section>
+        <section id="edit-en">
+          <h2>Image Edit</h2>
+          <ul>
+            <li>On “Edit”, click <code>Pick Image</code> or <code>Grab Current Frame</code> to set a source.</li>
+            <li>Describe the change, choose provider, and click <code>Generate</code>; the edited image appears in the result preview.</li>
+            <li>“Continue Editing” sets the result as the new source for iterative refinement; saved files follow your configured path.</li>
+          </ul>
+        </section>
+        <section id="settings-en">
+          <h2>Settings</h2>
+          <ul>
+            <li><strong>Save Path</strong>: Where generated/edited images are stored.</li>
+            <li><strong>Google Config</strong>: Base URL (default <code>https://generativelanguage.googleapis.com</code>) and API Key.</li>
+            <li><strong>Seed Dream Config</strong>: Service URL, API Key, and default model.</li>
+            <li><strong>Language</strong>: Switch UI between Chinese and English.</li>
+          </ul>
+        </section>
+        <section id="faq-en">
+          <h2>FAQ</h2>
+          <h3>Preview shows an image but “Please pick an image first” appears.</h3>
+          <p>The button checks the source path; if the file was cleared/deleted, re-upload or grab the frame again.</p>
+          <h3>Timeline frame export is too large.</h3>
+          <p>The script compresses the frame for preview (macOS uses sips). For smaller files, downscale further after export or lower timeline resolution before grabbing.</p>
+          <h3>API errors or no response.</h3>
+          <p>Verify Base URL and API Key, check proxy/network settings, and retry.</p>
+        </section>
+      </div>
+      <footer>&copy; 2025 HB. All Rights Reserved.</footer>
+    </div>
+  </div>
+
+  <script>
+    const btnZh = document.getElementById("btn-zh");
+    const btnEn = document.getElementById("btn-en");
+    const langZh = document.getElementById("lang-zh");
+    const langEn = document.getElementById("lang-en");
+    btnZh.addEventListener("click", () => {
+      btnZh.classList.add("active"); btnEn.classList.remove("active");
+      langZh.classList.add("active"); langEn.classList.remove("active");
+      document.documentElement.lang = "zh-CN";
+    });
+    btnEn.addEventListener("click", () => {
+      btnEn.classList.add("active"); btnZh.classList.remove("active");
+      langEn.classList.add("active"); langZh.classList.remove("active");
+      document.documentElement.lang = "en";
+    });
+  </script>
+</body>
+</html>
