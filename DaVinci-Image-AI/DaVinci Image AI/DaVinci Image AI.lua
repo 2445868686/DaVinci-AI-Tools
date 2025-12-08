@@ -17,7 +17,7 @@ do
     local Config = {}
 
     Config.SCRIPT_NAME    = "DaVinci Image AI"
-    Config.SCRIPT_VERSION = "1.0.0"
+    Config.SCRIPT_VERSION = "1.0.1"
     Config.SCRIPT_AUTHOR  = "HEIBA"
     print(string.format("%s | %s | %s", Config.SCRIPT_NAME, Config.SCRIPT_VERSION, Config.SCRIPT_AUTHOR))
 
@@ -50,6 +50,14 @@ do
         provider_choice = "google",
         generator_provider_choice = "google",
         google = {
+            base_url = "",
+            api_key = "",
+            model = Config.GOOGLE_DEFAULT_MODEL,
+            aspect_ratio = "1:1",
+            resolution = "1K"
+        },
+        -- 文生图（生成页）专用配置，避免与编辑页互相覆盖
+        google_gen = {
             base_url = "",
             api_key = "",
             model = Config.GOOGLE_DEFAULT_MODEL,
@@ -318,6 +326,27 @@ do
         return true
     end
 
+    -- 调试文件清理（允许传入 table 或字符串）
+    function Utils.cleanupDebugPaths(paths)
+        if not paths then return end
+        if type(paths) == "string" then
+            if paths ~= "" and Utils.fileExists(paths) then
+                os.remove(paths)
+            end
+            return
+        end
+        if type(paths) ~= "table" then return end
+        for _, p in pairs(paths) do
+            if type(p) == "string" then
+                if p ~= "" and Utils.fileExists(p) then
+                    os.remove(p)
+                end
+            elseif type(p) == "table" then
+                Utils.cleanupDebugPaths(p)
+            end
+        end
+    end
+
     function Utils.makeTempPath(ext)
         local dir = Utils.getTempDir()
         Utils.ensureDir(dir)
@@ -480,6 +509,7 @@ do
         end
 
         ensure_subtable("google", defaults.google)
+        ensure_subtable("google_gen", defaults.google_gen or defaults.google)
         ensure_subtable("seeddream", defaults.seeddream)
 
         if type(config.google_pro) == "table" then
@@ -496,6 +526,23 @@ do
         end
         if config.openai_api_key and (config.google.api_key == "" or config.google.api_key == nil) then
             config.google.api_key = config.openai_api_key
+        end
+
+        -- 将已有 google 配置同步到 google_gen（仅填空位，避免覆盖用户已分开的配置）
+        if config.google and config.google_gen then
+            local function copy_if_empty(key)
+                local defv = (defaults.google_gen or defaults.google or {})[key]
+                local gv = config.google_gen[key]
+                local src = config.google[key]
+                if (gv == nil or gv == "" or gv == defv) and src ~= nil and src ~= "" then
+                    config.google_gen[key] = src
+                end
+            end
+            copy_if_empty("base_url")
+            copy_if_empty("api_key")
+            copy_if_empty("model")
+            copy_if_empty("aspect_ratio")
+            copy_if_empty("resolution")
         end
         if config.openai_model and config.google.model == defaults.google.model then
             config.google.model = config.openai_model
@@ -805,10 +852,7 @@ do
         if not hasAccept then
             table.insert(headerParts, '-H "Accept: application/json"')
         end
-        if not hasExpect then
-            table.insert(headerParts, '-H "Expect:"')
-        end
-        table.insert(headerParts, '-H "Connection: close"')
+        --table.insert(headerParts, '-H "Connection: close"')
 
         local maxTime = tonumber(timeout) or 120
         Utils.debugSection("HTTP GET START")
@@ -837,6 +881,8 @@ do
             os.remove(statusPath)
             return false, "tmp_err_failed:" .. tostring(errErr)
         end
+
+        local debugPaths = {out = bodyPath, status = statusPath, err = errPath}
 
         local sep = Utils.SEP
         local headerStr = table.concat(headerParts, " ")
@@ -878,17 +924,14 @@ do
             sf:close()
             statusCode = tonumber((statusData or ""):match("(%d%d%d)"))
         end
-        os.remove(statusPath)
 
         local of = io.open(bodyPath, "rb")
         local body = of and of:read("*a") or ""
         if of then of:close() end
-        os.remove(bodyPath)
 
         local errText = ""
         local ef = io.open(errPath, "rb")
         if ef then errText = ef:read("*a") or ""; ef:close() end
-        os.remove(errPath)
 
         if not ok then
             if Config and Config.LOG_HTTP_RESPONSE then
@@ -898,13 +941,13 @@ do
                     print(Utils.truncate(errText, 800))
                 end
             end
-            return false, "curl_failed", statusCode
+            return false, "curl_failed", statusCode, debugPaths
         end
         if not body or body == "" then
-            return false, "empty_response", statusCode
+            return false, "empty_response", statusCode, debugPaths
         end
         if statusCode and (statusCode < 200 or statusCode >= 300) then
-            return false, body, statusCode
+            return false, body, statusCode, debugPaths
         end
         if Config and Config.LOG_HTTP_RESPONSE then
             Utils.debugSection("HTTP RESPONSE START")
@@ -912,7 +955,7 @@ do
             Utils.debugKV("Preview", Utils.truncate(body, 200))
             Utils.debugSectionEnd()
         end
-        return true, body, statusCode or 200
+        return true, body, statusCode or 200, debugPaths
     end
 
     function Utils.httpPostJson(url, payload, headers, timeout)
@@ -935,7 +978,10 @@ do
         local headerParts = {}
         local hasContentType = false
         local hasAccept = false
-        local hasExpect = false
+        
+        -- User-Agent 伪装
+        local userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
         if headers then
             for k, v in pairs(headers) do
                 local name = tostring(k or "")
@@ -944,7 +990,6 @@ do
                 local lower = name:lower()
                 if lower == "content-type" then hasContentType = true end
                 if lower == "accept" then hasAccept = true end
-                if lower == "expect" then hasExpect = true end
             end
         end
         if not hasContentType then
@@ -953,151 +998,135 @@ do
         if not hasAccept then
             table.insert(headerParts, '-H "Accept: application/json"')
         end
-        if not hasExpect then
-            table.insert(headerParts, '-H "Expect:"')
-        end
-        
-        -- 【关键修改 1】强制在 Header 中告诉服务器：传完就挂断，别保持连接
-        table.insert(headerParts, '-H "Connection: close"')
-
+        -- 移除 Expect 头，防止大 payload 发送时卡顿
+        table.insert(headerParts, '-H "Expect:"')
+   
+        -- Mac/Linux 默认不再强制 close，减少长链路被 RST 的概率
+   
         local maxTime = tonumber(timeout) or 120
         Utils.debugSection("HTTP REQUEST START")
         Utils.debugKV("URL", url)
-        Utils.debugKV("Timeout", string.format("%ss", maxTime))
-        Utils.debugKV("Payload Bytes", tostring(#bodyStr))
-        if headers then
-            print("Headers:")
-            for k, v in pairs(headers) do
-                print(string.format("  - %s: %s", tostring(k), Utils.maskHeaderValue(k, v)))
-            end
-        end
-        Utils.debugKV("Payload Preview", Utils.truncate(bodyStr, 180))
-        Utils.debugSectionEnd()
+        
         local tempPayload, err1 = Utils.makeTempPath("json")
-        if not tempPayload then
-            return false, "tmp_payload_failed:" .. tostring(err1)
-        end
-        local pf, errOpen = io.open(tempPayload, "wb")
-        if not pf then
-            return false, "payload_write_failed:" .. tostring(errOpen)
-        end
+        if not tempPayload then return false, "tmp_payload_failed" end
+        
+        local pf = io.open(tempPayload, "wb")
+        if not pf then return false, "payload_write_failed" end
         pf:write(bodyStr)
         pf:close()
 
         local sep = Utils.SEP
         local headerStr = table.concat(headerParts, " ")
         local bodyPath, err2 = Utils.makeTempPath("out")
-        if not bodyPath then
-            os.remove(tempPayload)
-            return false, "tmp_output_failed:" .. tostring(err2)
-        end
         local statusPath, err3 = Utils.makeTempPath("status")
-        if not statusPath then
-            os.remove(tempPayload)
-            os.remove(bodyPath)
-            return false, "tmp_status_failed:" .. tostring(err3)
-        end
         local errPath, err4 = Utils.makeTempPath("err")
-        if not errPath then
-            os.remove(tempPayload)
-            os.remove(bodyPath)
-            os.remove(statusPath)
-            return false, "tmp_err_failed:" .. tostring(err4)
-        end
+        local debugPaths = {
+            payload = tempPayload,
+            out = bodyPath,
+            status = statusPath,
+            err = errPath
+        }
+
+        -- === Windows 配置 (保持稳定版) ===
+        -- Windows 需要 -N 来防止假死，且 cmd 处理重定向较好
+        local winFlags = string.format('--http1.1 --no-keepalive -sS -L -N -4 -A "%s"', userAgent)
         
+        -- === Mac/Linux 最终修正版 ===
+        -- 1. --http1.1 : 强制 HTTP/1.1 保证大文件流式传输稳定
+        -- 2. --keepalive-time 5 : 必须的高频心跳，防止路由器切断
+        -- 3. -N : 禁用缓冲，防止数据积压
+        -- 4. -H "Connection: close" : (通过 headerStr 添加) 告诉服务器发完就挂断，不要 reset
+        local macFlags = string.format(
+        '--http1.1 -sS -L -g ' ..
+        '--connect-timeout 20 ' ..
+        '--keepalive-time 5 ' ..    -- 保持心跳
+        --'-N ' ..                    -- 保持无缓冲
+        '-4 ' ..
+        '--no-sessionid ' ..
+        '--compressed ' ..
+        '-A "%s"', userAgent
+        )
+
+
         local curlCommand
-        -- 【关键修改 2】添加 --http1.1 和 --no-keepalive 标志
-        -- 这能解决绝大多数 exit=56 和 卡死不退出的问题
-        local commonFlags = '--http1.1 --no-keepalive -sS -L'
-
-        if sep == "\\" then
-            -- Windows
-            curlCommand = string.format(
-                'curl -x "http://127.0.0.1:10663" %s -m %d -X POST %s --data-binary "@%s" -o "%s" -w "%%%%{http_code}" "%s"',
-                commonFlags,
-                maxTime,
-                headerStr,
-                tempPayload,
-                bodyPath,
-                url
-            )
-        else
-            -- Mac/Linux
-            curlCommand = string.format(
-                'curl -x "http://127.0.0.1:10663" %s -m %d -X POST %s --data-binary @%q -o %q -w "%%%%{http_code}" %q',
-                commonFlags,
-                maxTime,
-                headerStr,
-                tempPayload,
-                bodyPath,
-                url
-            )
-        end
-
         local redirected
+
         if sep == "\\" then
+            -- [Windows 逻辑]
+            curlCommand = string.format(
+                'curl %s -m %d -X POST %s --data-binary "@%s" -o "%s" -w "%%%%{http_code}" "%s"',
+                winFlags, maxTime, headerStr, tempPayload, bodyPath, url
+            )
             redirected = string.format('%s > "%s" 2>"%s"', curlCommand, statusPath, errPath)
         else
-            redirected = string.format('( %s ) > %q 2>%q', curlCommand, statusPath, errPath)
+            -- [Mac/Linux 逻辑 - 关键修改]
+            -- 1. URL 用单引号
+            -- 2. 错误日志直接由 curl 写入 (--stderr %q)
+            -- 3. 只有状态码 (-w) 输出到 stdout 并重定向到 statusPath
+            local safeUrl = url:gsub("'", "'\\''") 
+            curlCommand = string.format(
+                'curl %s -m %d -X POST %s --data-binary @%q -o %q --stderr %q -w "%%{http_code} start=%%{time_starttransfer} total=%%{time_total} size=%%{size_download}\n" \'%s\'',
+                macFlags,
+                maxTime,
+                headerStr,
+                tempPayload,
+                bodyPath,
+                errPath, -- curl 直接写错误日志
+                safeUrl
+            )
+            -- 这里的重定向只负责极小的状态码，不会阻塞
+            redirected = string.format('%s > %q', curlCommand, statusPath)
         end
 
         -- 执行命令
         local ok, exitCode = Utils.runShellCommand(redirected)
 
-        -- 读取 HTTP 状态码
+        -- 读取状态码
         local statusCode
         local sf = io.open(statusPath, "rb")
         if sf then
             local statusData = sf:read("*a") or ""
             sf:close()
+            if Config and Config.LOG_HTTP_RESPONSE then
+                print("[cURL stats] " .. (statusData:gsub("%s+$","")))
+            end
             statusCode = tonumber((statusData or ""):match("(%d%d%d)"))
         end
-        os.remove(statusPath)
 
-        -- 读取响应体
+        -- 读取结果
         local of = io.open(bodyPath, "rb")
         local body = of and of:read("*a") or ""
         if of then of:close() end
-        os.remove(bodyPath)
-        os.remove(tempPayload)
 
-        -- 读取并清理 stderr
+        -- 读取错误日志
         local errText = ""
         local ef = io.open(errPath, "rb")
         if ef then errText = ef:read("*a") or ""; ef:close() end
-        os.remove(errPath)
 
         if not ok then
-            if Config and Config.LOG_HTTP_RESPONSE then
-                print(string.format("[cURL] exit=%s", tostring(exitCode)))
-                if errText ~= "" then
-                    print("[cURL stderr]")
-                    print(Utils.truncate(errText, 800))
-                end
-            end
-            -- 如果虽然 curl 报错了，但是我们成功拿到了完整的 body (有时候 exit 56 会发生但文件是完整的)
-            -- 尝试抢救一下
+            print(string.format("[cURL] exit=%s", tostring(exitCode)))
+            if errText ~= "" then print("[cURL stderr] " .. Utils.truncate(errText, 800)) end
+            
+            -- 抢救逻辑：如果 curl 报错但 body 有数据
             if body and #body > 100 then
-                 print("[WARNING] curl 报错但检测到返回数据，尝试继续处理...")
-                 return true, body, statusCode or 200
+                 print("[WARNING] curl reported error but data received. Continuing.")
+                 return true, body, statusCode or 200, debugPaths
             end
-            return false, "curl_failed", statusCode
+            return false, "curl_failed", statusCode, debugPaths
         end
 
         if not body or body == "" then
-            return false, "empty_response", statusCode
+            -- 状态码 200 但无内容，说明写入磁盘失败
+            if statusCode == 200 then
+                 -- 尝试读取 stderr 看看有没有 Write error
+                 if errText:find("Failed to write") or errText:find("write error") then
+                     return false, "disk_write_failed", statusCode, debugPaths
+                 end
+                 return false, "empty_response_write_failed", statusCode, debugPaths
+            end
+            return false, "empty_response", statusCode, debugPaths
         end
-
-        if statusCode and (statusCode < 200 or statusCode >= 300) then
-            return false, body, statusCode
-        end
-        if Config and Config.LOG_HTTP_RESPONSE then
-            Utils.debugSection("HTTP RESPONSE START")
-            Utils.debugKV("Response Bytes", tostring(#body))
-            Utils.debugKV("Preview", Utils.truncate(body, 200))
-            Utils.debugSectionEnd()
-        end
-        return true, body, statusCode or 200
+        return true, body, statusCode or 200, debugPaths
     end
 
     local function system_decode_base64(payload, dest_path, expected_bytes)
@@ -1759,7 +1788,8 @@ do
             savePathInvalid = {cn = "保存位置不可用，请重新选择", en = "Save location unavailable, please choose another"},
             preparingImage = {cn = "正在准备图片...", en = "Preparing the image..."},
             readImageFail = {cn = "图片读取失败，请重新选择", en = "Couldn't read the image, please choose again"},
-            generating = {cn = "正在生成中，请稍候...", en = "Generating, please wait..."},
+            generating = {cn = "正在生成中，预计 3～5 分钟，请稍候...", en = "Generating (about 3–5 minutes), please wait..."},
+            downloadInterrupted = {cn = "下载中断，请重试", en = "Download interrupted, please retry"},
             parsing = {cn = "正在整理结果...", en = "Putting the results together..."},
             saving = {cn = "正在保存图片...", en = "Saving the image..."},
             saveFailed = {cn = "保存失败，请检查路径或空间", en = "Save failed, check the path or disk space"},
@@ -1796,6 +1826,7 @@ do
         end
     end
     ensure_provider_table(UI.config, "google", Config.DEFAULT_CONFIG.google)
+    ensure_provider_table(UI.config, "google_gen", Config.DEFAULT_CONFIG.google_gen or Config.DEFAULT_CONFIG.google)
     ensure_provider_table(UI.config, "seeddream", Config.DEFAULT_CONFIG.seeddream)
     UI.config.google_pro = nil
     if not UI.config.provider_choice or UI.config.provider_choice == "" then
@@ -1809,6 +1840,12 @@ do
     end
     if not UI.config.google.resolution or UI.config.google.resolution == "" then
         UI.config.google.resolution = Config.DEFAULT_CONFIG.google.resolution
+    end
+    if not UI.config.google_gen.aspect_ratio or UI.config.google_gen.aspect_ratio == "" then
+        UI.config.google_gen.aspect_ratio = (Config.DEFAULT_CONFIG.google_gen or Config.DEFAULT_CONFIG.google).aspect_ratio
+    end
+    if not UI.config.google_gen.resolution or UI.config.google_gen.resolution == "" then
+        UI.config.google_gen.resolution = (Config.DEFAULT_CONFIG.google_gen or Config.DEFAULT_CONFIG.google).resolution
     end
     if not UI.config.seeddream.aspect_ratio or UI.config.seeddream.aspect_ratio == "" then
         UI.config.seeddream.aspect_ratio = Config.DEFAULT_CONFIG.seeddream.aspect_ratio
@@ -1922,6 +1959,16 @@ do
     end
     UI.get_provider_aspect_id = get_provider_aspect_id
 
+    -- 生成页专用：使用独立的 google_gen 配置，避免与编辑页互相影响
+    local function get_generator_aspect_id(pid)
+        if pid == "google" or pid == "google_pro" then
+            return (UI.config.google_gen and UI.config.google_gen.aspect_ratio) or (Config.DEFAULT_CONFIG.google_gen or Config.DEFAULT_CONFIG.google).aspect_ratio
+        end
+        -- 生成页目前只支持 Google，其他返回默认
+        return (Config.DEFAULT_CONFIG.google_gen or Config.DEFAULT_CONFIG.google).aspect_ratio
+    end
+    UI.get_generator_aspect_id = get_generator_aspect_id
+
     local function set_provider_aspect_id(pid, rid)
         if pid == "seeddream" then
             UI.config.seeddream = UI.config.seeddream or {}
@@ -1933,6 +1980,14 @@ do
     end
     UI.set_provider_aspect_id = set_provider_aspect_id
 
+    local function set_generator_aspect_id(pid, rid)
+        if pid == "google" or pid == "google_pro" then
+            UI.config.google_gen = UI.config.google_gen or {}
+            UI.config.google_gen.aspect_ratio = rid
+        end
+    end
+    UI.set_generator_aspect_id = set_generator_aspect_id
+
     local function get_provider_resolution_id(pid)
         if pid == "google_pro" or pid == "google" then
             return (UI.config.google and UI.config.google.resolution) or Config.DEFAULT_CONFIG.google.resolution
@@ -1941,6 +1996,14 @@ do
     end
     UI.get_provider_resolution_id = get_provider_resolution_id
 
+    local function get_generator_resolution_id(pid)
+        if pid == "google_pro" or pid == "google" then
+            return (UI.config.google_gen and UI.config.google_gen.resolution) or (Config.DEFAULT_CONFIG.google_gen or Config.DEFAULT_CONFIG.google).resolution
+        end
+        return (Config.DEFAULT_CONFIG.google_gen or Config.DEFAULT_CONFIG.google).resolution
+    end
+    UI.get_generator_resolution_id = get_generator_resolution_id
+
     local function set_provider_resolution_id(pid, rid)
         if pid == "google_pro" or pid == "google" then
             UI.config.google = UI.config.google or {}
@@ -1948,6 +2011,14 @@ do
         end
     end
     UI.set_provider_resolution_id = set_provider_resolution_id
+
+    local function set_generator_resolution_id(pid, rid)
+        if pid == "google_pro" or pid == "google" then
+            UI.config.google_gen = UI.config.google_gen or {}
+            UI.config.google_gen.resolution = rid
+        end
+    end
+    UI.set_generator_resolution_id = set_generator_resolution_id
 
     -- 安全函数：获取配置值
     UI.getConfigValue = function(key)
@@ -2402,6 +2473,10 @@ do
             local apiKey = cfgItems.GoogleApiKey and Utils.trim(cfgItems.GoogleApiKey.Text or "") or ""
             UI.config.google.base_url = base
             UI.config.google.api_key = apiKey
+            -- 同步到生成页配置，避免两页用不同表导致缺少 API Key
+            UI.config.google_gen = UI.config.google_gen or {}
+            UI.config.google_gen.base_url = base
+            UI.config.google_gen.api_key = apiKey
             Utils.saveConfig(UI.config)
             print("[Google] 配置已更新")
             win:Hide()
@@ -2729,10 +2804,10 @@ function App:Run()
             kind = "google"
         }
         function provider:get_config()
-            return UI.config.google or {}
+            return UI.config.google_gen or UI.config.google or {}
         end
         function provider:get_defaults()
-            return Config.DEFAULT_CONFIG.google
+            return Config.DEFAULT_CONFIG.google_gen or Config.DEFAULT_CONFIG.google
         end
         function provider:resolution_options()
             return isPro and UI.resolutionOptionsPro or UI.resolutionOptionsFlash
@@ -2957,7 +3032,7 @@ function App:Run()
             end
         end
         local pid = providerId or (UI.config.generator_provider_choice or "google")
-        local currentId = get_current_aspect_id(pid) or UI.aspectRatioOptions[1].id
+        local currentId = (UI.get_generator_aspect_id or get_provider_aspect_id)(pid) or UI.aspectRatioOptions[1].id
         local idx = (UI._aspect_ratio_index_by_id or aspect_ratio_index_by_id)(currentId)
         if items.GenAspectRatioCombo.CurrentIndex ~= nil then
             items.GenAspectRatioCombo.CurrentIndex = idx - 1
@@ -2978,7 +3053,7 @@ function App:Run()
                 items.GenResolutionCombo:AddItem(opt.label)
             end
         end
-        local resId = get_provider_resolution_id(pid)
+        local resId = (UI.get_generator_resolution_id or get_provider_resolution_id)(pid)
         local idx = (UI.resolution_index_by_id or resolution_index_by_id)(pid, resId)
         if items.GenResolutionCombo.CurrentIndex ~= nil then
             items.GenResolutionCombo.CurrentIndex = idx - 1
@@ -3020,7 +3095,7 @@ function App:Run()
                     UI.currentImagePath = UI.generatedImagePath
                     if items.OriginalImagePreview then
                         items.OriginalImagePreview.Icon = Core.ui.Icon{File = UI.generatedImagePath}
-                        items.OriginalImagePreview.IconSize = {300, 300}
+                        items.OriginalImagePreview.IconSize = {256, 256}
                     end
                 end
             end
@@ -3121,6 +3196,79 @@ function App:Run()
             return get_message("error", key) or get_message("status", "requestFailed")
         end
 
+        -- 公共：在长响应中定位 base64 片段并用系统命令直接解码到文件
+        local function locate_b64_segment(responseBody)
+            if type(responseBody) ~= "string" or #responseBody < 100 then
+                return nil, "too_short"
+            end
+            local b64Start, b64End = nil, nil
+            local ext = "png"
+            local _, keyEnd = responseBody:find('"data"%s*:%s*"')
+            if not keyEnd then _, keyEnd = responseBody:find('"bytes"%s*:%s*"') end
+            if not keyEnd then _, keyEnd = responseBody:find('"b64_json"%s*:%s*"') end
+            if keyEnd then
+                local valStart = keyEnd + 1
+                local valEnd = responseBody:find('"', valStart)
+                if not valEnd then
+                    return nil, "truncated"
+                end
+                b64Start, b64End = valStart, valEnd - 1
+                local contextStr = responseBody:sub(math.max(1, keyEnd - 300), keyEnd)
+                if contextStr:find("image/jpeg") then ext = "jpg" end
+                if contextStr:find("image/webp") then ext = "webp" end
+            else
+                return nil, "not_found"
+            end
+            return {start_idx = b64Start, end_idx = b64End, ext = ext}
+        end
+
+        local function decode_b64_segment_to_file(responseBody, segment, saveDir, prefix)
+            if not segment or not segment.start_idx or not segment.end_idx then
+                return nil, "invalid_segment"
+            end
+            local filename = string.format("%s%d_%04d.%s", prefix or "image_", os.time(), math.random(0, 9999), segment.ext or "png")
+            local destPath = Utils.joinPath(saveDir, filename)
+
+            local tempB64Path, tmperr = Utils.makeTempPath("b64")
+            if not tempB64Path then
+                return nil, "tmp_b64_failed:" .. tostring(tmperr)
+            end
+            local f = io.open(tempB64Path, "wb")
+            if not f then
+                return nil, "tmp_b64_open_failed"
+            end
+            f:write(responseBody:sub(segment.start_idx, segment.end_idx))
+            f:close()
+
+            local decodeCmd
+            if Utils.IS_WINDOWS then
+                decodeCmd = string.format('certutil -f -decode "%s" "%s" >nul 2>nul', tempB64Path, destPath)
+            else
+                decodeCmd = string.format('base64 -d -i "%s" -o "%s"', tempB64Path, destPath)
+            end
+
+            local runOk = Utils.runShellCommand(decodeCmd)
+            os.remove(tempB64Path)
+
+            if not runOk or not Utils.fileExists(destPath) or Utils.getFileSize(destPath) < 100 then
+                if Utils.fileExists(destPath) then os.remove(destPath) end
+                return nil, "decode_failed"
+            end
+            return destPath, Utils.getFileSize(destPath)
+        end
+
+        local function try_zero_copy_save(responseBody, saveDir, prefix)
+            local segment, reason = locate_b64_segment(responseBody)
+            if not segment then
+                return nil, reason
+            end
+            local destPath, res = decode_b64_segment_to_file(responseBody, segment, saveDir, prefix)
+            if not destPath then
+                return nil, res
+            end
+            return destPath, res
+        end
+
         local function resolve_save_dir()
             local saveDir = ""
             if items.SavePathEdit then
@@ -3205,9 +3353,9 @@ function App:Run()
             local opt = UI.aspectRatioOptions[idx + 1]
             if not opt then return end
             local providerChoice = UI.config.generator_provider_choice or "google"
-            local currentId = get_provider_aspect_id(providerChoice)
+            local currentId = (UI.get_generator_aspect_id or get_provider_aspect_id)(providerChoice)
             if currentId ~= opt.id then
-                set_provider_aspect_id(providerChoice, opt.id)
+                (UI.set_generator_aspect_id or set_provider_aspect_id)(providerChoice, opt.id)
                 Utils.saveConfig(UI.config)
             end
         end
@@ -3220,9 +3368,9 @@ function App:Run()
             local opts = resolution_options_by_provider(providerChoice)
             local opt = opts[idx + 1]
             if not opt then return end
-            local currentId = get_provider_resolution_id(providerChoice)
+            local currentId = (UI.get_generator_resolution_id or get_provider_resolution_id)(providerChoice)
             if currentId ~= opt.id then
-                set_provider_resolution_id(providerChoice, opt.id)
+                (UI.set_generator_resolution_id or set_provider_resolution_id)(providerChoice, opt.id)
                 Utils.saveConfig(UI.config)
             end
         end
@@ -3288,12 +3436,13 @@ function App:Run()
         -- [优化版] 图片提取函数
         -- 功能：支持从原始字符串直接提取大文件，避免 JSON 解析崩溃
         -- ============================================================
-        local function pick_google_image(parsed, rawBody)
-            
+        local function pick_google_image(parsed, rawBody, opts)
+            local skip_raw_scan = opts and opts.skip_raw_scan
+
             -----------------------------------------------------------
             -- 1. 快速通道：字符串正则提取 (针对大文件优化)
             -----------------------------------------------------------
-            if type(rawBody) == "string" and #rawBody > 1024 then
+            if not skip_raw_scan and type(rawBody) == "string" and #rawBody > 1024 then
                 -- A. 尝试提取 Base64 (Google 格式: "data": "...")
                 -- 使用非贪婪匹配查找 "data" 字段后的内容
                 local b64 = rawBody:match('"data"%s*:%s*"([^"]+)"')
@@ -3598,8 +3747,9 @@ function App:Run()
             print("Frame extracted from timeline")
         end
 
-        -- 文生图生成
+        -- 文生图生成 (GenGenerateBtn) - 零拷贝直写版 (解决大文件截断)
         UI.MainWin.On.GenGenerateBtn.Clicked = function()
+            -- 1. 准备保存路径
             local saveDir, saveErr = resolve_save_dir()
             if not saveDir then
                 updateStatus(saveErr or get_message("status", "savePathInvalid"))
@@ -3610,6 +3760,7 @@ function App:Run()
             local providerChoice = UI.config.generator_provider_choice or "google"
             local provider = Providers.by_id[providerChoice] or Providers.by_id["google"]
 
+            -- 2. 检查 API Key
             local function ensure_generator_api_key_available()
                 local cfg = provider and provider.get_config and provider:get_config() or (UI.config.google or {})
                 local apiKey = Utils.trim(cfg.api_key or "")
@@ -3625,6 +3776,7 @@ function App:Run()
                 return
             end
 
+            -- 3. 获取提示词
             local promptField = items.GenPromptTextEdit
             local prompt = ""
             if promptField then
@@ -3635,81 +3787,67 @@ function App:Run()
                 return
             end
 
+            -- 4. 构建请求
             local request, errMsg = provider:build_generation_request(prompt)
             if not request then
                 updateStatus(errMsg and provider_error(errMsg) or get_message("status", "requestFailed"))
                 return
             end
 
-            
-
             Utils.debugSection("TEXT2IMAGE PARAMS")
             Utils.debugKV("Prompt", Utils.truncate(prompt, 160))
-            Utils.debugKV("Provider", provider.label)
-            Utils.debugKV("Request URL", request.url)
             Utils.debugKV("Model", request.model)
-            Utils.debugKV("Aspect Ratio", request.aspectId or "-")
-            Utils.debugKV("Resolution", request.resId or "-")
             Utils.debugSectionEnd()
 
             updateStatus(get_message("status", "generating"))
-            local ok, responseBody, statusCode = Utils.httpPostJson(request.url, request.payload, request.headers, 600)
-            if not ok then
+            
+            -- 5. 发起网络请求
+            -- 注意：对于超大文件，我们尽量让 httpPostJson 只要下载了东西就返回 true
+            local ok, responseBody, statusCode, debugPaths = Utils.httpPostJson(request.url, request.payload, request.headers, 600)
+            
+            -- [容错] 只要 body 有长度就尝试处理
+            if (not responseBody or #responseBody < 100) then
                 local errHint = statusCode and string.format("status=%s", tostring(statusCode)) or string.format("reason=%s", tostring(responseBody or "unknown"))
-                print(string.format("[ERROR] [Google] HTTP 调用失败 (%s)", errHint))
+                print(string.format("[ERROR] [Google] HTTP 下载严重失败 (%s)", errHint))
+                updateStatus(get_message("status", "requestFailed"))
+                return
+            end
+            if statusCode and (statusCode < 200 or statusCode >= 300) then
+                print(string.format("[ERROR] [Google] HTTP 状态异常 status=%s", tostring(statusCode)))
                 updateStatus(get_message("status", "requestFailed"))
                 return
             end
 
-            local decodeOk, parsed = pcall(json.decode, responseBody)
-            if not decodeOk or type(parsed) ~= "table" then
-                print("[ERROR] JSON 解析失败: " .. tostring(parsed))
-                updateStatus(provider_error("responseParseFailed"))
-                return
-            end
-            if parsed.error ~= nil then
-                local errMsg = parsed.error
-                if type(errMsg) == "table" then
-                    errMsg = errMsg.message or errMsg.code or "unknown_error"
+            -- 6. 核心提取逻辑 (零拷贝系统解码)
+            local directPath, directRes = try_zero_copy_save(responseBody, saveDir, "image_gen_")
+            if not directPath then
+                if directRes == "truncated" then
+                    print("[ERROR] Data Truncated! Found start of image but NO ending quote.")
+                updateStatus(get_message("status", "downloadInterrupted"))
+                    return
                 end
-                print("[ERROR] Google 响应包含错误字段: " .. tostring(errMsg))
-                updateStatus(get_message("status", "requestFailed"))
-                return
-            end
 
-            local imageSource, pickedMessage = pick_google_image(parsed, responseBody)
-            if not imageSource then
-                Utils.debugSection("GOOGLE RAW RESPONSE (NO IMAGE)")
-                if type(parsed) == "table" then
-                    local pretty = json.encode(parsed, {indent = true})
-                    print(pretty or responseBody or "")
-                else
-                    print(responseBody or "")
+                print("[Info] No large image data found, trying to parse error message...")
+                local decodeOk, parsed = pcall(json.decode, responseBody)
+                if decodeOk and type(parsed) == "table" and parsed.error then
+                     local errMsg = parsed.error.message or "unknown"
+                     print("[ERROR] Google API Error: " .. tostring(errMsg))
                 end
-                Utils.debugSectionEnd()
                 updateStatus(provider_error("responseNoImage"))
                 return
             end
 
             updateStatus(get_message("status", "saving"))
-            local savedPath, savedSize
-            if imageSource:find("^data:image/") then
-                savedPath, savedSize = Utils.saveDataUrlImage(imageSource, saveDir, "image_gen_")
-            elseif imageSource:match("^https?://") then
-                savedPath, savedSize = Utils.saveImageFromUrl(imageSource, saveDir, "image_gen_")
-            else
-                savedPath, savedSize = Utils.saveDataUrlImage(imageSource, saveDir, "image_gen_")
-            end
-            if not savedPath then
-                print("[ERROR] 无法保存图片: " .. tostring(savedSize))
-                updateStatus(get_message("status", "saveFailed"))
-                return
-            end
+            local savedPath = directPath
+            local savedSize = tonumber(directRes) or Utils.getFileSize(savedPath)
+
+            -- 请求成功且已落盘，清理调试文件
+            Utils.cleanupDebugPaths(debugPaths)
 
             UI.generatedImagePath = savedPath
             if items.GenImagePreview then
                 items.GenImagePreview.Icon = Core.ui.Icon{File = savedPath}
-                items.GenImagePreview.IconSize = {300, 300}
+                items.GenImagePreview.IconSize = {256, 256}
             end
 
             Utils.debugSection("GEN IMAGE SAVE RESULT")
@@ -3836,7 +3974,7 @@ function App:Run()
             Utils.debugKV("Preview", Utils.truncate(imageDataUrl, 120))
             Utils.debugSectionEnd()
 
-            local function call_google_provider(promptText, dataUrl, providerId)
+            local function call_google_provider(promptText, dataUrl, providerId, saveDir)
                 local pid = providerId or (UI.config.provider_choice or "google")
                 local cfg = current_google_config(pid)
                 local baseUrl = Utils.trim((cfg and cfg.base_url) or "")
@@ -3857,6 +3995,8 @@ function App:Run()
                 if payloadData == "" then
                     return nil, provider_error("encodeFailed")
                 end
+                
+                -- 构建请求参数
                 local defaults = Config.DEFAULT_CONFIG.google
                 local aspectId = (cfg and cfg.aspect_ratio) or defaults.aspect_ratio
                 local resId = (cfg and cfg.resolution) or defaults.resolution
@@ -3878,6 +4018,9 @@ function App:Run()
                     ["Content-Type"] = "application/json",
                     ["Accept"] = "application/json"
                 }
+                -- [新增] 显式关闭连接，配合 macFlags 防止服务器 RST
+                --table.insert(headers, "-H 'Connection: close'") 
+                
                 local payload = {
                     model = modelName,
                     contents = {{
@@ -3889,46 +4032,62 @@ function App:Run()
                     }},
                     generationConfig = generationConfig
                 }
-                local success, responseBody, statusCode = Utils.httpPostJson(requestUrl, payload, headers, 600)
-                if not success then
+                
+                -- 发起请求
+                local success, responseBody, statusCode, debugPaths = Utils.httpPostJson(requestUrl, payload, headers, 600)
+                
+                -- [关键修复 1] 容忍网络重置错误 (Exit 56)
+                -- 只要 responseBody 有足够的内容，就认为是成功的，忽略 curl 的报错
+                if not success and (not responseBody or #responseBody < 100) then
                     local errHint = statusCode and string.format("status=%s", tostring(statusCode)) or string.format("reason=%s", tostring(responseBody or "unknown"))
                     print(string.format("[ERROR] [Google] HTTP 调用失败 (%s)", errHint))
                     return nil, provider_error("requestFailed")
                 end
+                if statusCode and (statusCode < 200 or statusCode >= 300) then
+                    print(string.format("[ERROR] [Google] HTTP 状态异常 status=%s", tostring(statusCode)))
+                    return nil, provider_error("requestFailed")
+                end
+
+                -- 优先尝试零拷贝解码，避免巨大 base64 解析/占内存
+                local directPath, directRes = try_zero_copy_save(responseBody, saveDir, "image_edit_")
+                if directPath then
+                    Utils.cleanupDebugPaths(debugPaths)
+                    return directPath, {type = "google", saved_path = directPath, saved_size = tonumber(directRes) or Utils.getFileSize(directPath)}
+                elseif directRes == "truncated" then
+                    return nil, {cn = "下载中断，请重试", en = "Download interrupted, please retry", debugPaths = debugPaths}
+                end
+
+                -- [常规流程] 如果零拷贝失败，才尝试 JSON 解析
                 local decodeOk, parsed = pcall(json.decode, responseBody)
                 if not decodeOk or type(parsed) ~= "table" then
-                    print("[ERROR] JSON 解析失败: " .. tostring(parsed))
-                    return nil, provider_error("responseParseFailed")
+                    print("[ERROR] JSON 解析失败 (且零拷贝未能解码): " .. tostring(parsed))
+                    return nil, provider_error("responseParseFailed"), debugPaths
                 end
+
                 if type(parsed.error) == "table" or parsed.error ~= nil then
                     local errMsg = parsed.error
                     if type(errMsg) == "table" then
                         errMsg = errMsg.message or errMsg.code or "unknown_error"
                     end
                     print("[ERROR] Google 响应包含错误字段: " .. tostring(errMsg))
-                    return nil, provider_error("requestFailed")
+                    return nil, provider_error("requestFailed"), debugPaths
                 end
-                local imageSource, pickedMessage = pick_google_image(parsed, responseBody)
+
+                -- 正常解析 JSON 提取图片
+                -- 已经尝试过零拷贝，此处跳过再次扫描原始字符串，直接从解析结构中找
+                local imageSource, pickedMessage = pick_google_image(parsed, responseBody, {skip_raw_scan = true})
                 if not imageSource then
                     Utils.debugSection("GOOGLE RAW RESPONSE (NO IMAGE)")
                     if type(parsed) == "table" then
-                        local pretty = json.encode(parsed, {indent = true})
-                        print(pretty or responseBody or "")
+                        print(json.encode(parsed, {indent = true}) or "")
                     else
                         print(responseBody or "")
                     end
                     Utils.debugSectionEnd()
-                    return nil, provider_error("responseNoImage")
+                    return nil, provider_error("responseNoImage"), debugPaths
                 end
-                local fallbackMsg = pickedMessage
-                if not fallbackMsg and type(parsed) == "table" then
-                    if type(parsed.candidates) == "table" and parsed.candidates[1] and parsed.candidates[1].content then
-                        fallbackMsg = parsed.candidates[1].content
-                    elseif type(parsed.choices) == "table" and parsed.choices[1] and parsed.choices[1].message then
-                        fallbackMsg = parsed.choices[1].message
-                    end
-                end
-                return imageSource, {type = "google", message = fallbackMsg}
+                
+                return imageSource, {type = "google", message = pickedMessage, debugPaths = debugPaths}
             end
 
             local function call_seed_provider(promptText, dataUrl, aspectData)
@@ -3961,16 +4120,16 @@ function App:Run()
                     ["Authorization"] = "Bearer " .. apiKey,
                     ["Content-Type"] = "application/json"
                 }
-                local success, responseBody, statusCode = Utils.httpPostJson(baseUrl, payload, headers, 600)
+                local success, responseBody, statusCode, debugPaths = Utils.httpPostJson(baseUrl, payload, headers, 600)
                 if not success then
                     local errHint = statusCode and string.format("status=%s", tostring(statusCode)) or string.format("reason=%s", tostring(responseBody or "unknown"))
                     print(string.format("[ERROR] [Seed Dream] HTTP 调用失败 (%s)", errHint))
-                    return nil, provider_error("requestFailed")
+                    return nil, provider_error("requestFailed"), debugPaths
                 end
                 local decodeOk, parsed = pcall(json.decode, responseBody)
                 if not decodeOk or type(parsed) ~= "table" then
                     print("[ERROR] JSON 解析失败: " .. tostring(parsed))
-                    return nil, provider_error("responseParseFailed")
+                    return nil, provider_error("responseParseFailed"), debugPaths
                 end
                 if type(parsed.error) == "table" or parsed.error ~= nil then
                     local errMsg = parsed.error
@@ -3978,13 +4137,13 @@ function App:Run()
                         errMsg = errMsg.message or errMsg.code or "unknown_error"
                     end
                     print("[ERROR] Seed Dream 响应包含错误字段: " .. tostring(errMsg))
-                    return nil, provider_error("requestFailed")
+                    return nil, provider_error("requestFailed"), debugPaths
                 end
                 local dataArr = parsed.data
                 if type(dataArr) ~= "table" or not dataArr[1] or type(dataArr[1].url) ~= "string" then
-                    return nil, provider_error("responseNoImage")
+                    return nil, provider_error("responseNoImage"), debugPaths
                 end
-                return dataArr[1].url, {type = "seeddream", data = dataArr[1], count = #dataArr}
+                return dataArr[1].url, {type = "seeddream", data = dataArr[1], count = #dataArr, debugPaths = debugPaths}
             end
 
             updateStatus(get_message("status", "generating"))
@@ -3992,7 +4151,7 @@ function App:Run()
             if providerChoice == "seeddream" then
                 imageSource, providerMeta = call_seed_provider(prompt, imageDataUrl, seedAspectData)
             else
-                imageSource, providerMeta = call_google_provider(prompt, imageDataUrl, providerChoice)
+                imageSource, providerMeta = call_google_provider(prompt, imageDataUrl, providerChoice, saveDir)
             end
             if not imageSource then
                 updateStatus(providerMeta or get_message("status", "requestFailed"))
@@ -4047,6 +4206,24 @@ function App:Run()
             Utils.debugKV("Image Source Preview", Utils.truncate(imageSource, 160))
             Utils.debugSectionEnd()
 
+            -- 如果零拷贝已直接落盘，则跳过再次解码
+            if providerMeta and providerMeta.saved_path then
+                UI.editedImagePath = providerMeta.saved_path
+                local savedSize = providerMeta.saved_size or Utils.getFileSize(providerMeta.saved_path)
+                if items.EditedImagePreview then
+                    items.EditedImagePreview.Icon = Core.ui.Icon{File = providerMeta.saved_path}
+                    items.EditedImagePreview.IconSize = {256, 256}
+                end
+                Utils.debugSection("IMAGE SAVE RESULT")
+                Utils.debugKV("Saved Path", providerMeta.saved_path)
+                Utils.debugKV("Size (bytes)", tostring(savedSize or 0))
+                Utils.debugSectionEnd()
+                Utils.cleanupDebugPaths(providerMeta.debugPaths)
+                updateStatus(get_message("status", "success"))
+                print("[SUCCESS] 图片已保存: " .. providerMeta.saved_path)
+                return
+            end
+
             updateStatus(get_message("status", "saving"))
             local savedPath, savedSize
             if imageSource:find("^data:image/") then
@@ -4060,6 +4237,9 @@ function App:Run()
                 print("[ERROR] 无法保存图片: " .. tostring(savedSize))
                 updateStatus(get_message("status", "saveFailed"))
                 return
+            end
+            if providerMeta and providerMeta.debugPaths then
+                Utils.cleanupDebugPaths(providerMeta.debugPaths)
             end
 
             UI.editedImagePath = savedPath
