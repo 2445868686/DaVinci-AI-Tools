@@ -99,6 +99,10 @@ fi
 
 # Step 2: Prepare wheel download directory
 log INFO "Preparing wheel download directory: $WHEEL_DIR"
+if [ -d "$WHEEL_DIR" ]; then
+  log WARN "Existing wheel directory detected. Cleaning: $WHEEL_DIR"
+  rm -rf "$WHEEL_DIR"
+fi
 mkdir -p "$WHEEL_DIR"
 
 # Step 3: Clear pip cache (optional)
@@ -140,6 +144,10 @@ fi
 
 # Step 5: Create target directory & fix ownership
 log INFO "Preparing target installation directory: $TARGET_DIR"
+if [ -d "$TARGET_DIR" ]; then
+  log WARN "Existing target directory detected. Cleaning: $TARGET_DIR"
+  sudo rm -rf "$TARGET_DIR"
+fi
 sudo mkdir -p "$TARGET_DIR"
 sudo chown -R "$(whoami)" "$TARGET_DIR"
 log SUCCESS "Target directory ready and owned by $(whoami)."

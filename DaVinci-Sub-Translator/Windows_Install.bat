@@ -57,12 +57,12 @@ if exist "%SOURCE_DIR%" (
 )
 
 rem 3. Create wheel directory if it does not exist
-if not exist "%WHEEL_DIR%" (
-    echo [%DATE% %TIME%] Creating wheel download directory: "%WHEEL_DIR%"
-    mkdir "%WHEEL_DIR%"
-) else (
-    echo [%DATE% %TIME%] Wheel download directory already exists: "%WHEEL_DIR%"
+if exist "%WHEEL_DIR%" (
+    echo [%DATE% %TIME%] Wheel download directory exists, cleaning: "%WHEEL_DIR%"
+    rmdir /s /q "%WHEEL_DIR%"
 )
+echo [%DATE% %TIME%] Creating wheel download directory: "%WHEEL_DIR%"
+mkdir "%WHEEL_DIR%"
 
 rem 4. Clear pip cache to avoid potential corruption
 echo [%DATE% %TIME%] Clearing pip cache
@@ -99,12 +99,12 @@ if errorlevel 1 (
 )
 
 rem 6. Create target installation directory if it does not exist
-if not exist "%TARGET_DIR%" (
-    echo [%DATE% %TIME%] Creating target installation directory: "%TARGET_DIR%"
-    mkdir "%TARGET_DIR%"
-) else (
-    echo [%DATE% %TIME%] Target installation directory already exists: "%TARGET_DIR%"
+if exist "%TARGET_DIR%" (
+    echo [%DATE% %TIME%] Target installation directory exists, cleaning: "%TARGET_DIR%"
+    rmdir /s /q "%TARGET_DIR%"
 )
+echo [%DATE% %TIME%] Creating target installation directory: "%TARGET_DIR%"
+mkdir "%TARGET_DIR%"
 
 rem 7. Perform offline installation of all packages
 echo.
