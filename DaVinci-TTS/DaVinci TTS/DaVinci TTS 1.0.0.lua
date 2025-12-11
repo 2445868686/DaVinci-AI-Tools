@@ -98,6 +98,7 @@ local SHARED_FORMATS = {
 
 
 local LOCALE_NAME_LABELS = {}
+local clampIndex
 
 local function percentDelta(value)
     return (value - 1.0) * 100.0
@@ -667,7 +668,7 @@ end
 -- runShellCommand
 ------------------------------------------------------------------
 
-local function clampIndex(value, size)
+function clampIndex(value, size)
     if type(value) ~= "number" then
         return 0
     end
@@ -731,7 +732,112 @@ function Paths.inVoices(...)
     return Utils.joinPath(Paths.voicesDir, ...)
 end
 
+-- Windows UTF-8 safe file operations to avoid ANSI fopen codepage issues
+local winfs = {}
+if IS_WINDOWS then
+    local okFfi, ffi = pcall(require, "ffi")
+    if okFfi and ffi then
+        local okKernel, kernel32 = pcall(ffi.load, "kernel32")
+        local okMsvcrt, msvcrt = pcall(ffi.load, "msvcrt")
+        if okKernel and okMsvcrt and kernel32 and msvcrt then
+            local CP_UTF8 = 65001
+
+            ffi.cdef[[
+                typedef unsigned short WCHAR;
+                typedef unsigned int UINT;
+                typedef long LONG;
+                typedef unsigned long DWORD;
+                typedef unsigned long size_t;
+                typedef struct _iobuf FILE;
+
+                int MultiByteToWideChar(UINT CodePage, DWORD dwFlags,
+                                        const char* lpMultiByteStr, int cbMultiByte,
+                                        WCHAR* lpWideCharStr, int cchWideChar);
+                FILE* _wfopen(const WCHAR* filename, const WCHAR* mode);
+                int fclose(FILE* stream);
+                size_t fread(void* ptr, size_t size, size_t count, FILE* stream);
+                size_t fwrite(const void* ptr, size_t size, size_t count, FILE* stream);
+                int fseek(FILE* stream, long offset, int origin);
+                long ftell(FILE* stream);
+            ]]
+
+            local function utf8ToWide(str)
+                local needed = kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, nil, 0)
+                if needed == 0 then return nil end
+                local buf = ffi.new("WCHAR[?]", needed)
+                if kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, buf, needed) == 0 then
+                    return nil
+                end
+                return buf
+            end
+
+            local function openWide(path, mode)
+                local wpath = utf8ToWide(path or "")
+                local wmode = utf8ToWide(mode or "rb")
+                if not wpath or not wmode then
+                    return nil, "path_encoding_failed"
+                end
+                local f = msvcrt._wfopen(wpath, wmode)
+                if f == nil then
+                    return nil, "wfopen_failed"
+                end
+                return f
+            end
+
+            function winfs.readFile(path)
+                local f, err = openWide(path, "rb")
+                if not f then return nil, err end
+                msvcrt.fseek(f, 0, 2) -- SEEK_END
+                local size = tonumber(msvcrt.ftell(f)) or 0
+                if size < 0 then size = 0 end
+                msvcrt.fseek(f, 0, 0) -- SEEK_SET
+                local buf = ffi.new("uint8_t[?]", size)
+                local read = msvcrt.fread(buf, 1, size, f)
+                msvcrt.fclose(f)
+                return ffi.string(buf, read)
+            end
+
+            function winfs.writeFile(path, content)
+                local f, err = openWide(path, "wb")
+                if not f then return false, err end
+                local data = content or ""
+                local len = #data
+                local written = msvcrt.fwrite(data, 1, len, f)
+                msvcrt.fclose(f)
+                if written ~= len then
+                    return false, "write_failed"
+                end
+                return true
+            end
+
+            function winfs.fileExists(path)
+                local f = select(1, openWide(path, "rb"))
+                if f then
+                    msvcrt.fclose(f)
+                    return true
+                end
+                return false
+            end
+
+            function winfs.getFileSize(path)
+                local f = select(1, openWide(path, "rb"))
+                if not f then return nil end
+                msvcrt.fseek(f, 0, 2)
+                local size = tonumber(msvcrt.ftell(f))
+                msvcrt.fclose(f)
+                return size
+            end
+        end
+    end
+end
+
 function Utils.readFile(path)
+    if IS_WINDOWS and winfs.readFile then
+        local content, err = winfs.readFile(path)
+        if content then
+            return content
+        end
+    end
     local fh, err = io.open(path, "r")
     if not fh then
         return nil, err
@@ -742,6 +848,12 @@ function Utils.readFile(path)
 end
 
 function Utils.writeFile(path, content)
+    if IS_WINDOWS and winfs.writeFile then
+        local ok, err = winfs.writeFile(path, content)
+        if ok ~= nil then
+            return ok, err
+        end
+    end
     local fh, err = io.open(path, "wb")
     if not fh then
         return false, err
@@ -854,6 +966,9 @@ function Utils.fileExists(path)
     if not path or path == "" then
         return false
     end
+    if IS_WINDOWS and winfs.fileExists then
+        return winfs.fileExists(path)
+    end
     local fh = io.open(path, "rb")
     if fh then
         fh:close()
@@ -863,6 +978,9 @@ function Utils.fileExists(path)
 end
 
 function Utils.getFileSize(path)
+    if IS_WINDOWS and winfs.getFileSize then
+        return winfs.getFileSize(path)
+    end
     local fh = io.open(path, "rb")
     if not fh then
         return nil
@@ -929,17 +1047,6 @@ function Utils.sanitizeFileName(text, maxLen)
     local sanitized = tostring(text or ""):gsub("[\r\n]", " ")
     sanitized = sanitized:gsub("[%z\1-\31]", " ")
     sanitized = sanitized:gsub("[<>:\"/\\|%?*]", " ")
-    local ascii_punct = "[!#$%%&'()*+,%-%.%/:;<=>?@%[%]^_`{|}~]"
-    sanitized = sanitized:gsub(ascii_punct, " ")
-    local cn_puncts = {
-        "，", "。", "？", "！", "、", "；", "：", 
-        "“", "”", "‘", "’", "（", "）", "【", "】", 
-        "《", "》", "·", "…", "—"
-    }
-    for _, punct in ipairs(cn_puncts) do
-        sanitized = sanitized:gsub(punct, " ")
-    end
-    
     sanitized = sanitized:gsub("%s+", " ")
     sanitized = sanitized:match("^%s*(.-)%s*$") or ""
     
@@ -962,7 +1069,6 @@ function Utils.sanitizeFileName(text, maxLen)
         sanitized = tmp
     end
     
-    print("[Debug] Final Filename: " .. sanitized)
     return sanitized
 end
 
@@ -1352,7 +1458,10 @@ function Config.load()
         languageIndex = clampIndex(settings.minimax_Language or 0, #minimax.languages),
         voiceIndex = settings.minimax_Voice or 0,
         emotionIndex = clampIndex(settings.minimax_Emotion or 0, #minimax.emotions),
-        soundEffectIndex = clampIndex(0, #minimax.soundEffects),
+        soundEffectIndex = clampIndex(settings.minimax_VoiceEffect or 0, #minimax.soundEffects),
+        voiceTimbre = settings.minimax_VoiceTimbre or 0,
+        voiceIntensity = settings.minimax_VoiceIntensity or 0,
+        voicePitch = settings.minimax_VoicePitch or 0,
         rate = settings.minimax_Rate or 1.0,
         volume = settings.minimax_Volume or 1.0,
         pitch = settings.minimax_Pitch or 0,
@@ -1550,7 +1659,7 @@ local win = dispatcher:AddWindow({
             ui:HGroup{
                 Weight = 1,
                 ui:VGroup{
-                    Weight = 1,
+                    Weight = 0.7,
                     ui:TextEdit{
                         ID = "azureText",
                         Text = "",
@@ -1559,7 +1668,7 @@ local win = dispatcher:AddWindow({
                         Weight = 0.9,
                     },
                     ui:HGroup{
-                        Weight = 0.1,
+                        Weight = 0,
                         ui:Button{
                             ID = "azureGetSubButton",
                             Text = "从时间线获取字幕",
@@ -1598,18 +1707,20 @@ local win = dispatcher:AddWindow({
                         ui:ComboBox{
                             ID = "azureLanguageCombo",
                             Text = "",
+                            MinimumSize = { 200, 20 },
+                            MaximumSize = { 300, 50 },
                             Weight = 0.8,
                         },
                         ui:Label{
                             ID = "azureVoiceTypeLabel",
                             Text = "类型",
                             Alignment = { AlignRight = false },
-                            Weight = 0.2,
+                            Weight = 0,
                         },
                         ui:ComboBox{
                             ID = "azureVoiceTypeCombo",
                             Text = "",
-                            Weight = 0.8,
+                            Weight = 0,
                         },
                     },
                     ui:HGroup{
@@ -1623,12 +1734,18 @@ local win = dispatcher:AddWindow({
                         ui:ComboBox{
                             ID = "azureVoiceCombo",
                             Text = "",
+                            MinimumSize = { 200, 20 },
+                            MaximumSize = { 400, 50 },
                             Weight = 0.8,
                         },
                         ui:Button{
                             ID = "azurePlayButton",
                             Text = "播放预览",
+                            Weight = 0,
                         },
+                    },
+                    ui:HGroup{
+                        Weight = 0.1,
                         ui:Label{
                             ID = "azureMultilingualLabel",
                             Text = "语言技能",
@@ -1638,7 +1755,7 @@ local win = dispatcher:AddWindow({
                         ui:ComboBox{
                             ID = "azureMultilingualCombo",
                             Text = "",
-                            Weight = 0.2,
+                            Weight = 0.8,
                         },
                     },
                     ui:HGroup{
@@ -1756,7 +1873,7 @@ local win = dispatcher:AddWindow({
                         },
                     },
                     ui:HGroup{
-                        Weight = 0.1,
+                        Weight = 0,
                         ui:Button{
                             ID = "azureFromSubButton",
                             Text = "朗读当前字幕",
@@ -1779,14 +1896,14 @@ local win = dispatcher:AddWindow({
             ui:HGroup{
                 Weight = 1,
                 ui:VGroup{
-                    Weight = 0.9,
+                    Weight = 0.7,
                     ui:TextEdit{
                         ID = "minimaxText",
                         PlaceholderText = "",
                         Weight = 0.9,
                     },
                     ui:HGroup{
-                        Weight = 0.1,
+                        Weight = 0,
                         ui:Button{
                             ID = "minimaxGetSubButton",
                             Text = "从时间线获取字幕",
@@ -1873,15 +1990,10 @@ local win = dispatcher:AddWindow({
                     },
                     ui:HGroup{
                         Weight = 0.1,
-                        ui:Label{
-                            ID = "minimaxSoundEffectLabel",
-                            Text = "音效:",
-                            Weight = 0.2,
-                        },
-                        ui:ComboBox{
-                            ID = "minimaxSoundEffectCombo",
-                            Text = "",
-                            Weight = 0.8,
+                        ui:Button{
+                            ID = "minimaxVoiceEffectButton",
+                            Text = "音色效果调节",
+                            Weight = 1,
                         },
                     },
                     ui:HGroup{
@@ -1981,7 +2093,7 @@ local win = dispatcher:AddWindow({
                         },
                     },
                     ui:HGroup{
-                        Weight = 0.1,
+                        Weight = 0,
                         ui:Button{
                             ID = "minimaxFromSubButton",
                             Text = "朗读当前字幕",
@@ -2004,14 +2116,14 @@ local win = dispatcher:AddWindow({
             ui:HGroup{
                 Weight = 1,
                 ui:VGroup{
-                    Weight = 0.9,
+                    Weight = 0.7,
                     ui:TextEdit{
                         ID = "OpenAIText",
                         PlaceholderText = "",
                         Weight = 0.9,
                     },
                     ui:HGroup{
-                        Weight = 0.1,
+                        Weight = 0,
                         ui:Button{
                             ID = "OpenAIGetSubButton",
                             Text = "从时间线获取字幕",
@@ -2104,7 +2216,7 @@ local win = dispatcher:AddWindow({
                         },
                     },
                     ui:HGroup{
-                        Weight = 0.1,
+                        Weight = 0,
                         ui:Button{
                             ID = "OpenAIFromSubButton",
                             Text = "朗读当前字幕",
@@ -2574,12 +2686,168 @@ local minimaxCloneWin = dispatcher:AddWindow({
     },
 })
 
+local minimaxVoiceModifyWin = dispatcher:AddWindow({
+    ID = "MiniMaxVoiceModifyWin",
+    WindowTitle = "MiniMax Effect",
+    Geometry = { X_CENTER, Y_CENTER, 320, 320 },
+    Hidden = true,
+    StyleSheet = [[
+        * {
+            font-size: 14px;
+        }
+    ]],
+}, ui:VGroup{
+    ui:Label{
+        ID = "minimaxVoiceModifyTitle",
+        Text = "音色效果调节",
+        Alignment = { AlignHCenter = true, AlignVCenter = true },
+    },
+    ui:VGroup{
+        Weight = 1,
+        Spacing = 8,
+        ui:VGroup{
+            Weight = 0,
+            ui:Label{
+                ID = "minimaxTimbreLabel",
+                Text = "低沉 / 明亮",
+                Alignment = { AlignLeft = true },
+            },
+            ui:HGroup{
+                ui:SpinBox{
+                    ID = "minimaxTimbreSpinBoxLeft",
+                    Minimum = -100,
+                    Maximum = 0,
+                    Value = 0,
+                    SingleStep = 1,
+                    Weight = 0.2,
+                },
+                ui:Slider{
+                    ID = "minimaxTimbreSlider",
+                    Minimum = -100,
+                    Maximum = 100,
+                    Value = 0,
+                    SingleStep = 1,
+                    Orientation = "Horizontal",
+                    Weight = 0.4,
+                },
+                ui:SpinBox{
+                    ID = "minimaxTimbreSpinBoxRight",
+                    Minimum = 0,
+                    Maximum = 100,
+                    Value = 0,
+                    SingleStep = 1,
+                    Weight = 0.2,
+                    Prefix = "+",
+                },
+            },
+        },
+        ui:VGroup{
+            Weight = 0,
+            ui:Label{
+                ID = "minimaxIntensityLabel",
+                Text = "力量感 / 柔和",
+                Alignment = { AlignLeft = true },
+            },
+            ui:HGroup{
+                ui:SpinBox{
+                    ID = "minimaxIntensitySpinBoxLeft",
+                    Minimum = -100,
+                    Maximum = 0,
+                    Value = 0,
+                    SingleStep = 1,
+                    Weight = 0.2,
+                },
+                ui:Slider{
+                    ID = "minimaxIntensitySlider",
+                    Minimum = -100,
+                    Maximum = 100,
+                    Value = 0,
+                    SingleStep = 1,
+                    Orientation = "Horizontal",
+                    Weight = 0.4,
+                },
+                ui:SpinBox{
+                    ID = "minimaxIntensitySpinBoxRight",
+                    Minimum = 0,
+                    Maximum = 100,
+                    Value = 0,
+                    SingleStep = 1,
+                    Weight = 0.2,
+                    Prefix = "+",
+                },
+            },
+        },
+        ui:VGroup{
+            Weight = 0,
+            ui:Label{
+                ID = "minimaxModifyPitchLabel",
+                Text = "磁性 / 清脆",
+                Alignment = { AlignLeft = true },
+            },
+            ui:HGroup{
+                ui:SpinBox{
+                    ID = "minimaxModifyPitchSpinBoxLeft",
+                    Minimum = -100,
+                    Maximum = 0,
+                    Value = 0,
+                    SingleStep = 1,
+                    Weight = 0.2,
+                },
+                ui:Slider{
+                    ID = "minimaxModifyPitchSlider",
+                    Minimum = -100,
+                    Maximum = 100,
+                    Value = 0,
+                    SingleStep = 1,
+                    Orientation = "Horizontal",
+                    Weight = 0.4,
+                },
+                ui:SpinBox{
+                    ID = "minimaxModifyPitchSpinBoxRight",
+                    Minimum = 0,
+                    Maximum = 100,
+                    Value = 0,
+                    SingleStep = 1,
+                    Weight = 0.2,
+                    Prefix = "+",
+                },
+            },
+        },
+        ui:HGroup{
+            ui:Label{
+                ID = "minimaxSoundEffectLabel",
+                Text = "音效:",
+                Weight = 0.2,
+            },
+            ui:ComboBox{
+                ID = "minimaxSoundEffectCombo",
+                Text = "",
+                Weight = 0.8,
+            },
+        },
+    },
+    ui:HGroup{
+        Weight = 0,
+        ui:Button{
+            ID = "MiniMaxVoiceModifyConfirm",
+            Text = "确定",
+            Weight = 1,
+        },
+        ui:Button{
+            ID = "MiniMaxVoiceModifyCancel",
+            Text = "取消",
+            Weight = 1,
+        },
+    },
+})
+
 local items = win:GetItems()
 local msgboxItems = msgbox:GetItems()
 local azureConfigItems = azureConfigWin:GetItems()
 local openaiConfigItems = openaiConfigWin:GetItems()
 local minimaxConfigItems = minimaxConfigWin:GetItems()
 local minimaxCloneItems = minimaxCloneWin:GetItems()
+local minimaxVoiceModifyItems = minimaxVoiceModifyWin:GetItems()
 local loadingItems = loadingWin:GetItems()
 
 App.State.azure = {}
@@ -2592,6 +2860,7 @@ App.UI.azureItems = azureConfigItems
 App.UI.openaiItems = openaiConfigItems
 App.UI.minimaxItems = minimaxConfigItems
 App.UI.minimaxCloneItems = minimaxCloneItems
+App.UI.minimaxVoiceModifyItems = minimaxVoiceModifyItems
 App.UI.loadingItems = loadingItems
 
 -- Throttle slider/spin synchronization so rapid key repeats do not flood the UI loop.
@@ -2683,6 +2952,167 @@ local function clampToControl(value, control)
     return clamp(value, minValue, maxValue)
 end
 
+-- forward declaration for safe setter used below
+local setValueSafe
+
+-- MiniMax voice modify helpers (timbre/intensity/pitch + effect selection)
+local VOICE_MODIFY_WIDGETS = {
+    timbre = {
+        slider = "minimaxTimbreSlider",
+        left = "minimaxTimbreSpinBoxLeft",
+        right = "minimaxTimbreSpinBoxRight",
+    },
+    intensity = {
+        slider = "minimaxIntensitySlider",
+        left = "minimaxIntensitySpinBoxLeft",
+        right = "minimaxIntensitySpinBoxRight",
+    },
+    pitch = {
+        slider = "minimaxModifyPitchSlider",
+        left = "minimaxModifyPitchSpinBoxLeft",
+        right = "minimaxModifyPitchSpinBoxRight",
+    },
+}
+
+local voiceModifySyncing = false
+local voiceModifySnapshot = nil
+local voiceModifyLastUpdates = {
+    timbre = 0,
+    intensity = 0,
+    pitch = 0,
+}
+local VOICE_MODIFY_UPDATE_INTERVAL = 0.1
+
+local function clampVoiceModify(value)
+    value = tonumber(value) or 0
+    if value > 100 then
+        value = 100
+    elseif value < -100 then
+        value = -100
+    end
+    return value
+end
+
+local function setVoiceModifyValue(name, value)
+    if not App.UI.minimaxVoiceModifyItems then
+        return
+    end
+    local widgets = VOICE_MODIFY_WIDGETS[name]
+    if not widgets then
+        return
+    end
+    local items = App.UI.minimaxVoiceModifyItems
+    value = clampVoiceModify(value)
+    voiceModifySyncing = true
+    setValueSafe(items[widgets.slider], value)
+    setValueSafe(items[widgets.left], value < 0 and value or 0)
+    setValueSafe(items[widgets.right], value > 0 and value or 0)
+    voiceModifySyncing = false
+    local state = App.State.minimax or {}
+    if name == "timbre" then
+        state.voiceTimbre = value
+    elseif name == "intensity" then
+        state.voiceIntensity = value
+    elseif name == "pitch" then
+        state.voicePitch = value
+    end
+end
+
+local function getVoiceModifyState()
+    local state = App.State.minimax or {}
+    return {
+        timbre = state.voiceTimbre or 0,
+        intensity = state.voiceIntensity or 0,
+        pitch = state.voicePitch or 0,
+        soundEffectIndex = state.voiceEffectIndex or state.soundEffectIndex or 0,
+    }
+end
+
+local function applyVoiceModifyState(newState)
+    if not newState then
+        return
+    end
+    setVoiceModifyValue("timbre", newState.timbre or 0)
+    setVoiceModifyValue("intensity", newState.intensity or 0)
+    setVoiceModifyValue("pitch", newState.pitch or 0)
+    if App.UI.minimaxVoiceModifyItems and App.UI.minimaxVoiceModifyItems.minimaxSoundEffectCombo then
+        App.UI.minimaxVoiceModifyItems.minimaxSoundEffectCombo.CurrentIndex = newState.soundEffectIndex or 0
+    end
+    local state = App.State.minimax or {}
+    state.voiceEffectIndex = newState.soundEffectIndex or 0
+end
+
+local function syncVoiceModifyFromControl(name, senderId, value)
+    if voiceModifySyncing then
+        return
+    end
+    if not App.UI.minimaxVoiceModifyItems then
+        return
+    end
+    local widgets = VOICE_MODIFY_WIDGETS[name]
+    if not widgets then
+        return
+    end
+    local now = monotonicTime()
+    if now - (voiceModifyLastUpdates[name] or 0) < VOICE_MODIFY_UPDATE_INTERVAL then
+        return
+    end
+    voiceModifyLastUpdates[name] = now
+    value = clampVoiceModify(value)
+    voiceModifySyncing = true
+    if senderId ~= widgets.slider then
+        setValueSafe(App.UI.minimaxVoiceModifyItems[widgets.slider], value)
+    end
+    if senderId ~= widgets.left then
+        setValueSafe(App.UI.minimaxVoiceModifyItems[widgets.left], value < 0 and value or 0)
+    end
+    if senderId ~= widgets.right then
+        setValueSafe(App.UI.minimaxVoiceModifyItems[widgets.right], value > 0 and value or 0)
+    end
+    voiceModifySyncing = false
+    local state = App.State.minimax or {}
+    if name == "timbre" then
+        state.voiceTimbre = value
+    elseif name == "intensity" then
+        state.voiceIntensity = value
+    elseif name == "pitch" then
+        state.voicePitch = value
+    end
+end
+
+local function onShowVoiceModifyWindow()
+    voiceModifySnapshot = getVoiceModifyState()
+    applyVoiceModifyState(voiceModifySnapshot)
+    if minimaxVoiceModifyWin and minimaxVoiceModifyWin.Show then
+        minimaxVoiceModifyWin:Show()
+    end
+end
+
+local function onVoiceModifyConfirm()
+    if App.UI.minimaxVoiceModifyItems and App.UI.minimaxVoiceModifyItems.minimaxSoundEffectCombo then
+        App.State.minimax.voiceEffectIndex = App.UI.minimaxVoiceModifyItems.minimaxSoundEffectCombo.CurrentIndex or 0
+    end
+    if minimaxVoiceModifyWin and minimaxVoiceModifyWin.Hide then
+        minimaxVoiceModifyWin:Hide()
+    end
+end
+
+local function onVoiceModifyCancel()
+    if voiceModifySnapshot then
+        applyVoiceModifyState(voiceModifySnapshot)
+    end
+    if minimaxVoiceModifyWin and minimaxVoiceModifyWin.Hide then
+        minimaxVoiceModifyWin:Hide()
+    end
+end
+
+local function handleVoiceModifyEffectChange(ev)
+    if not App.UI.minimaxVoiceModifyItems then
+        return
+    end
+    App.State.minimax.voiceEffectIndex = App.UI.minimaxVoiceModifyItems.minimaxSoundEffectCombo.CurrentIndex or 0
+end
+
 local function logInfo(message)
     print(string.format("[DaVinci TTS] %s", message))
 end
@@ -2744,7 +3174,7 @@ local function setCheckedSafe(control, value)
     end
 end
 
-local function setValueSafe(control, value)
+setValueSafe = function(control, value)
     if control and value ~= nil then
         control.Value = value
     end
@@ -3202,11 +3632,21 @@ function App.Providers.MiniMax.speak(params)
     end
 
     local soundEffects = cfg.soundEffects or {}
-    local effectEntry = readComboEntry(soundEffects, items.minimaxSoundEffectCombo, App.State.minimax.soundEffectIndex)
+    local effectEntry = readComboEntry(
+        soundEffects,
+        (App.UI.minimaxVoiceModifyItems and App.UI.minimaxVoiceModifyItems.minimaxSoundEffectCombo),
+        App.State.minimax.voiceEffectIndex or App.State.minimax.soundEffectIndex
+    )
     local effectId = effectEntry and effectEntry.id or App.State.minimax.soundEffect
     if effectId == "default" or effectId == "" then
         effectId = nil
     end
+    if App.UI.minimaxVoiceModifyItems and App.UI.minimaxVoiceModifyItems.minimaxSoundEffectCombo then
+        App.State.minimax.voiceEffectIndex = App.UI.minimaxVoiceModifyItems.minimaxSoundEffectCombo.CurrentIndex or 0
+    else
+        App.State.minimax.voiceEffectIndex = App.State.minimax.voiceEffectIndex or App.State.minimax.soundEffectIndex
+    end
+    App.State.minimax.soundEffect = effectId or App.State.minimax.soundEffect
 
     local sharedFormatId = App.Settings.getSharedFormatId()
     local formatId = sharedFormatId or "wav"
@@ -3236,11 +3676,20 @@ function App.Providers.MiniMax.speak(params)
     if emotionId then
         payload.voice_setting.emotion = emotionId
     end
-    if effectId then
-        payload.voice_modify = { sound_effects = effectId }
+    local voiceModify = {}
+    local timbre = App.State.minimax.voiceTimbre or 0
+    local intensity = App.State.minimax.voiceIntensity or 0
+    local vmPitch = App.State.minimax.voicePitch or 0
+    if timbre ~= 0 then voiceModify.timbre = timbre end
+    if intensity ~= 0 then voiceModify.intensity = intensity end
+    if vmPitch ~= 0 then voiceModify.pitch = vmPitch end
+    if effectId then voiceModify.sound_effects = effectId end
+    if next(voiceModify) then
+        payload.voice_modify = voiceModify
     end
 
     local payloadStr = json.encode(payload)
+    logInfo(string.format("MiniMax payload: %s", truncateForLog(payloadStr or "", 1200)))
     local headers = {
         Authorization = "Bearer " .. apiKey,
         ["Content-Type"] = "application/json",
@@ -4548,12 +4997,153 @@ App.Controller = {
     activeProvider = "azure",
 }
 
+local STATUS_MESSAGE_MAP = {
+    ["没能读到字幕，请稍后再试。"] = { cn = "没能读到字幕，请稍后再试。", en = "Couldn't read subtitles right now. Please try again." },
+    ["Couldn't read subtitles right now. Please try again."] = { cn = "没能读到字幕，请稍后再试。", en = "Couldn't read subtitles right now. Please try again." },
+    ["时间线里还没有字幕。"] = { cn = "时间线里还没有字幕。", en = "There are no subtitles on the timeline yet." },
+    ["时间线中没有字幕。"] = { cn = "时间线里还没有字幕。", en = "There are no subtitles on the timeline yet." },
+    ["There are no subtitles on the timeline yet."] = { cn = "时间线里还没有字幕。", en = "There are no subtitles on the timeline yet." },
+    ["播放头下没有字幕，请把播放头移到字幕上。"] = { cn = "播放头下没有字幕，请把播放头移到字幕上。", en = "No subtitle under the playhead. Move the playhead onto a subtitle clip." },
+    ["未在当前播放头找到字幕，请将播放头移至字幕块。"] = { cn = "播放头下没有字幕，请把播放头移到字幕上。", en = "No subtitle under the playhead. Move the playhead onto a subtitle clip." },
+    ["No subtitle under the playhead. Move the playhead onto a subtitle clip."] = { cn = "播放头下没有字幕，请把播放头移到字幕上。", en = "No subtitle under the playhead. Move the playhead onto a subtitle clip." },
+    ["请先输入要转换的文字。"] = { cn = "请先输入要转换的文字。", en = "Please enter the text you want to turn into speech." },
+    ["请输入要合成的文本。"] = { cn = "请先输入要转换的文字。", en = "Please enter the text you want to turn into speech." },
+    ["Please enter the text you want to turn into speech."] = { cn = "请先输入要转换的文字。", en = "Please enter the text you want to turn into speech." },
+    ["正在准备生成语音..."] = { cn = "正在准备生成语音...", en = "Getting your speech ready..." },
+    ["Getting your speech ready..."] = { cn = "正在准备生成语音...", en = "Getting your speech ready..." },
+    ["生成完成，音频已放到时间线。"] = { cn = "生成完成，音频已放到时间线。", en = "Audio generated and placed on the timeline." },
+    ["Audio generated and placed on the timeline."] = { cn = "生成完成，音频已放到时间线。", en = "Audio generated and placed on the timeline." },
+    ["合成成功，音频已挂载"] = { cn = "生成完成，音频已放到时间线。", en = "Audio generated and placed on the timeline." },
+    ["语音生成成功，但没有返回音频文件。"] = { cn = "语音生成成功，但没有返回音频文件。", en = "Speech generated, but no audio file was returned." },
+    ["Speech generated, but no audio file was returned."] = { cn = "语音生成成功，但没有返回音频文件。", en = "Speech generated, but no audio file was returned." },
+    ["合成成功（无音频路径）"] = { cn = "语音生成成功，但没有返回音频文件。", en = "Speech generated, but no audio file was returned." },
+    ["准备发送请求..."] = { cn = "正在准备生成语音...", en = "Getting your speech ready..." }, -- legacy wording kept for compatibility
+    ["无法获取字幕。"] = { cn = "没能读到字幕，请稍后再试。", en = "Couldn't read subtitles right now. Please try again." },
+    ["合成成功，但插入失败："] = { cn = "语音生成好了，但放到时间线时出错：", en = "Speech generated, but placing it on the timeline failed:" },
+    ["合成失败："] = { cn = "语音生成失败：", en = "Speech generation failed:" },
+    ["语音生成好了，但放到时间线时出错："] = { cn = "语音生成好了，但放到时间线时出错：", en = "Speech generated, but placing it on the timeline failed:" },
+    ["语音生成失败："] = { cn = "语音生成失败：", en = "Speech generation failed:" },
+}
+
+local STATUS_PATTERNS = {
+    {
+        pattern = "^已载入%s*(%d+)%s*条字幕。$",
+        format = function(locale, count)
+            if locale == "en" then
+                return string.format("Loaded %s subtitles.", count)
+            end
+            return string.format("已载入 %s 条字幕。", count)
+        end,
+    },
+    {
+        pattern = "^Loaded%s*(%d+)%s*subtitles%.?$",
+        format = function(locale, count)
+            if locale == "cn" then
+                return string.format("已载入 %s 条字幕。", count)
+            end
+            return string.format("Loaded %s subtitles.", count)
+        end,
+    },
+    {
+        pattern = "^语音生成好了，但放到时间线时出错：(.+)$",
+        format = function(locale, err)
+            local reason = trim(err or "")
+            if locale == "en" then
+                return string.format("Speech generated, but placing it on the timeline failed: %s", reason)
+            end
+            return string.format("语音生成好了，但放到时间线时出错：%s", reason)
+        end,
+    },
+    {
+        pattern = "^合成成功，但插入失败：(.+)$",
+        format = function(locale, err)
+            local reason = trim(err or "")
+            if locale == "en" then
+                return string.format("Speech generated, but placing it on the timeline failed: %s", reason)
+            end
+            return string.format("语音生成好了，但放到时间线时出错：%s", reason)
+        end,
+    },
+    {
+        pattern = "^Speech generated, but placing it on the timeline failed:%s*(.+)$",
+        format = function(locale, err)
+            local reason = trim(err or "")
+            if locale == "cn" then
+                return string.format("语音生成好了，但放到时间线时出错：%s", reason)
+            end
+            return string.format("Speech generated, but placing it on the timeline failed: %s", reason)
+        end,
+    },
+    {
+        pattern = "^语音生成失败：(.+)$",
+        format = function(locale, err)
+            local reason = trim(err or "")
+            if locale == "en" then
+                return string.format("Speech generation failed: %s", reason)
+            end
+            return string.format("语音生成失败：%s", reason)
+        end,
+    },
+    {
+        pattern = "^合成失败：(.+)$",
+        format = function(locale, err)
+            local reason = trim(err or "")
+            if locale == "en" then
+                return string.format("Speech generation failed: %s", reason)
+            end
+            return string.format("语音生成失败：%s", reason)
+        end,
+    },
+    {
+        pattern = "^Speech generation failed:%s*(.+)$",
+        format = function(locale, err)
+            local reason = trim(err or "")
+            if locale == "cn" then
+                return string.format("语音生成失败：%s", reason)
+            end
+            return string.format("Speech generation failed: %s", reason)
+        end,
+    },
+}
+
+local unpackArgs = table.unpack or unpack
+
+local function getPreferredLocale()
+    local ui = App.UI.items or {}
+    if ui.LangCnCheckBox and ui.LangCnCheckBox.Checked then
+        return "cn"
+    end
+    if ui.LangEnCheckBox and ui.LangEnCheckBox.Checked then
+        return "en"
+    end
+    return (App.State.locale == "cn") and "cn" or "en"
+end
+
+local function localizeStatusMessage(raw)
+    local text = trim(raw or "")
+    if text == "" then
+        return ""
+    end
+    local locale = getPreferredLocale()
+    local template = STATUS_MESSAGE_MAP[text]
+    if template then
+        return template[locale] or template.cn or template.en or text
+    end
+    for _, entry in ipairs(STATUS_PATTERNS) do
+        local captures = { text:match(entry.pattern) }
+        if #captures > 0 then
+            return entry.format(locale, unpackArgs(captures))
+        end
+    end
+    return text
+end
+
 local function controllerSetStatus(_, message)
     local text = ""
     if message ~= nil then
         text = trim(tostring(message))
     end
-    text = trim(text or "")
+    text = localizeStatusMessage(text)
     local msgItems = App.UI.msgboxItems
     if text == "" then
         if msgItems then
@@ -4628,6 +5218,10 @@ App.Settings.keyOrder = {
     "minimax_Volume",
     "minimax_Pitch",
     "minimax_Break",
+    "minimax_VoiceTimbre",
+    "minimax_VoiceIntensity",
+    "minimax_VoicePitch",
+    "minimax_VoiceEffect",
     "OpenAI_API_KEY",
     "OpenAI_BASE_URL",
     "OpenAI_Model",
@@ -4675,6 +5269,10 @@ function App.Settings.collect()
         minimax_Volume = readValue(items.minimaxVolumeSpinBox, stateMini.volume or 1.0),
         minimax_Pitch = readValue(items.minimaxPitchSpinBox, stateMini.pitch or 0),
         minimax_Break = readValue(items.minimaxBreakSpinBox, stateMini.breakMs or 50),
+        minimax_VoiceTimbre = readValue(App.UI.minimaxVoiceModifyItems and App.UI.minimaxVoiceModifyItems.minimaxTimbreSlider, stateMini.voiceTimbre or 0),
+        minimax_VoiceIntensity = readValue(App.UI.minimaxVoiceModifyItems and App.UI.minimaxVoiceModifyItems.minimaxIntensitySlider, stateMini.voiceIntensity or 0),
+        minimax_VoicePitch = readValue(App.UI.minimaxVoiceModifyItems and App.UI.minimaxVoiceModifyItems.minimaxModifyPitchSlider, stateMini.voicePitch or 0),
+        minimax_VoiceEffect = readCurrentIndex(App.UI.minimaxVoiceModifyItems and App.UI.minimaxVoiceModifyItems.minimaxSoundEffectCombo, stateMini.voiceEffectIndex or stateMini.soundEffectIndex or 0),
         OpenAI_API_KEY = trim(readText(openaiItems.OpenAIApiKey)),
         OpenAI_BASE_URL = trim(readText(openaiItems.OpenAIBaseURL)),
         OpenAI_Model = readCurrentIndex(items.OpenAIModelCombo, stateOpenAI.modelIndex or 0),
@@ -4781,7 +5379,7 @@ function App.Controller.collectMiniMaxParams(source)
         languageDisplay = items.minimaxLanguageCombo and items.minimaxLanguageCombo.CurrentText or "",
         voiceDisplay = items.minimaxVoiceCombo and items.minimaxVoiceCombo.CurrentText or "",
         emotionDisplay = items.minimaxEmotionCombo and items.minimaxEmotionCombo.CurrentText or "",
-        soundEffectDisplay = items.minimaxSoundEffectCombo and items.minimaxSoundEffectCombo.CurrentText or "",
+        soundEffectDisplay = (App.UI.minimaxVoiceModifyItems and App.UI.minimaxVoiceModifyItems.minimaxSoundEffectCombo and App.UI.minimaxVoiceModifyItems.minimaxSoundEffectCombo.CurrentText) or "",
         startOffsetSamples = 0,
         durationSamples = 0,
     }
@@ -4839,14 +5437,14 @@ function App.Controller.onFetchTimelineSubtitles(providerId)
     providerId = providerId or App.Controller.activeProvider or "azure"
     local info, err = App.Subtitles.collectAll()
     if not info then
-        local message = err or "无法获取字幕。"
+        local message = err or "没能读到字幕，请稍后再试。"
         controllerSetStatus(providerId, message)
         logInfo(string.format("Timeline subtitle fetch failed: %s", tostring(message)))
         return false
     end
     local subtitles = info.subtitles or {}
     if #subtitles == 0 then
-        local message = err or "时间线中没有字幕。"
+        local message = err or "时间线里还没有字幕。"
         controllerSetStatus(providerId, message)
         logInfo("Timeline subtitle fetch completed: no subtitles found.")
         return false
@@ -4883,7 +5481,7 @@ function App.Controller.onSynthesizeClicked(providerId, source)
     if params.source == "subtitle" then
         local subtitleInfo, err = App.Subtitles.getCurrent()
         if not subtitleInfo or not subtitleInfo.text or trim(subtitleInfo.text) == "" then
-            local message = err or "未在当前播放头找到字幕，请将播放头移至字幕块。"
+            local message = err or "播放头下没有字幕，请把播放头移到字幕上。"
             controllerSetStatus(providerId, message)
             logInfo(string.format("Subtitle synthesis aborted: %s", tostring(message)))
             return
@@ -4904,10 +5502,10 @@ function App.Controller.onSynthesizeClicked(providerId, source)
         params.text = trim(params.text or "")
     end
     if params.text == "" then
-        controllerSetStatus(providerId, "请输入要合成的文本。")
+        controllerSetStatus(providerId, "请先输入要转换的文字。")
         return
     end
-    controllerSetStatus(providerId, "准备发送请求...")
+    controllerSetStatus(providerId, "正在准备生成语音...")
     local ok, result = providerModule.speak(params)
     if ok then
         local audioPath = result
@@ -4923,15 +5521,15 @@ function App.Controller.onSynthesizeClicked(providerId, source)
         if audioPath and audioPath ~= "" then
             local inserted, insertErr = timelineInsert(audioPath, startOffset, durationSamples, recordFrame)
             if inserted then
-                controllerSetStatus(providerId, "合成成功，音频已挂载")
+                controllerSetStatus(providerId, "生成完成，音频已放到时间线。")
             else
-                controllerSetStatus(providerId, string.format("合成成功，但插入失败：%s", tostring(insertErr)))
+                controllerSetStatus(providerId, string.format("语音生成好了，但放到时间线时出错：%s", tostring(insertErr)))
             end
         else
-            controllerSetStatus(providerId, "合成成功（无音频路径）")
+            controllerSetStatus(providerId, "语音生成成功，但没有返回音频文件。")
         end
     else
-        controllerSetStatus(providerId, string.format("合成失败：%s", tostring(result)))
+        controllerSetStatus(providerId, string.format("语音生成失败：%s", tostring(result)))
     end
 end
 
@@ -5414,21 +6012,24 @@ function App.UI.populateMiniMaxCombos()
     App.State.minimax.emotion = selectedEmotion and selectedEmotion.id or fallbackEmotion.id
     App.State.minimax.emotionIndex = emotionIndex or 0
 
-    local selectedEffect, effectIndex = App.UI.populateCombo(
-        App.UI.items.minimaxSoundEffectCombo,
-        cfg.soundEffects,
-        nil,
-        function(entry)
-            return entry.id
-        end,
-        function(entry)
-            return App.UI.localizeLabel(entry.labels)
-        end,
-        cfg.defaults.soundEffectIndex or 0
-    )
-    local fallbackEffect = cfg.soundEffects[1] or { id = "default" }
-    App.State.minimax.soundEffect = selectedEffect and selectedEffect.id or fallbackEffect.id
-    App.State.minimax.soundEffectIndex = effectIndex or 0
+    -- 音效只在音色效果器窗口使用
+    if App.UI.minimaxVoiceModifyItems and App.UI.minimaxVoiceModifyItems.minimaxSoundEffectCombo then
+        local _, effectIndex2 = App.UI.populateCombo(
+            App.UI.minimaxVoiceModifyItems.minimaxSoundEffectCombo,
+            cfg.soundEffects,
+            nil,
+            function(entry)
+                return entry.id
+            end,
+            function(entry)
+                return App.UI.localizeLabel(entry.labels)
+            end,
+            cfg.defaults.soundEffectIndex or 0
+        )
+        App.State.minimax.voiceEffectIndex = effectIndex2 or cfg.defaults.soundEffectIndex or 0
+        local fallbackEffect = cfg.soundEffects[(App.State.minimax.voiceEffectIndex or 0) + 1] or cfg.soundEffects[1] or { id = "default" }
+        App.State.minimax.soundEffect = fallbackEffect.id
+    end
 end
 
 function App.UI.refreshMiniMaxVoices(options)
@@ -5621,6 +6222,25 @@ function App.UI.bindDefaults()
     App.State.minimax.volume = minimaxDefaults.volume
     App.State.minimax.pitch = minimaxDefaults.pitch
     App.State.minimax.subtitle = minimaxDefaults.subtitle
+    App.State.minimax.voiceTimbre = minimaxDefaults.voiceTimbre or 0
+    App.State.minimax.voiceIntensity = minimaxDefaults.voiceIntensity or 0
+    App.State.minimax.voicePitch = minimaxDefaults.voicePitch or 0
+    App.State.minimax.voiceEffectIndex = minimaxDefaults.soundEffectIndex or 0
+    local vmItems = App.UI.minimaxVoiceModifyItems
+    if vmItems then
+        local function setModifyWidgets(prefix, value)
+            value = tonumber(value) or 0
+            setValueSafe(vmItems[prefix .. "Slider"], value)
+            setValueSafe(vmItems[prefix .. "SpinBoxLeft"], value < 0 and value or 0)
+            setValueSafe(vmItems[prefix .. "SpinBoxRight"], value > 0 and value or 0)
+        end
+        setModifyWidgets("minimaxTimbre", App.State.minimax.voiceTimbre)
+        setModifyWidgets("minimaxIntensity", App.State.minimax.voiceIntensity)
+        setModifyWidgets("minimaxModifyPitch", App.State.minimax.voicePitch)
+        if vmItems.minimaxSoundEffectCombo then
+            vmItems.minimaxSoundEffectCombo.CurrentIndex = App.State.minimax.voiceEffectIndex or 0
+        end
+    end
 
     if cloneItems then
         setCheckedSafe(cloneItems.minimaxOnlyAddID, minimaxCloneDefaults.onlyAddId)
@@ -5676,6 +6296,98 @@ function App.UI.bindDefaults()
     end
 end
 
+local loadingUpdatePending = false
+
+local function onLoadingConfirm(ev)
+    if not loadingUpdatePending then
+        return
+    end
+    local loadingItems = App.UI.loadingItems
+    if loadingItems then
+        setEnabledSafe(loadingItems.ConfirmButton, false)
+        setVisibleSafe(loadingItems.ConfirmButton, false)
+        setVisibleSafe(loadingItems.UpdateLabel, false)
+        setVisibleSafe(loadingItems.LoadLabel, true)
+        setTextSafe(loadingItems.LoadLabel, "Loading...")
+    end
+    loadingUpdatePending = false
+    if dispatcher and dispatcher.ExitLoop then
+        dispatcher:ExitLoop()
+    end
+end
+
+function App.checkForUpdates()
+    local loadingItems = App.UI.loadingItems
+    local ok, result = pcall(Services.supabaseCheckUpdate, SCRIPT_NAME)
+    if not ok then
+        print(string.format("[Update] Check failed: %s", tostring(result)))
+        return
+    end
+    if type(result) ~= "table" then
+        return
+    end
+    local latest = trim(tostring(result.latest or ""))
+    if latest == "" then
+        return
+    end
+    local current = trim(tostring(SCRIPT_VERSION or ""))
+    if latest == current then
+        return
+    end
+
+    local lang = (App.State.locale == "cn") and "cn" or "en"
+    local fallback = (lang == "cn") and "en" or "cn"
+    local primary = trim(tostring(result[lang] or ""))
+    local secondary = trim(tostring(result[fallback] or ""))
+    local lines = {}
+    if primary ~= "" then
+        table.insert(lines, primary)
+    elseif secondary ~= "" then
+        table.insert(lines, secondary)
+    end
+    local readableCurrent = current ~= "" and current or ((lang == "cn") and "未知" or "unknown")
+    local versionLine
+    if lang == "cn" then
+        versionLine = string.format("发现新版本：%s → %s，请前往购买页下载最新版本。", readableCurrent, latest)
+    else
+        versionLine = string.format("Update: %s → %s, Download on your purchase page.", readableCurrent, latest)
+    end
+    table.insert(lines, versionLine)
+    local notice = table.concat(lines, "\n")
+
+    if loadingItems then
+        setTextSafe(loadingItems.UpdateLabel, notice)
+        setVisibleSafe(loadingItems.UpdateLabel, true)
+        setVisibleSafe(loadingItems.LoadLabel, false)
+        setVisibleSafe(loadingItems.ConfirmButton, true)
+        setEnabledSafe(loadingItems.ConfirmButton, true)
+        if loadingItems.UpdateLabel then
+            loadingItems.UpdateLabel.StyleSheet = "color:#ff5555; font-size:20px;"
+        end
+    end
+
+    loadingUpdatePending = true
+    print(string.format("[Update] Latest version %s available (current %s).", latest, readableCurrent))
+    if dispatcher and dispatcher.RunLoop and loadingItems then
+        dispatcher:RunLoop()
+    end
+    loadingUpdatePending = false
+
+    if loadingItems then
+        setVisibleSafe(loadingItems.UpdateLabel, false)
+        setVisibleSafe(loadingItems.ConfirmButton, false)
+        setEnabledSafe(loadingItems.ConfirmButton, false)
+        setVisibleSafe(loadingItems.LoadLabel, true)
+        setTextSafe(loadingItems.LoadLabel, "Loading...")
+    end
+end
+
+if loadingWin and loadingWin.On then
+    function loadingWin.On.ConfirmButton.Clicked(ev)
+        onLoadingConfirm(ev)
+    end
+end
+
 local function resetAzureTabToDefaults()
     local items = App.UI.items or {}
     local defaults = App.Config.Azure.defaults
@@ -5720,6 +6432,19 @@ local function resetMiniMaxTabToDefaults()
     state.rate = rate
     state.volume = volume
     state.pitch = pitch
+    local vmItems = App.UI.minimaxVoiceModifyItems
+    if vmItems then
+        setVoiceModifyValue("timbre", defaults.voiceTimbre or 0)
+        setVoiceModifyValue("intensity", defaults.voiceIntensity or 0)
+        setVoiceModifyValue("pitch", defaults.voicePitch or 0)
+        if vmItems.minimaxSoundEffectCombo then
+            vmItems.minimaxSoundEffectCombo.CurrentIndex = defaults.soundEffectIndex or 0
+        end
+        state.voiceTimbre = defaults.voiceTimbre or 0
+        state.voiceIntensity = defaults.voiceIntensity or 0
+        state.voicePitch = defaults.voicePitch or 0
+        state.voiceEffectIndex = defaults.soundEffectIndex or 0
+    end
 end
 
 local function resetOpenAITabToDefaults()
@@ -5800,6 +6525,7 @@ function App.UI.buildTranslations()
             ShowMiniMax = "配置",
             ShowOpenAI = "配置",
             ShowMiniMaxClone = "克隆",
+            minimaxVoiceEffectButton = "音色效果调节",
             minimaxDeleteVoice = "删除",
             CopyrightButton = copyrightCn,
             infoTxt = infoCn,
@@ -5883,6 +6609,7 @@ function App.UI.buildTranslations()
             ShowMiniMax = "Config",
             ShowOpenAI = "Config",
             ShowMiniMaxClone = "Clone",
+            minimaxVoiceEffectButton = "Voice Effects",
             minimaxDeleteVoice = "Delete",
             CopyrightButton = copyrightEn,
             infoTxt = infoEn,
@@ -6123,6 +6850,52 @@ function win.On.minimaxPitchSpinBox.ValueChanged(ev)
     minimaxPitchSpinHandler(ev)
 end
 
+function minimaxVoiceModifyWin.On.minimaxTimbreSlider.ValueChanged(ev)
+    syncVoiceModifyFromControl("timbre", "minimaxTimbreSlider", eventNumericValue(ev))
+end
+
+function minimaxVoiceModifyWin.On.minimaxTimbreSpinBoxLeft.ValueChanged(ev)
+    local value = -(math.abs(eventNumericValue(ev) or 0))
+    syncVoiceModifyFromControl("timbre", "minimaxTimbreSpinBoxLeft", value)
+end
+
+function minimaxVoiceModifyWin.On.minimaxTimbreSpinBoxRight.ValueChanged(ev)
+    local value = math.abs(eventNumericValue(ev) or 0)
+    syncVoiceModifyFromControl("timbre", "minimaxTimbreSpinBoxRight", value)
+end
+
+function minimaxVoiceModifyWin.On.minimaxIntensitySlider.ValueChanged(ev)
+    syncVoiceModifyFromControl("intensity", "minimaxIntensitySlider", eventNumericValue(ev))
+end
+
+function minimaxVoiceModifyWin.On.minimaxIntensitySpinBoxLeft.ValueChanged(ev)
+    local value = -(math.abs(eventNumericValue(ev) or 0))
+    syncVoiceModifyFromControl("intensity", "minimaxIntensitySpinBoxLeft", value)
+end
+
+function minimaxVoiceModifyWin.On.minimaxIntensitySpinBoxRight.ValueChanged(ev)
+    local value = math.abs(eventNumericValue(ev) or 0)
+    syncVoiceModifyFromControl("intensity", "minimaxIntensitySpinBoxRight", value)
+end
+
+function minimaxVoiceModifyWin.On.minimaxModifyPitchSlider.ValueChanged(ev)
+    syncVoiceModifyFromControl("pitch", "minimaxModifyPitchSlider", eventNumericValue(ev))
+end
+
+function minimaxVoiceModifyWin.On.minimaxModifyPitchSpinBoxLeft.ValueChanged(ev)
+    local value = -(math.abs(eventNumericValue(ev) or 0))
+    syncVoiceModifyFromControl("pitch", "minimaxModifyPitchSpinBoxLeft", value)
+end
+
+function minimaxVoiceModifyWin.On.minimaxModifyPitchSpinBoxRight.ValueChanged(ev)
+    local value = math.abs(eventNumericValue(ev) or 0)
+    syncVoiceModifyFromControl("pitch", "minimaxModifyPitchSpinBoxRight", value)
+end
+
+function minimaxVoiceModifyWin.On.minimaxSoundEffectCombo.CurrentIndexChanged(ev)
+    handleVoiceModifyEffectChange(ev)
+end
+
 function win.On.OpenAIRateSlider.ValueChanged(ev)
     openaiRateSliderHandler(ev)
 end
@@ -6326,6 +7099,8 @@ end
 items.MyTabs.CurrentIndex = 0
 items.MyStack.CurrentIndex = 0
 
+App.checkForUpdates()
+
 msgbox:Hide()
 azureConfigWin:Hide()
 openaiConfigWin:Hide()
@@ -6378,6 +7153,10 @@ function win.On.ShowMiniMaxClone.Clicked(ev)
     App.MiniMaxClone.onShowWindow()
 end
 
+function win.On.minimaxVoiceEffectButton.Clicked(ev)
+    onShowVoiceModifyWindow()
+end
+
 function azureConfigWin.On.UseAPICheckBox.Clicked(ev)
     if azureUseApiProgrammatic then
         return
@@ -6399,6 +7178,18 @@ end
 
 function azureConfigWin.On.AzureConfigWin.Close(ev)
     azureConfigWin:Hide()
+end
+
+function minimaxVoiceModifyWin.On.MiniMaxVoiceModifyConfirm.Clicked(ev)
+    onVoiceModifyConfirm()
+end
+
+function minimaxVoiceModifyWin.On.MiniMaxVoiceModifyCancel.Clicked(ev)
+    onVoiceModifyCancel()
+end
+
+function minimaxVoiceModifyWin.On.MiniMaxVoiceModifyWin.Close(ev)
+    onVoiceModifyCancel()
 end
 
 local function handleTimelineSubtitleFetch(providerId)

@@ -1,6 +1,6 @@
 # ================= 用户配置 =================
 SCRIPT_NAME = "DaVinci TTS"
-SCRIPT_VERSION = " 3.7"
+SCRIPT_VERSION = " 3.8"
 SCRIPT_AUTHOR = "HEIBA"
 print(f"{SCRIPT_NAME} | {SCRIPT_VERSION.strip()} | {SCRIPT_AUTHOR}")
 SCREEN_WIDTH = 1920
@@ -320,6 +320,9 @@ _loading_confirmation_pending = False
 # ================== Supabase 客户端 ==================
 SUPABASE_URL = "https://tbjlsielfxmkxldzmokc.supabase.co"
 SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRiamxzaWVsZnhta3hsZHptb2tjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgxMDc3MDIsImV4cCI6MjA3MzY4MzcwMn0.FTgYJJ-GlMcQKOSWu63TufD6Q_5qC_M4cvcd3zpcFJo"
+AZURE_SPEECH_PROVIDER = "AZURE_SPEECH"
+AZURE_FALLBACK_REGION = "eastus"
+AZURE_FALLBACK_OUTPUT_FORMAT = "audio-48khz-96kbitrate-mono-mp3"
 
 
 class SupabaseClient:
@@ -335,8 +338,6 @@ class SupabaseClient:
     def fetch_provider_secret(
         self,
         provider: str,
-        *,
-        user_id: str,
         timeout: Optional[int] = None,
         max_retry: int = 3,
     ) -> str:
@@ -421,6 +422,26 @@ class SupabaseClient:
 
 
 supabase_client = SupabaseClient(base_url=SUPABASE_URL, anon_key=SUPABASE_ANON_KEY)
+_azure_speech_key_cache: Optional[str] = None
+_azure_speech_key_lock = threading.Lock()
+
+
+def get_cached_azure_speech_key() -> tuple:
+    """
+    通过 Supabase 拉取 Azure Speech Key，结果缓存至插件退出。
+    返回 (key, error_message)
+    """
+    global _azure_speech_key_cache
+    if _azure_speech_key_cache:
+        return _azure_speech_key_cache, None
+    with _azure_speech_key_lock:
+        if _azure_speech_key_cache:
+            return _azure_speech_key_cache, None
+        try:
+            _azure_speech_key_cache = supabase_client.fetch_provider_secret(AZURE_SPEECH_PROVIDER)
+            return _azure_speech_key_cache, None
+        except Exception as exc:
+            return None, str(exc)
 
 def _on_loading_confirm(ev):
     dispatcher.ExitLoop()
@@ -532,14 +553,7 @@ except ImportError:
     print("DaVinciResolveScript from DaVinci")
 """
 
-try:
-    import requests
-    from requests.adapters import HTTPAdapter
-    from urllib3.util import Retry
-    import azure.cognitiveservices.speech as speechsdk
-    import edge_tts
-    import pypinyin
-except ImportError:
+def _resolve_lib_dir() -> str:
     system = platform.system()
     if system == "Windows":
         program_data = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
@@ -565,14 +579,55 @@ except ImportError:
         )
     else:
         lib_dir = os.path.normpath(
-            os.path.join(SCRIPT_PATH, "..", "..", "..","HB", SCRIPT_NAME, "Lib")
+            os.path.join(SCRIPT_PATH, "..", "..", "..", "HB", SCRIPT_NAME, "Lib")
         )
+    return os.path.normpath(lib_dir)
 
-    lib_dir = os.path.normpath(lib_dir)
+
+def _ensure_lib_priority(lib_dir: str) -> bool:
     if os.path.isdir(lib_dir):
+        if lib_dir in sys.path:
+            sys.path.remove(lib_dir)
         sys.path.insert(0, lib_dir)
-    else:
-        print(f"Warning: The TTS/Lib directory doesn’t exist:：{lib_dir}", file=sys.stderr)
+        return True
+    print(f"Warning: The TTS/Lib directory doesn't exist: {lib_dir}", file=sys.stderr)
+    return False
+
+
+def _clear_cached_modules(mod_names: List[str]) -> None:
+    for name in mod_names:
+        sys.modules.pop(name, None)
+
+
+LIB_DIR = _resolve_lib_dir()
+_lib_dir_inserted = _ensure_lib_priority(LIB_DIR)
+_dependency_modules = [
+    "requests",
+    "requests.adapters",
+    "urllib3",
+    "urllib3.util",
+    "azure",
+    "azure.cognitiveservices",
+    "azure.cognitiveservices.speech",
+    "edge_tts",
+    "pypinyin",
+]
+
+try:
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util import Retry
+    import azure.cognitiveservices.speech as speechsdk
+    import edge_tts
+    import pypinyin
+except ImportError as lib_err:
+    _clear_cached_modules(_dependency_modules)
+    if _lib_dir_inserted:
+        try:
+            sys.path.remove(LIB_DIR)
+        except ValueError:
+            pass
+        sys.path.append(LIB_DIR)
 
     try:
         import requests
@@ -581,9 +636,9 @@ except ImportError:
         import azure.cognitiveservices.speech as speechsdk
         import edge_tts
         import pypinyin
-        print(lib_dir)
+        print(f"Falling back to global dependencies; Lib import failed: {lib_err}", file=sys.stderr)
     except ImportError as e:
-        print("Dependency import failed—please make sure all dependencies are bundled into the Lib directory:", lib_dir, "\nError message:", e)
+        print("Dependency import failed—please make sure all dependencies are bundled into the Lib directory or installed globally:", LIB_DIR, "\nError message:", e)
 
 
 try:
@@ -895,7 +950,20 @@ class AzureTTSProvider:
         prosody_pitch = f"+{int((pitch-1)*100)}Hz" if pitch > 1 else f"-{int((1-pitch)*100)}Hz"
         prosody_volume = f"+{int((volume-1)*100)}%" if volume > 1 else f"-{int((1-volume)*100)}%"
         
-        print(f"Voice Name: {voice_name}, Rate: {prosody_rate}, Pitch: {prosody_pitch}, Volume: {prosody_volume}")
+        debug_payload = {
+            "voice": voice_name,
+            "rate": prosody_rate,
+            "pitch": prosody_pitch,
+            "volume": prosody_volume,
+            "text_len": len(text or ""),
+            "text_preview": (text or "")[:200].replace("\n", "\\n"),
+            "output": filename,
+            "frames": {"start": start_frame, "end": end_frame},
+        }
+        try:
+            print("[EdgeTTS Debug] payload:", json.dumps(debug_payload, ensure_ascii=False))
+        except Exception:
+            print("[EdgeTTS Debug] payload (fallback):", debug_payload)
         
         try:
             communicate = edge_tts.Communicate(text, voice_name, rate=prosody_rate, volume=prosody_volume, pitch=prosody_pitch)
@@ -906,8 +974,80 @@ class AzureTTSProvider:
         except Exception as e:
             error_message = f"EdgeTTS synthesis failed: {e}"
             print(error_message)
+            fallback_success, fallback_error = self._synthesize_via_azuretts(
+                text=text,
+                voice_name=voice_name,
+                prosody_rate=prosody_rate,
+                prosody_pitch=prosody_pitch,
+                prosody_volume=prosody_volume,
+                filename=filename,
+                start_frame=start_frame,
+                end_frame=end_frame,
+            )
+            if fallback_success:
+                return True, None
             show_warning_message(STATUS_MESSAGES.synthesis_failed)
-            return False, error_message
+            return False, fallback_error or error_message
+
+    def _build_fallback_ssml(self, text, voice_name, prosody_rate, prosody_pitch, prosody_volume):
+        lang_attr = lang if lang else "en-US"
+        speak = ET.Element(
+            "speak",
+            xmlns="http://www.w3.org/2001/10/synthesis",
+            attrib={"version": "1.0", "xml:lang": lang_attr},
+        )
+        voice = ET.SubElement(speak, "voice", name=voice_name)
+        prosody_attrs = {}
+        if prosody_rate:
+            prosody_attrs["rate"] = prosody_rate
+        if prosody_pitch:
+            prosody_attrs["pitch"] = prosody_pitch
+        if prosody_volume:
+            prosody_attrs["volume"] = prosody_volume
+        prosody_el = ET.SubElement(voice, "prosody", attrib=prosody_attrs)
+        prosody_el.text = text or ""
+        return format_xml(ET.tostring(speak, encoding="unicode"))
+
+    def _synthesize_via_azuretts(self, text, voice_name, prosody_rate, prosody_pitch, prosody_volume, filename, start_frame, end_frame):
+        """
+        EdgeTTS 失败时，使用 Azure REST 接口兜底（固定 eastus）。
+        """
+        print(
+            f"[EdgeTTS Fallback] Switching to Azure REST: voice={voice_name}, "
+            f"region={AZURE_FALLBACK_REGION}, format={AZURE_FALLBACK_OUTPUT_FORMAT}"
+        )
+        secret, fetch_err = get_cached_azure_speech_key()
+        if not secret:
+            return False, f"Failed to fetch Azure speech key: {fetch_err}"
+
+        ssml = self._build_fallback_ssml(text, voice_name, prosody_rate, prosody_pitch, prosody_volume)
+        headers = {
+            "Content-Type": "application/ssml+xml",
+            "X-Microsoft-OutputFormat": AZURE_FALLBACK_OUTPUT_FORMAT,
+            "Ocp-Apim-Subscription-Key": secret,
+            "User-Agent": f"{SCRIPT_NAME}/{SCRIPT_VERSION.strip()}",
+        }
+        endpoint = f"https://{AZURE_FALLBACK_REGION}.tts.speech.microsoft.com/cognitiveservices/v1"
+
+        try:
+            response = session.post(endpoint, data=ssml.encode("utf-8"), headers=headers, timeout=90)
+            response.raise_for_status()
+            content_type = response.headers.get("Content-Type", "")
+            if "audio" not in content_type:
+                return False, f"Azure TTS fallback failed: unexpected content type {content_type}"
+            with open(filename, "wb") as f:
+                f.write(response.content)
+            time.sleep(1)
+            add_to_media_pool_and_timeline(start_frame, end_frame, filename)
+            return True, None
+        except requests.exceptions.RequestException as exc:
+            detail = ""
+            if exc.response is not None:
+                try:
+                    detail = exc.response.text[:200]
+                except Exception:
+                    detail = str(exc)
+            return False, f"Azure TTS fallback failed: {exc}; {detail}"
 
     def preview(self, text, voice_name, rate, pitch, volume, style, style_degree, multilingual, audio_format):
         if not self.use_api:
@@ -3090,14 +3230,6 @@ def get_current_subtitle(current_timeline):
             end_frame = item.GetEnd()
             if start_frame is not None and end_frame is not None and start_frame <= current_frame <= end_frame:
                 selected_subtitles.append(item)
-    
-    for subtitle in selected_subtitles:
-        print(f"Start: {frame_to_timecode(subtitle.GetStart(), frame_rate)}")
-        print(f"Start: {subtitle.GetStart()}")
-        print(f"End: {frame_to_timecode(subtitle.GetEnd(), frame_rate)}")
-        print(f"Duration: {subtitle.GetDuration()}")
-        print(f"Text: {subtitle.GetName()}")  # 假设字幕文本是通过 GetName() 获取的
-        print(subtitle.GetStart())
     if selected_subtitles:
         return selected_subtitles[0].GetName(), selected_subtitles[0].GetStart(), selected_subtitles[0].GetEnd()
     else:
