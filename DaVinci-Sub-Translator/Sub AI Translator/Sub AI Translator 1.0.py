@@ -1,6 +1,6 @@
 # ================= 用户配置 =================
 SCRIPT_NAME    = "Sub AI Translator"
-SCRIPT_VERSION = " 1.8"
+SCRIPT_VERSION = " 1.9"
 SCRIPT_AUTHOR  = "HEIBA"
 print(f"{SCRIPT_NAME} | {SCRIPT_VERSION.strip()} | {SCRIPT_AUTHOR}")
 SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
@@ -12,8 +12,8 @@ SCRIPT_KOFI_URL      = "https://ko-fi.com/heiba"
 SCRIPT_TAOBAO_URL = "https://shop120058726.taobao.com/"
 
 CONCURRENCY = 10
-MAX_RETRY   = 3
-TIMEOUT     = 30
+MAX_RETRY   = 1
+TIMEOUT     = 10
 
 OPENAI_FORMAT_API_KEY   = ""
 OPENAI_FORMAT_BASE_URL   = "https://api.openai.com"
@@ -25,6 +25,7 @@ GLM_BASE_URL = "https://open.bigmodel.cn/api/paas"
 GOOGLE_PROVIDER         = "Google"
 AZURE_PROVIDER          = "Microsoft                     "
 GLM_PROVIDER            = "GLM-4-Flash               ( Free AI  )"
+SILICONFLOW_PROVIDER    = "SiliconFlow                 ( Free AI  )"
 OPENAI_FORMAT_PROVIDER  = "Open AI Format         ( API Key )"
 DEEPL_PROVIDER          = "DeepL                          ( API Key )"
 
@@ -1120,6 +1121,61 @@ class GLMProvider(BaseProvider):
                     raise
                 time.sleep(2 ** attempt)
 
+# -- SiliconFlow (via Supabase secret) ------------------------
+class SiliconFlowProvider(BaseProvider):
+    _session = requests.Session()
+    name = SILICONFLOW_PROVIDER
+    
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self._api_key = None
+        self._key_lock = threading.Lock()
+
+    def _ensure_api_key(self):
+        with self._key_lock:
+            if not self._api_key:
+                # 这里的 "SILICONFLOUW" 需与 Lua 处一致 (SILICONFLOUW_SUPABASE_PROVIDER)
+                # 或与 Supabase 数据库里的 provider name 一致
+                self._api_key = supabase_client.fetch_provider_secret("SILICONFLOUW", user_id=USERID)
+            return self._api_key
+
+    def translate(self, text, target_lang, prefix: str = "", suffix: str = "", prompt_content: str = None):
+        prompt_content = prompt_content or _compose_prompt_content(target_lang)
+
+        messages = [{"role": "system", "content": prompt_content}]
+        ctx = "\nCONTEXT (do not translate)\n".join(filter(None, [prefix, suffix]))
+        if ctx:
+            messages.append({"role": "assistant", "content": ctx})
+        messages.append({"role": "user", "content": f"<<< Sentence >>>\n{text}"})
+
+        payload = {
+            "model":       self.cfg.get("model", "THUDM/GLM-4-9B-0414"),
+            "messages":    messages,
+            "temperature": self.cfg.get("temperature", OPENAI_DEFAULT_TEMPERATURE),
+            "stream":      False
+        }
+        
+        api_key = self._ensure_api_key()
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type":  "application/json",
+        }
+        
+        url = self.cfg.get("base_url", "https://api.siliconflow.cn/v1/chat/completions")
+
+        for attempt in range(1, self.cfg.get("max_retry", 3) + 1):
+            try:
+                r = self._session.post(url, headers=headers, json=payload,
+                                       timeout=self.cfg.get("timeout", 30))
+                r.raise_for_status()
+                resp = r.json()
+                text_out = resp["choices"][0]["message"]["content"].strip()
+                usage    = resp.get("usage", {})
+                return text_out, usage
+            except Exception:
+                if attempt == self.cfg.get("max_retry", 3):
+                    raise
+                time.sleep(2 ** attempt)
 # =============== Provider 管理器 ===============
 class ProviderManager:
     def __init__(self, cfg: dict):
@@ -1152,7 +1208,7 @@ PROVIDERS_CFG = {
                 "translate.google.com.hk",
                 "translate.google.com.tw"],  # 可多填备用域名
             "max_retry": MAX_RETRY,
-            "timeout": 10
+            "timeout": TIMEOUT
         },
         AZURE_PROVIDER: {
             "class":  "AzureProvider",
@@ -1160,13 +1216,21 @@ PROVIDERS_CFG = {
             "api_key":  AZURE_DEFAULT_KEY,
             "region":   AZURE_DEFAULT_REGION,
             "max_retry": MAX_RETRY,
-            "timeout":  15
+            "timeout":  TIMEOUT
         },
         GLM_PROVIDER: {
             "class": "GLMProvider",
             "base_url": GLM_BASE_URL,
             # 默认使用最新可用的 4.5 Flash 型号，兼容 z.ai 与 bigmodel 域名
             "model":    "glm-4-flash",
+            "temperature": OPENAI_DEFAULT_TEMPERATURE,
+            "max_retry": MAX_RETRY,
+            "timeout":  TIMEOUT,
+        },
+        SILICONFLOW_PROVIDER: {
+            "class": "SiliconFlowProvider",
+            "base_url": "https://api.siliconflow.cn/v1/chat/completions",
+            "model":    "THUDM/GLM-4-9B-0414",
             "temperature": OPENAI_DEFAULT_TEMPERATURE,
             "max_retry": MAX_RETRY,
             "timeout":  TIMEOUT,
@@ -1184,7 +1248,7 @@ PROVIDERS_CFG = {
             "class":   "DeepLProvider",
             "api_key": "",          
             "max_retry": MAX_RETRY,
-            "timeout":  15,
+            "timeout":  TIMEOUT,
         },
 
     }
@@ -3001,6 +3065,10 @@ def get_provider_and_target():
     if provider_name == GLM_PROVIDER:
         # GLM 使用聊天补全，目标语言直接传入提示词
         return prov_manager.get(GLM_PROVIDER), target_name
+
+    if provider_name == SILICONFLOW_PROVIDER:
+        # SILICONFLOW_PROVIDER 使用聊天补全，目标语言直接传入提示词
+        return prov_manager.get(SILICONFLOW_PROVIDER), target_name
 
     if provider_name == GOOGLE_PROVIDER:
         return prov_manager.get(GOOGLE_PROVIDER), GOOGLE_LANG_CODE_MAP[target_name]

@@ -519,129 +519,6 @@ local SEP = package.config:sub(1, 1)
 
 local IS_WINDOWS = (SEP == "\\")
 
-if IS_WINDOWS then
-    local ok, ffi = pcall(require, "ffi")
-    if ok then
-        local kernel32 = ffi.load("kernel32")
-        local CP_UTF8 = 65001
-        local CREATE_NO_WINDOW = 0x08000000
-        local STARTF_USESHOWWINDOW = 0x00000001
-        local INFINITE = 0xFFFFFFFF
-
-        ffi.cdef[[
-            typedef unsigned short WORD;
-            typedef unsigned long DWORD;
-            typedef int BOOL;
-            typedef void* HANDLE;
-            typedef wchar_t* LPWSTR;
-            typedef const wchar_t* LPCWSTR;
-            typedef void* LPVOID;
-            typedef unsigned char BYTE;
-
-            typedef struct _STARTUPINFOW {
-                DWORD cb;
-                LPWSTR lpReserved;
-                LPWSTR lpDesktop;
-                LPWSTR lpTitle;
-                DWORD dwX;
-                DWORD dwY;
-                DWORD dwXSize;
-                DWORD dwYSize;
-                DWORD dwXCountChars;
-                DWORD dwYCountChars;
-                DWORD dwFillAttribute;
-                DWORD dwFlags;
-                WORD wShowWindow;
-                WORD cbReserved2;
-                BYTE *lpReserved2;
-                HANDLE hStdInput;
-                HANDLE hStdOutput;
-                HANDLE hStdError;
-            } STARTUPINFOW;
-
-            typedef struct _PROCESS_INFORMATION {
-                HANDLE hProcess;
-                HANDLE hThread;
-                DWORD dwProcessId;
-                DWORD dwThreadId;
-            } PROCESS_INFORMATION;
-
-            BOOL CreateProcessW(
-                LPCWSTR lpApplicationName,
-                LPWSTR lpCommandLine,
-                LPVOID lpProcessAttributes,
-                LPVOID lpThreadAttributes,
-                BOOL bInheritHandles,
-                DWORD dwCreationFlags,
-                LPVOID lpEnvironment,
-                LPCWSTR lpCurrentDirectory,
-                STARTUPINFOW *lpStartupInfo,
-                PROCESS_INFORMATION *lpProcessInformation
-            );
-
-            DWORD WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds);
-            BOOL GetExitCodeProcess(HANDLE hProcess, DWORD *lpExitCode);
-            BOOL CloseHandle(HANDLE hObject);
-            DWORD GetLastError(void);
-            int MultiByteToWideChar(unsigned int CodePage, DWORD dwFlags,
-                                    const char *lpMultiByteStr, int cbMultiByte,
-                                    wchar_t *lpWideCharStr, int cchWideChar);
-        ]]
-
-        local function utf8ToWideBuffer(str)
-            local required = kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, nil, 0)
-            if required == 0 then
-                return nil
-            end
-            local buffer = ffi.new("wchar_t[?]", required)
-            if kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, buffer, required) == 0 then
-                return nil
-            end
-            return buffer
-        end
-
-        runHiddenWindowsCommand = function(command)
-            local comspec = os.getenv("COMSPEC") or "C:\\Windows\\System32\\cmd.exe"
-            local fullCommand = string.format('"%s" /c %s', comspec, command)
-            local cmdBuffer = utf8ToWideBuffer(fullCommand)
-            if not cmdBuffer then
-                return false, "command_encoding_failed"
-            end
-
-            local startupInfo = ffi.new("STARTUPINFOW")
-            startupInfo.cb = ffi.sizeof(startupInfo)
-            startupInfo.dwFlags = STARTF_USESHOWWINDOW
-            startupInfo.wShowWindow = 0 -- SW_HIDE
-
-            local processInfo = ffi.new("PROCESS_INFORMATION")
-            local created = kernel32.CreateProcessW(
-                nil,
-                cmdBuffer,
-                nil,
-                nil,
-                false,
-                CREATE_NO_WINDOW,
-                nil,
-                nil,
-                startupInfo,
-                processInfo
-            )
-
-            if created == 0 then
-                return false, kernel32.GetLastError()
-            end
-
-            kernel32.WaitForSingleObject(processInfo.hProcess, INFINITE)
-
-            local exitCodeArr = ffi.new("DWORD[1]", 0)
-            kernel32.GetExitCodeProcess(processInfo.hProcess, exitCodeArr)
-            kernel32.CloseHandle(processInfo.hProcess)
-            kernel32.CloseHandle(processInfo.hThread)
-
-            return exitCodeArr[0] == 0, exitCodeArr[0]
-        end
-    end
-end
 
 function runShellCommand(command)
     if IS_WINDOWS and type(runHiddenWindowsCommand) == "function" then
@@ -732,100 +609,243 @@ function Paths.inVoices(...)
     return Utils.joinPath(Paths.voicesDir, ...)
 end
 
--- Windows UTF-8 safe file operations to avoid ANSI fopen codepage issues
+-- Windows helpers (ffi): hidden command + UTF-8 safe file IO
 local winfs = {}
 if IS_WINDOWS then
     local okFfi, ffi = pcall(require, "ffi")
     if okFfi and ffi then
         local okKernel, kernel32 = pcall(ffi.load, "kernel32")
         local okMsvcrt, msvcrt = pcall(ffi.load, "msvcrt")
+
+        if okKernel and kernel32 then
+            local CP_UTF8 = 65001
+            local CREATE_NO_WINDOW = 0x08000000
+            local STARTF_USESHOWWINDOW = 0x00000001
+            local INFINITE = 0xFFFFFFFF
+
+            pcall(ffi.cdef, [[
+                typedef unsigned short WORD;
+                typedef unsigned long DWORD;
+                typedef int BOOL;
+                typedef void* HANDLE;
+                typedef wchar_t* LPWSTR;
+                typedef const wchar_t* LPCWSTR;
+                typedef void* LPVOID;
+                typedef unsigned char BYTE;
+
+                typedef struct _STARTUPINFOW {
+                    DWORD cb;
+                    LPWSTR lpReserved;
+                    LPWSTR lpDesktop;
+                    LPWSTR lpTitle;
+                    DWORD dwX;
+                    DWORD dwY;
+                    DWORD dwXSize;
+                    DWORD dwYSize;
+                    DWORD dwXCountChars;
+                    DWORD dwYCountChars;
+                    DWORD dwFillAttribute;
+                    DWORD dwFlags;
+                    WORD wShowWindow;
+                    WORD cbReserved2;
+                    BYTE *lpReserved2;
+                    HANDLE hStdInput;
+                    HANDLE hStdOutput;
+                    HANDLE hStdError;
+                } STARTUPINFOW;
+
+                typedef struct _PROCESS_INFORMATION {
+                    HANDLE hProcess;
+                    HANDLE hThread;
+                    DWORD dwProcessId;
+                    DWORD dwThreadId;
+                } PROCESS_INFORMATION;
+
+                BOOL CreateProcessW(
+                    LPCWSTR lpApplicationName,
+                    LPWSTR lpCommandLine,
+                    LPVOID lpProcessAttributes,
+                    LPVOID lpThreadAttributes,
+                    BOOL bInheritHandles,
+                    DWORD dwCreationFlags,
+                    LPVOID lpEnvironment,
+                    LPCWSTR lpCurrentDirectory,
+                    STARTUPINFOW *lpStartupInfo,
+                    PROCESS_INFORMATION *lpProcessInformation
+                );
+
+                DWORD WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds);
+                BOOL GetExitCodeProcess(HANDLE hProcess, DWORD *lpExitCode);
+                BOOL CloseHandle(HANDLE hObject);
+                DWORD GetLastError(void);
+                int MultiByteToWideChar(unsigned int CodePage, DWORD dwFlags,
+                                        const char *lpMultiByteStr, int cbMultiByte,
+                                        wchar_t *lpWideCharStr, int cchWideChar);
+            ]])
+
+            local function utf8ToWideBuffer(str)
+                local okReq, required = pcall(function()
+                    return kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, nil, 0)
+                end)
+                if not okReq or required == 0 then
+                    return nil
+                end
+                local buffer = ffi.new("wchar_t[?]", required)
+                local okFill, filled = pcall(function()
+                    return kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, buffer, required)
+                end)
+                if not okFill or filled == 0 then
+                    return nil
+                end
+                return buffer
+            end
+
+            local okCreate = pcall(function() return kernel32.CreateProcessW end)
+            local okM2W = pcall(function() return kernel32.MultiByteToWideChar end)
+            if okCreate and okM2W then
+                runHiddenWindowsCommand = function(command)
+                    local comspec = os.getenv("COMSPEC") or "C:\\Windows\\System32\\cmd.exe"
+                    local fullCommand = string.format('"%s" /c %s', comspec, command)
+                    local cmdBuffer = utf8ToWideBuffer(fullCommand)
+                    if not cmdBuffer then
+                        return false, "command_encoding_failed"
+                    end
+
+                    local startupInfo = ffi.new("STARTUPINFOW")
+                    startupInfo.cb = ffi.sizeof(startupInfo)
+                    startupInfo.dwFlags = STARTF_USESHOWWINDOW
+                    startupInfo.wShowWindow = 0 -- SW_HIDE
+
+                    local processInfo = ffi.new("PROCESS_INFORMATION")
+                    local created = kernel32.CreateProcessW(
+                        nil,
+                        cmdBuffer,
+                        nil,
+                        nil,
+                        false,
+                        CREATE_NO_WINDOW,
+                        nil,
+                        nil,
+                        startupInfo,
+                        processInfo
+                    )
+
+                    if created == 0 then
+                        return false, kernel32.GetLastError()
+                    end
+
+                    kernel32.WaitForSingleObject(processInfo.hProcess, INFINITE)
+                    local exitCodeArr = ffi.new("DWORD[1]", 0)
+                    kernel32.GetExitCodeProcess(processInfo.hProcess, exitCodeArr)
+                    kernel32.CloseHandle(processInfo.hProcess)
+                    kernel32.CloseHandle(processInfo.hThread)
+
+                    return exitCodeArr[0] == 0, exitCodeArr[0]
+                end
+            end
+        end
+
         if okKernel and okMsvcrt and kernel32 and msvcrt then
             local CP_UTF8 = 65001
 
-            ffi.cdef[[
-                typedef unsigned short WCHAR;
-                typedef unsigned int UINT;
-                typedef long LONG;
-                typedef unsigned long DWORD;
-                typedef unsigned long size_t;
-                typedef struct _iobuf FILE;
+            local okSizeT = pcall(function() return ffi.sizeof("size_t") end)
+            if not okSizeT then
+                pcall(ffi.cdef, [[ typedef unsigned long size_t; ]])
+            end
 
-                int MultiByteToWideChar(UINT CodePage, DWORD dwFlags,
-                                        const char* lpMultiByteStr, int cbMultiByte,
-                                        WCHAR* lpWideCharStr, int cchWideChar);
-                FILE* _wfopen(const WCHAR* filename, const WCHAR* mode);
+            pcall(ffi.cdef, [[
+                typedef struct _iobuf FILE;
+                FILE* _wfopen(const wchar_t* filename, const wchar_t* mode);
                 int fclose(FILE* stream);
                 size_t fread(void* ptr, size_t size, size_t count, FILE* stream);
                 size_t fwrite(const void* ptr, size_t size, size_t count, FILE* stream);
                 int fseek(FILE* stream, long offset, int origin);
                 long ftell(FILE* stream);
-            ]]
+            ]])
 
-            local function utf8ToWide(str)
-                local needed = kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, nil, 0)
-                if needed == 0 then return nil end
-                local buf = ffi.new("WCHAR[?]", needed)
-                if kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, buf, needed) == 0 then
-                    return nil
+            local okM2W = pcall(function() return kernel32.MultiByteToWideChar end)
+            local okWfopen = pcall(function() return msvcrt._wfopen end)
+            local okFclose = pcall(function() return msvcrt.fclose end)
+            local okFseek = pcall(function() return msvcrt.fseek end)
+            local okFtell = pcall(function() return msvcrt.ftell end)
+            local okFread = pcall(function() return msvcrt.fread end)
+            local okFwrite = pcall(function() return msvcrt.fwrite end)
+            local canWinfs = okM2W and okWfopen and okFclose and okFseek and okFtell and okFread and okFwrite
+
+            if canWinfs then
+                local function utf8ToWide(str)
+                    local okReq, needed = pcall(function()
+                        return kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, nil, 0)
+                    end)
+                    if not okReq or needed == 0 then
+                        return nil
+                    end
+                    local buf = ffi.new("wchar_t[?]", needed)
+                    local okFill, filled = pcall(function()
+                        return kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, buf, needed)
+                    end)
+                    if not okFill or filled == 0 then
+                        return nil
+                    end
+                    return buf
                 end
-                return buf
-            end
 
-            local function openWide(path, mode)
-                local wpath = utf8ToWide(path or "")
-                local wmode = utf8ToWide(mode or "rb")
-                if not wpath or not wmode then
-                    return nil, "path_encoding_failed"
+                local function openWide(path, mode)
+                    local wpath = utf8ToWide(path or "")
+                    local wmode = utf8ToWide(mode or "rb")
+                    if not wpath or not wmode then
+                        return nil, "path_encoding_failed"
+                    end
+                    local f = msvcrt._wfopen(wpath, wmode)
+                    if f == nil then
+                        return nil, "wfopen_failed"
+                    end
+                    return f
                 end
-                local f = msvcrt._wfopen(wpath, wmode)
-                if f == nil then
-                    return nil, "wfopen_failed"
-                end
-                return f
-            end
 
-            function winfs.readFile(path)
-                local f, err = openWide(path, "rb")
-                if not f then return nil, err end
-                msvcrt.fseek(f, 0, 2) -- SEEK_END
-                local size = tonumber(msvcrt.ftell(f)) or 0
-                if size < 0 then size = 0 end
-                msvcrt.fseek(f, 0, 0) -- SEEK_SET
-                local buf = ffi.new("uint8_t[?]", size)
-                local read = msvcrt.fread(buf, 1, size, f)
-                msvcrt.fclose(f)
-                return ffi.string(buf, read)
-            end
-
-            function winfs.writeFile(path, content)
-                local f, err = openWide(path, "wb")
-                if not f then return false, err end
-                local data = content or ""
-                local len = #data
-                local written = msvcrt.fwrite(data, 1, len, f)
-                msvcrt.fclose(f)
-                if written ~= len then
-                    return false, "write_failed"
-                end
-                return true
-            end
-
-            function winfs.fileExists(path)
-                local f = select(1, openWide(path, "rb"))
-                if f then
+                function winfs.readFile(path)
+                    local f, err = openWide(path, "rb")
+                    if not f then return nil, err end
+                    msvcrt.fseek(f, 0, 2) -- SEEK_END
+                    local size = tonumber(msvcrt.ftell(f)) or 0
+                    if size < 0 then size = 0 end
+                    msvcrt.fseek(f, 0, 0) -- SEEK_SET
+                    local buf = ffi.new("uint8_t[?]", size)
+                    local read = msvcrt.fread(buf, 1, size, f)
                     msvcrt.fclose(f)
+                    return ffi.string(buf, read)
+                end
+
+                function winfs.writeFile(path, content)
+                    local f, err = openWide(path, "wb")
+                    if not f then return false, err end
+                    local data = content or ""
+                    local len = #data
+                    local written = msvcrt.fwrite(data, 1, len, f)
+                    msvcrt.fclose(f)
+                    if written ~= len then
+                        return false, "write_failed"
+                    end
                     return true
                 end
-                return false
-            end
 
-            function winfs.getFileSize(path)
-                local f = select(1, openWide(path, "rb"))
-                if not f then return nil end
-                msvcrt.fseek(f, 0, 2)
-                local size = tonumber(msvcrt.ftell(f))
-                msvcrt.fclose(f)
-                return size
+                function winfs.fileExists(path)
+                    local f = select(1, openWide(path, "rb"))
+                    if f then
+                        msvcrt.fclose(f)
+                        return true
+                    end
+                    return false
+                end
+
+                function winfs.getFileSize(path)
+                    local f = select(1, openWide(path, "rb"))
+                    if not f then return nil end
+                    msvcrt.fseek(f, 0, 2)
+                    local size = tonumber(msvcrt.ftell(f))
+                    msvcrt.fclose(f)
+                    return size
+                end
             end
         end
     end
