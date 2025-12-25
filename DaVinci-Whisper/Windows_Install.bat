@@ -18,8 +18,10 @@ set "SCRIPT_NAME=DaVinci Whisper"
 set "UTILITY_DIR=C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility"
 set "WHEEL_DIR=C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\HB\%SCRIPT_NAME%\wheel"
 set "TARGET_DIR=C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\HB\%SCRIPT_NAME%\Lib"
-rem All required packages
-set "PACKAGES=faster-whisper==1.1.1 requests regex"
+rem Binary packages (have prebuilt wheels)
+set "BINARY_PACKAGES=faster-whisper==1.1.1 requests regex"
+rem Pure Python packages (no prebuilt wheel, need source install)
+set "PURE_PYTHON_PACKAGES=jieba"
 rem Official and mirror indexes
 set "PIP_OFFICIAL=https://pypi.org/simple"
 set "PIP_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -39,10 +41,11 @@ if not exist "%UTILITY_DIR%" (
 )
 
 if exist "%SOURCE_DIR%" (
-    rem If the target folder exists, delete it first to ensure a clean copy (overwrite).
+    rem If the target folder exists, remove contents except model folder
     if exist "%UTILITY_DIR%\%SCRIPT_NAME%" (
-        echo [%DATE% %TIME%] Target folder exists, removing old version: "%UTILITY_DIR%\%SCRIPT_NAME%"
-        rmdir /s /q "%UTILITY_DIR%\%SCRIPT_NAME%"
+        echo [%DATE% %TIME%] Target folder exists, updating while preserving model folder...
+        for /d %%d in ("%UTILITY_DIR%\%SCRIPT_NAME%\*") do if /I not "%%~nxd"=="model" rmdir /s /q "%%d" 2>nul
+        for %%f in ("%UTILITY_DIR%\%SCRIPT_NAME%\*.*") do del /q "%%f" 2>nul
     )
     
     echo [%DATE% %TIME%] Copying "%SOURCE_DIR%" to "%UTILITY_DIR%\%SCRIPT_NAME%"
@@ -57,12 +60,12 @@ if exist "%SOURCE_DIR%" (
 )
 
 rem 3. Create wheel directory if it does not exist
-if exist "%WHEEL_DIR%" (
-    echo [%DATE% %TIME%] Wheel download directory exists, cleaning: "%WHEEL_DIR%"
-    rmdir /s /q "%WHEEL_DIR%"
+if not exist "%WHEEL_DIR%" (
+    echo [%DATE% %TIME%] Creating wheel download directory: "%WHEEL_DIR%"
+    mkdir "%WHEEL_DIR%"
+) else (
+    echo [%DATE% %TIME%] Wheel download directory already exists: "%WHEEL_DIR%"
 )
-echo [%DATE% %TIME%] Creating wheel download directory: "%WHEEL_DIR%"
-mkdir "%WHEEL_DIR%"
 
 rem 4. Clear pip cache to avoid potential corruption
 echo [%DATE% %TIME%] Clearing pip cache
@@ -81,35 +84,63 @@ if /I "!TZ_NAME!"=="China Standard Time" (
 )
 
 echo.
-echo [%DATE% %TIME%] Attempting to download from: !PRIMARY_INDEX!
-python -m pip download %PACKAGES% --dest "%WHEEL_DIR%" --only-binary=:all: ^
+echo [%DATE% %TIME%] Downloading binary packages from: !PRIMARY_INDEX!
+python -m pip download %BINARY_PACKAGES% --dest "%WHEEL_DIR%" --only-binary=:all: ^
     --no-cache-dir -i "!PRIMARY_INDEX!" --retries 3 --timeout 30
 if errorlevel 1 (
-    echo [%DATE% %TIME%] WARNING: Primary index failed. Trying secondary: !SECONDARY_INDEX!
-    python -m pip download %PACKAGES% --dest "%WHEEL_DIR%" --only-binary=:all: ^
+    echo [%DATE% %TIME%] WARNING: Primary index failed for binary packages. Trying secondary: !SECONDARY_INDEX!
+    python -m pip download %BINARY_PACKAGES% --dest "%WHEEL_DIR%" --only-binary=:all: ^
         --no-cache-dir -i "!SECONDARY_INDEX!" --retries 3 --timeout 30
     if errorlevel 1 (
-        echo [%DATE% %TIME%] ERROR: Failed to download packages from both indexes. Check your network or package names.
+        echo [%DATE% %TIME%] ERROR: Failed to download binary packages from both indexes.
         pause & exit /b 1
     ) else (
-        echo [%DATE% %TIME%] SUCCESS: Packages downloaded via secondary index to "%WHEEL_DIR%"
+        echo [%DATE% %TIME%] SUCCESS: Binary packages downloaded via secondary index.
     )
 ) else (
-    echo [%DATE% %TIME%] SUCCESS: Packages downloaded via primary index to "%WHEEL_DIR%"
+    echo [%DATE% %TIME%] SUCCESS: Binary packages downloaded via primary index.
+)
+
+rem Download pure Python packages (jieba) with --prefer-binary to avoid source builds
+echo.
+echo [%DATE% %TIME%] Downloading pure Python packages (jieba) from: !PRIMARY_INDEX!
+python -m pip download %PURE_PYTHON_PACKAGES% --dest "%WHEEL_DIR%" --prefer-binary ^
+    --no-cache-dir -i "!PRIMARY_INDEX!" --retries 3 --timeout 30
+if errorlevel 1 (
+    echo [%DATE% %TIME%] WARNING: Primary index failed for jieba. Trying secondary: !SECONDARY_INDEX!
+    python -m pip download %PURE_PYTHON_PACKAGES% --dest "%WHEEL_DIR%" --prefer-binary ^
+        --no-cache-dir -i "!SECONDARY_INDEX!" --retries 3 --timeout 30
+    if errorlevel 1 (
+        echo [%DATE% %TIME%] WARNING: jieba download failed. Will attempt online install later.
+    ) else (
+        echo [%DATE% %TIME%] SUCCESS: jieba downloaded via secondary index.
+    )
+) else (
+    echo [%DATE% %TIME%] SUCCESS: jieba downloaded via primary index.
+)
+
+rem Download build dependencies (wheel, setuptools) for source packages that need them
+echo.
+echo [%DATE% %TIME%] Downloading build dependencies (wheel, setuptools)
+python -m pip download wheel setuptools --dest "%WHEEL_DIR%" --prefer-binary ^
+    --no-cache-dir -i "!PRIMARY_INDEX!" --retries 3 --timeout 30
+if errorlevel 1 (
+    python -m pip download wheel setuptools --dest "%WHEEL_DIR%" --prefer-binary ^
+        --no-cache-dir -i "!SECONDARY_INDEX!" --retries 3 --timeout 30
 )
 
 rem 6. Create target installation directory if it does not exist
-if exist "%TARGET_DIR%" (
-    echo [%DATE% %TIME%] Target installation directory exists, cleaning: "%TARGET_DIR%"
-    rmdir /s /q "%TARGET_DIR%"
+if not exist "%TARGET_DIR%" (
+    echo [%DATE% %TIME%] Creating target installation directory: "%TARGET_DIR%"
+    mkdir "%TARGET_DIR%"
+) else (
+    echo [%DATE% %TIME%] Target installation directory already exists: "%TARGET_DIR%"
 )
-echo [%DATE% %TIME%] Creating target installation directory: "%TARGET_DIR%"
-mkdir "%TARGET_DIR%"
 
 rem 7. Perform offline installation of all packages
 echo.
 echo [%DATE% %TIME%] Installing packages offline into: "%TARGET_DIR%"
-python -m pip install %PACKAGES% --no-index --find-links "%WHEEL_DIR%" ^
+python -m pip install %BINARY_PACKAGES% %PURE_PYTHON_PACKAGES% --no-index --find-links "%WHEEL_DIR%" ^
     --target "%TARGET_DIR%" --upgrade --disable-pip-version-check
 if errorlevel 1 (
     echo [%DATE% %TIME%] ERROR: Offline installation failed. Please review the errors above.

@@ -1,5 +1,5 @@
 SCRIPT_NAME    = "DaVinci Whisper"
-SCRIPT_VERSION = " 1.5" # Updated version
+SCRIPT_VERSION = " 1.6" # Updated version
 SCRIPT_AUTHOR  = "HEIBA"
 print(f"{SCRIPT_NAME} | {SCRIPT_VERSION.strip()} | {SCRIPT_AUTHOR}")
 SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
@@ -73,6 +73,10 @@ from difflib import SequenceMatcher
 from typing import Optional, List, Generator, Dict, Any
 from urllib.parse import quote_plus
 from abc import ABC, abstractmethod
+
+# jieba 在 lib_dir 添加后再导入（见下方）
+HAS_JIEBA = False
+
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 SCRIPT_PATH = os.path.dirname(os.path.abspath(sys.argv[0]))
 AUDIO_TEMP_DIR = os.path.join(SCRIPT_PATH, "audio_temp")
@@ -216,6 +220,17 @@ if os.path.exists(LANGUAGE_SUPPORT):
     with open(LANGUAGE_SUPPORT, "r", encoding="utf-8") as f:
         LANGUAGE_MAP = json.load(f)
 
+UPDATE_VERSION_LINE = {
+    "version": {
+        "cn": "发现新版本：{current} → {latest}\n请前往购买页面下载最新版本。",
+        "en": "Update: {current} → {latest}\nDownload on your purchase page.",
+    },
+    "loading": {
+        "cn": "加载中...\n（已耗时 {elapsed} 秒）",
+        "en": "loading... \n( {elapsed}s elapsed )",
+    },
+}
+
 DEFAULT_SETTINGS = {
     "PROVIDER":False,
     "MODEL": 0,
@@ -286,28 +301,36 @@ _loading_items = loading_win.GetItems()
 _loading_start_ts = time.time()
 _loading_timer_stop = False
 _loading_confirmation_pending = False
-_loading_notice_text = ""
 
 def _on_loading_confirm(ev):
-    global _loading_confirmation_pending
-    if not _loading_confirmation_pending:
-        return
-    _loading_confirmation_pending = False
+    dispatcher.ExitLoop()
+
+def _get_update_lang() -> str:
+    """
+    返回更新提示的语言，优先使用已保存的 UI 语言偏好。
+    """
     try:
-        _loading_items["ConfirmButton"].Enabled = False
-        _loading_items["ConfirmButton"].Visible = False
+        with open(SETTINGS, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+            if data.get("EN"):
+                return "en"
+            if data.get("CN"):
+                return "cn"
     except Exception:
         pass
-    dispatcher.ExitLoop()
+    # 回退到默认
+    return "cn" if DEFAULT_SETTINGS.get("CN") else "en"
 
 def _loading_timer_worker():
     while not _loading_timer_stop:
         try:
             elapsed = int(time.time() - _loading_start_ts)
-            base_text = f"Please wait , loading... \n( {elapsed}s elapsed )"
-            notice = _loading_notice_text.strip()
-            if notice:
-                base_text = f"{notice}\n\n{base_text}"
+            lang_key = _get_update_lang()
+            loading_tpl = UPDATE_VERSION_LINE.get("loading", {})
+            if isinstance(loading_tpl, dict):
+                base_text = (loading_tpl.get(lang_key) or loading_tpl.get("en", "")).format(elapsed=elapsed)
+            else:
+                base_text = f"Please wait , loading... \n( {elapsed}s elapsed )"
             _loading_items["LoadLabel"].Text = base_text
         except Exception:
             pass
@@ -352,6 +375,9 @@ try:
     import requests
     import regex as re_u
     import faster_whisper
+    import jieba
+    jieba.setLogLevel(jieba.logging.WARNING)  # 静默jieba日志
+    HAS_JIEBA = True
 except ImportError:
     system = platform.system()
     if system == "Windows":
@@ -371,9 +397,14 @@ except ImportError:
         import requests
         import regex as re_u
         import faster_whisper
+        import jieba
+        jieba.setLogLevel(jieba.logging.WARNING)  # 静默jieba日志
+        HAS_JIEBA = True
         print(lib_dir)
     except ImportError as e:
+        HAS_JIEBA = False
         print("Dependency import failed—please make sure all dependencies are bundled into the Lib directory:", lib_dir, "\nError message:", e)
+
 # ================== Supabase 客户端 ==================
 SUPABASE_URL = "https://tbjlsielfxmkxldzmokc.supabase.co"
 SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRiamxzaWVsZnhta3hsZHptb2tjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgxMDc3MDIsImV4cCI6MjA3MzY4MzcwMn0.FTgYJJ-GlMcQKOSWu63TufD6Q_5qC_M4cvcd3zpcFJo"
@@ -534,7 +565,7 @@ def get_siliconflow_api_key() -> str:
     return _siliconflow_key_cache
 
 def _check_for_updates():
-    global _loading_confirmation_pending, _loading_notice_text
+    global _loading_confirmation_pending
     current_version = (SCRIPT_VERSION or "").strip()
     result = supabase_client.check_update(SCRIPT_NAME)
     if not result:
@@ -544,24 +575,31 @@ def _check_for_updates():
     if not latest_version or latest_version == current_version:
         return
 
-    messages = []
-    for key in ("cn", "en"):
-        text = (result.get(key) or "").strip()
-        if text:
-            messages.append(text)
+    ui_lang = _get_update_lang()
+    fallback_lang = "en" if ui_lang == "cn" else "cn"
+
+    messages: List[str] = []
+    primary = (result.get(ui_lang) or "").strip()
+    fallback = (result.get(fallback_lang) or "").strip()
+    if primary:
+        messages.append(primary)
+    elif fallback:
+        messages.append(fallback)
 
     readable_current = current_version or "未知"
-    version_line = f"Update: {readable_current} → {latest_version}\nDownload on your purchase page."
+    version_tpl = UPDATE_VERSION_LINE.get("version", {})
+    template = version_tpl.get(ui_lang) or version_tpl.get("en", "")
+    version_line = template.format(current=readable_current, latest=latest_version)
     messages.append(version_line)
     notice_text = "\n".join(messages).strip()
 
     try:
         _loading_items["UpdateLabel"].Text = notice_text
         _loading_items["UpdateLabel"].Visible = True
+        _loading_items["LoadLabel"].Visible = False
+        _loading_items["UpdateLabel"].StyleSheet = "color:#ff5555; font-size:20px;"
     except Exception:
         pass
-
-    _loading_notice_text = notice_text
     try:
         _loading_items["ConfirmButton"].Visible = True
         _loading_items["ConfirmButton"].Enabled = True
@@ -808,70 +846,455 @@ class FasterWhisperProvider(TranscriptionProvider):
             last_whisper_token_end = whisper_tokens[-1]["end"]
             aligned[-1]["end"] = max(aligned[-1]["end"], last_whisper_token_end)
 
-        yield SimpleNamespace(words=[
-            SimpleNamespace(word=t["word"], start=t["start"], end=t["end"])
-            for t in aligned])
+        # 构建 segment 对象，包含 start, end, text, words 属性
+        if aligned:
+            seg_start = aligned[0]["start"]
+            seg_end = aligned[-1]["end"]
+            seg_text = ''.join(t["word"] for t in aligned)
+        else:
+            seg_start = 0.0
+            seg_end = 0.0
+            seg_text = ""
+        
+        yield SimpleNamespace(
+            start=seg_start,
+            end=seg_end,
+            text=seg_text,
+            words=[
+                SimpleNamespace(word=t["word"], start=t["start"], end=t["end"])
+                for t in aligned
+            ]
+        )
 
 
-    def _split_segments_by_max_chars(self, segments: Generator, max_chars: int) -> List[Dict]:
-        END_OF_CLAUSE_CHARS = tuple(".,?!。，？！")
+    # ---------- 断句优先级常量 ----------
+    # P0: 句末标点（最高优先级）
+    BREAK_SENTENCE_END = frozenset('.?!。？！…')
+    # P1: 从句标点
+    BREAK_CLAUSE = frozenset(',;:，；：、')
+    # P2: 并列连词（各语言）- 扩展词库
+    BREAK_CONJUNCTIONS = {
+        'en': {'and', 'or', 'but', 'nor', 'yet', 'so', 'then', 'however', 'therefore', 'moreover', 'furthermore', 'nevertheless', 'meanwhile'},
+        'zh': {'而且', '或者', '但是', '然后', '所以', '因此', '并且', '而', '不过', '可是', '于是', '接着', '同时', '另外', '此外', '否则', '要不', '不然', '那就是', '这样'},
+        'ja': {'そして', 'また', 'しかし', 'けど', 'それで', 'だから', 'でも', 'ただ', 'なお'},
+        'ko': {'그리고', '또는', '하지만', '그래서', '그러나', '그런데', '또한'},
+    }
+    # P3: 从句引导词 - 扩展词库
+    BREAK_SUBORDINATES = {
+        'en': {'because', 'when', 'if', 'although', 'while', 'after', 'before', 'since', 'unless', 'until', 'where', 'that', 'whether', 'once', 'whenever', 'wherever'},
+        'zh': {'因为', '当', '如果', '虽然', '尽管', '在', '由于', '既然', '无论', '不管', '即使', '假如', '要是', '除非', '一旦', '只要', '只有', '为了', '以便'},
+        'ja': {'から', 'ので', 'けれど', 'なら', 'たら', 'ても', 'のに', 'ように', 'ために'},
+        'ko': {'때문에', '면', '어서', '지만', '도', '려고', '도록'},
+    }
+    # P4: 数字+单位保护模式
+    _NUMBER_UNIT_PATTERN = re_u.compile(
+        r'^\d+(?:\.\d+)?\s*(?:分|%|％|个|元|秒|分钟|小时|天|年|月|周|次|倍|米|公里|千米|厘米|毫米|克|千克|公斤|升|毫升|度|人|位|件|条|只|张|本|页|行|列|层|级|步|点|项|种|类|组|批|套|台|部|辆|架|艘|栋|间|家|所|处|座|片|块|段|节|章|篇|期|届|届|回|场|轮|局|盘|把|支|根|双|对|群|队|帮|伙|班|排|连|营|团|师|军|代|世|辈|系|派|流|路|线|面|边|角|端|头|尾|身|手|脚|眼|口|耳|鼻|心|脑)$',
+        flags=re_u.VERSION1
+    )
+
+    def _merge_chars_to_words_jieba(self, all_words: List[Dict], language: str) -> List[Dict]:
+        """
+        使用 jieba 将 Whisper 的 words 重新组织为词级单元。
+        【v6优化】分段处理：英文片段保持原样，CJK片段用jieba分词。
+        """
+        if not HAS_JIEBA or not all_words or language not in self.CJK_LANGS:
+            return all_words
+        
+        def contains_cjk(text: str) -> bool:
+            return bool(self._CJK_ANY_RE.search(text))
+        
+        merged_words = []
+        cjk_buffer = []  # 缓存连续的CJK字符
+        
+        def flush_cjk_buffer():
+            """将CJK缓冲区用jieba分词后输出"""
+            nonlocal cjk_buffer
+            if not cjk_buffer:
+                return
+            
+            # 构建字符列表
+            char_list = []
+            for word in cjk_buffer:
+                text = word['text']
+                start = word['start']
+                end = word['end']
+                if len(text) == 1:
+                    char_list.append({'char': text, 'start': start, 'end': end})
+                else:
+                    duration = end - start
+                    for i, ch in enumerate(text):
+                        ch_start = start + (duration * i / len(text))
+                        ch_end = start + (duration * (i + 1) / len(text))
+                        char_list.append({'char': ch, 'start': ch_start, 'end': ch_end})
+            
+            if not char_list:
+                cjk_buffer = []
+                return
+            
+            # 用 jieba 分词
+            full_text = ''.join(c['char'] for c in char_list)
+            seg_words = list(jieba.cut(full_text))
+            
+            # 根据分词结果重新组织
+            char_idx = 0
+            for seg_word in seg_words:
+                if not seg_word:
+                    continue
+                seg_len = len(seg_word)
+                if char_idx + seg_len > len(char_list):
+                    remaining = char_list[char_idx:]
+                    if remaining:
+                        merged_words.append({
+                            'text': ''.join(c['char'] for c in remaining),
+                            'start': remaining[0]['start'],
+                            'end': remaining[-1]['end']
+                        })
+                    break
+                word_chars = char_list[char_idx:char_idx + seg_len]
+                merged_words.append({
+                    'text': seg_word,
+                    'start': word_chars[0]['start'],
+                    'end': word_chars[-1]['end']
+                })
+                char_idx += seg_len
+            
+            cjk_buffer = []
+        
+        # 遍历所有词，按类型分流
+        for word in all_words:
+            text = word['text']
+            if not text:
+                continue
+            
+            if contains_cjk(text):
+                # 包含CJK，加入缓冲区
+                cjk_buffer.append(word)
+            else:
+                # 纯英文/标点，先刷出CJK缓冲区
+                flush_cjk_buffer()
+                # 英文片段直接添加（保持Whisper原有分词）
+                merged_words.append(word)
+        
+        # 处理剩余的CJK缓冲区
+        flush_cjk_buffer()
+        
+        return merged_words
+
+    def _is_protected_unit(self, text: str) -> bool:
+        """检查文本是否是受保护的数字+单位组合"""
+        return bool(self._NUMBER_UNIT_PATTERN.match(text.strip()))
+
+    def _get_break_score(self, word_text: str, next_word: str, language: str, prev_word: str = "") -> int:
+        """
+        计算在当前词之后断句的优先级分数。
+        返回值越高，越适合作为断点。
+        增强版：考虑前一个词、当前词、下一个词的综合关系。
+        """
+        word_text = word_text.strip()
+        next_word_lower = next_word.strip().lower() if next_word else ""
+        next_word_clean = next_word.strip() if next_word else ""
+        lang_key = (language or 'en')[:2]
+        
+        # 获取连词和从句引导词集合
+        conjunctions = self.BREAK_CONJUNCTIONS.get(lang_key, set()) | self.BREAK_CONJUNCTIONS.get('en', set())
+        subordinates = self.BREAK_SUBORDINATES.get(lang_key, set()) | self.BREAK_SUBORDINATES.get('en', set())
+        
+        # === 保护规则：返回负分表示不应在此断句 ===
+        # 数字+单位保护：如果当前词是数字，下一个词是单位，不断
+        if word_text and word_text[-1].isdigit() and next_word_clean:
+            combined = word_text + next_word_clean
+            if self._is_protected_unit(combined):
+                return -100  # 强制不断
+        
+        # === 正向评分规则 ===
+        # P0: 句末标点 - 最高优先级
+        if word_text and word_text[-1] in self.BREAK_SENTENCE_END:
+            return 100
+        
+        # P1: 从句标点
+        if word_text and word_text[-1] in self.BREAK_CLAUSE:
+            return 80
+        
+        # P2: 下一个词是并列连词（在连词前断句）
+        if next_word_lower in conjunctions or next_word_clean in conjunctions:
+            return 70
+        
+        # P3: 下一个词是从句引导词
+        if next_word_lower in subordinates or next_word_clean in subordinates:
+            return 50
+        
+        # P4: 词边界加分（用于 CJK）
+        if HAS_JIEBA and language in self.CJK_LANGS:
+            # 当前词是完整词（长度>1）时加分
+            if len(word_text) >= 2:
+                return 15
+        
+        return 0
+
+    def _find_best_break_in_buffer(self, word_buffer: List[Dict], language: str) -> int:
+        """
+        在 word_buffer 中寻找最佳断点索引。
+        返回应该包含在当前块中的最后一个词的索引（包含）。
+        如果没有找到合适断点，返回 len(word_buffer) - 1。
+        """
+        if not word_buffer:
+            return -1
+        if len(word_buffer) == 1:
+            return 0
+        
+        best_idx = len(word_buffer) - 1
+        best_score = -1
+        
+        # 从后向前搜索，优先选择靠后的高分断点
+        for i in range(len(word_buffer) - 1, -1, -1):
+            word_text = word_buffer[i].get('text', word_buffer[i].get('word', ''))
+            next_word = word_buffer[i + 1].get('text', word_buffer[i + 1].get('word', '')) if i + 1 < len(word_buffer) else ''
+            
+            score = self._get_break_score(word_text, next_word, language)
+            
+            # 优先选择分数高的；同分时选择靠后的位置
+            if score > best_score:
+                best_score = score
+                best_idx = i
+        
+        # 如果没有找到任何有意义的断点（score > 0），返回最后一个
+        return best_idx
+
+    def _split_segments_by_max_chars(self, segments: Generator, max_chars: int, language: str = None) -> List[Dict]:
+        """
+        使用语义感知的断句策略分割字幕。
+        优先在句末标点、从句标点、连词边界处断句，最后才强制按字符截断。
+        """
+        END_OF_CLAUSE_CHARS = frozenset('.?!。？！…')
         subtitle_blocks = []
-        current_block = {"start": 0, "end": 0, "text": ""}
-        max_chars_tolerance = int(max_chars * 1.20)
-
-        def finalize_and_reset_block():
-            nonlocal current_block
-            if current_block["text"]:
-                current_block["text"] = current_block["text"].strip()
-                subtitle_blocks.append(current_block)
-            current_block = {"start": 0, "end": 0, "text": ""}
-
-        prev_tok_for_join = ""  # 仅用于判定是否加空格
-
+        
+        # 先收集所有 words 到列表（避免生成器问题）
+        all_words = []
         for segment in segments:
             if not segment.words:
                 continue
             for word in segment.words:
-                wtxt = (word.word or "")
-                if not wtxt:
-                    continue
-
-                # —— 是否为“单独句末标点” —— #
-                ws = wtxt.strip()
-                word_ends_clause = (ws.endswith(END_OF_CLAUSE_CHARS) and len(ws) == 1)
-
-                if not current_block["text"]:
-                    # 第一词直接放入
-                    current_block = {"start": word.start, "end": word.end, "text": wtxt}
-                    prev_tok_for_join = wtxt
-                    if word_ends_clause:
-                        finalize_and_reset_block()
-                        prev_tok_for_join = ""
-                    continue
-
-                # —— 计算连接符（按相邻 token 判定，避免 language 误判） —— #
-                joiner = self._should_joiner(prev_tok_for_join, wtxt)
-                to_add = joiner + wtxt
-                potential_len = len(current_block["text"]) + len(to_add)
-
-                if potential_len <= max_chars:
-                    current_block["text"] += to_add
-                    current_block["end"] = word.end
-                    prev_tok_for_join = wtxt
-                    if word_ends_clause:
-                        finalize_and_reset_block()
-                        prev_tok_for_join = ""
-                elif potential_len <= max_chars_tolerance and word_ends_clause:
-                    current_block["text"] += to_add
-                    current_block["end"] = word.end
-                    finalize_and_reset_block()
-                    prev_tok_for_join = ""
+                wtxt = (word.word or "").strip()
+                if wtxt:
+                    all_words.append({'text': wtxt, 'start': word.start, 'end': word.end})
+        
+        if not all_words:
+            return subtitle_blocks
+        
+        # === 新增：使用 jieba 将逐字合并为词级单元 ===
+        if language in self.CJK_LANGS:
+            all_words = self._merge_chars_to_words_jieba(all_words, language)
+            # DEBUG: 显示 jieba 分词结果
+            print("============================================================")
+            print("【DEBUG】jieba 词级合并后的 all_words (前30个):")
+            print("============================================================")
+            for idx, w in enumerate(all_words[:30]):
+                print(f"  [{idx}] [{w['start']:.2f}-{w['end']:.2f}] \"{w['text']}\"")
+            if len(all_words) > 30:
+                print(f"  ... (共 {len(all_words)} 个词)")
+            print("============================================================")
+        
+        max_chars_tolerance = int(max_chars * 1.20)
+        
+        def build_text(words_list: List[Dict]) -> str:
+            """从词列表构建文本"""
+            if not words_list:
+                return ""
+            result = words_list[0]['text']
+            for i in range(1, len(words_list)):
+                prev_txt = words_list[i-1]['text']
+                cur_txt = words_list[i]['text']
+                joiner = self._should_joiner(prev_txt, cur_txt)
+                result += joiner + cur_txt
+            return result
+        
+        def find_best_break(words_list: List[Dict], max_len: int) -> int:
+            """
+            在 words_list 中找到最佳断点，返回断点索引（包含该位置）。
+            确保断点后的文本不超过 max_len。
+            【v3优化】遇到句末标点立即返回，移除慢速jieba边界检查。
+            """
+            if not words_list:
+                return -1
+            
+            # 句末标点集合
+            SENTENCE_END_PUNCTS = frozenset('.?!。？！…')
+            
+            cumulative_text = ""
+            max_valid_idx = -1
+            
+            for i, w in enumerate(words_list):
+                word_text = w['text']
+                if i == 0:
+                    cumulative_text = word_text
                 else:
-                    finalize_and_reset_block()
-                    current_block = {"start": word.start, "end": word.end, "text": wtxt}
-                    prev_tok_for_join = wtxt
-
-        finalize_and_reset_block()
+                    joiner = self._should_joiner(words_list[i-1]['text'], word_text)
+                    cumulative_text += joiner + word_text
+                
+                current_len = len(cumulative_text.strip())
+                
+                if current_len <= max_len:
+                    max_valid_idx = i
+                    # 【v3关键】遇到句末标点立即返回，不继续累积
+                    if word_text and word_text[-1] in SENTENCE_END_PUNCTS:
+                        return i
+                else:
+                    # 超长了，退出循环
+                    break
+            
+            if max_valid_idx < 0:
+                return 0
+            
+            # 在 [0, max_valid_idx] 范围内寻找最佳断点（不再调用jieba）
+            best_idx = max_valid_idx
+            best_score = -1
+            
+            for i in range(max_valid_idx, -1, -1):
+                word_text = words_list[i]['text']
+                next_word = words_list[i + 1]['text'] if i + 1 < len(words_list) else ''
+                prev_word = words_list[i - 1]['text'] if i > 0 else ''
+                score = self._get_break_score(word_text, next_word, language, prev_word)
+                
+                if score < 0:
+                    continue
+                
+                # 句末标点最高优先级
+                if word_text and word_text[-1] in SENTENCE_END_PUNCTS:
+                    return i
+                
+                # 词长度加分（替代慢速jieba检查）
+                if language in self.CJK_LANGS and len(word_text) >= 2:
+                    score += 5
+                
+                if score > best_score:
+                    best_score = score
+                    best_idx = i
+            
+            return best_idx
+        
+        # 使用索引遍历所有词
+        i = 0
+        while i < len(all_words):
+            # 从当前位置开始，找到最佳断点
+            remaining = all_words[i:]
+            break_idx = find_best_break(remaining, max_chars)
+            
+            # 处理容差：如果断点已是句末标点，不继续扩展
+            SENTENCE_END_FULL = frozenset('.?!。？！…')
+            if break_idx >= 0 and break_idx < len(remaining) - 1:
+                current_word = remaining[break_idx]['text']
+                # 如果当前断点已经是句末标点，不扩展
+                if not (current_word and current_word[-1] in SENTENCE_END_FULL):
+                    # 否则尝试扩展到下一个标点
+                    extended_idx = break_idx
+                    for j in range(break_idx + 1, len(remaining)):
+                        test_text = build_text(remaining[:j + 1])
+                        if len(test_text.strip()) > max_chars_tolerance:
+                            break
+                        # 遇到任何句末标点，立即选择并停止扩展
+                        if remaining[j]['text'][-1] in SENTENCE_END_FULL:
+                            extended_idx = j
+                            break
+                        # 遇到从句标点，记录但继续查找句末标点
+                        if remaining[j]['text'][-1] in END_OF_CLAUSE_CHARS:
+                            extended_idx = j
+                    break_idx = extended_idx
+            
+            # 确保至少包含一个词
+            if break_idx < 0:
+                break_idx = 0
+            
+            # 构建当前块
+            block_words = remaining[:break_idx + 1]
+            block_text = build_text(block_words)
+            
+            if block_text.strip():
+                subtitle_blocks.append({
+                    "start": block_words[0]['start'],
+                    "end": block_words[-1]['end'],
+                    "text": block_text.strip()
+                })
+            
+            # 移动到下一个位置
+            i += break_idx + 1
+        
+        # === 8) 最小块合并（语言感知） ===
+        # CJK 语言：最小8字符（提升阈值）；其他语言：不限制
+        # 【v3优化】以句末标点结尾的块不参与合并
+        min_block_chars = 8 if language in self.CJK_LANGS else 0
+        SENTENCE_END_MERGE_PROTECT = frozenset('.?!。？！…')
+        
+        if min_block_chars > 0 and len(subtitle_blocks) > 1:
+            merged_blocks = []
+            for blk in subtitle_blocks:
+                if not merged_blocks:
+                    merged_blocks.append(blk)
+                    continue
+                
+                prev_blk = merged_blocks[-1]
+                prev_text = prev_blk['text']
+                curr_text = blk['text']
+                curr_len = len(curr_text)
+                
+                # 【关键】如果前一个块以句末标点结尾，不合并当前块到它
+                if prev_text and prev_text[-1] in SENTENCE_END_MERGE_PROTECT:
+                    merged_blocks.append(blk)
+                    continue
+                
+                # 如果当前块太短，尝试合并到前一个块
+                if curr_len < min_block_chars:
+                    # 检查合并后是否超过容差
+                    merged_text = prev_text + curr_text
+                    if len(merged_text) <= max_chars_tolerance:
+                        # 合并到前一个块
+                        prev_blk['text'] = merged_text
+                        prev_blk['end'] = blk['end']
+                        continue
+                
+                # 检查前一个块是否太短，如果是则合并当前块到它
+                prev_len = len(prev_text)
+                if prev_len < min_block_chars:
+                    merged_text = prev_text + curr_text
+                    if len(merged_text) <= max_chars_tolerance:
+                        prev_blk['text'] = merged_text
+                        prev_blk['end'] = blk['end']
+                        continue
+                
+                merged_blocks.append(blk)
+            
+            subtitle_blocks = merged_blocks
+        
+        # === 9) CJK 双字词保护（借用策略） ===
+        # 如果块以单个CJK字符结尾（非标点），尝试从下一块借用首字符
+        if language in self.CJK_LANGS and len(subtitle_blocks) > 1:
+            CJK_PUNCTS = set('。，？！、；：""''…—·')
+            
+            for i in range(len(subtitle_blocks) - 1):
+                curr_blk = subtitle_blocks[i]
+                next_blk = subtitle_blocks[i + 1]
+                curr_text = curr_blk['text']
+                next_text = next_blk['text']
+                
+                if not curr_text or not next_text:
+                    continue
+                
+                last_char = curr_text[-1]
+                first_char_next = next_text[0] if next_text else ''
+                
+                # 检查当前块是否以单个CJK字符结尾（非标点）
+                if last_char not in CJK_PUNCTS and self._CJK_ANY_RE.search(last_char):
+                    # 检查下一块首字符也是CJK（非标点），可以借用形成双字词
+                    if first_char_next and first_char_next not in CJK_PUNCTS and self._CJK_ANY_RE.search(first_char_next):
+                        # 策略：从下一块借用首字符加到当前块
+                        new_curr_text = curr_text + first_char_next
+                        new_next_text = next_text[1:]
+                        
+                        # 只有当借用后当前块不超限、下一块仍有效时才借用
+                        if (len(new_curr_text) <= max_chars_tolerance and 
+                            (len(new_next_text) >= min_block_chars or len(new_next_text) == 0)):
+                            curr_blk['text'] = new_curr_text
+                            next_blk['text'] = new_next_text
+        
         return subtitle_blocks
     
     def _progress_reporter(self, segments_gen, total_duration: float, callback, max_fps: float = 10.0):
@@ -1081,6 +1504,20 @@ class FasterWhisperProvider(TranscriptionProvider):
         }
         if language:
             transcribe_args["language"] = language
+        
+        # 添加 initial_prompt 鼓励 Whisper 输出正确的标点符号（优化版：短而精确）
+        punctuation_prompts = {
+            'zh': '请使用标准标点符号转录，包括逗号、句号、问号、感叹号。用短句表达。',
+            'ja': '句読点を使って短い文で転写してください。',
+            'ko': '쉼표와 마침표를 사용하여 짧은 문장으로 작성하세요.',
+            'en': 'Transcribe with proper punctuation. Use short sentences with commas and periods.',
+            'fr': 'Transcrire avec ponctuation. Phrases courtes.',
+            'de': 'Mit Satzzeichen transkribieren. Kurze Sätze.',
+        }
+        # 根据指定语言或让 Whisper 自动检测后的语言设置 prompt
+        prompt_lang = language if language else 'en'
+        if prompt_lang in punctuation_prompts:
+            transcribe_args["initial_prompt"] = punctuation_prompts[prompt_lang]
 
         if verbose:
             show_dynamic_message("[Whisper] Starting...", "[Whisper] 开始...")
@@ -1187,10 +1624,31 @@ class FasterWhisperProvider(TranscriptionProvider):
         # 5) CJK 语言下字符上限折半
         if info.language in self.CJK_LANGS:
             max_chars = max_chars / 2
-
-        # 6) 分段
-        subtitle_blocks = self._split_segments_by_max_chars(segments_to_split, int(max_chars))
-        #print(subtitle_blocks)
+        
+        # 6) 分段（传入语言以启用智能断句）
+        # === DEBUG: 打印原始 Whisper segments ===
+        print("\n" + "="*60)
+        print("【DEBUG】原始 Whisper Segments:")
+        print("="*60)
+        segments_to_split, segments_debug = tee(segments_to_split, 2)
+        for i, seg in enumerate(segments_debug, 1):
+            print(f"  [Seg {i}] [{seg.start:.2f}-{seg.end:.2f}] \"{seg.text}\"")
+        print("="*60 + "\n")
+        
+        # === DEBUG: 语言检测结果 ===
+        print(f"【DEBUG】info.language = '{info.language}', CJK_LANGS = {self.CJK_LANGS}")
+        print(f"【DEBUG】info.language in CJK_LANGS = {info.language in self.CJK_LANGS}")
+        
+        subtitle_blocks = self._split_segments_by_max_chars(segments_to_split, int(max_chars), info.language)
+        
+        # === DEBUG: 打印断句后的结果 ===
+        print("\n" + "="*60)
+        print(f"【DEBUG】智能断句后的字幕块 (max_chars={int(max_chars)}):")
+        print("="*60)
+        for i, blk in enumerate(subtitle_blocks, 1):
+            print(f"  [{i}] [{blk['start']:.2f}-{blk['end']:.2f}] ({len(blk['text'])}字符)")
+            print(f"      \"{blk['text']}\"")
+        print("="*60 + "\n")
         # 7.x) 帧量化 & 修复重叠/零时长
         try:
             _, _, _, _, _, fps_now = connect_resolve()
@@ -1224,7 +1682,7 @@ class FasterWhisperProvider(TranscriptionProvider):
         srt_path = os.path.join(output_dir, f"{output_filename}.srt")
 
         # 调试
-        print(subtitle_blocks)
+        #print(subtitle_blocks)
         self._write_srt(srt_path, subtitle_blocks)
 
         # 10) 在函数内部给出“最终状态总结”，避免用户只看到外层统一的 ‘Finished! 100%’

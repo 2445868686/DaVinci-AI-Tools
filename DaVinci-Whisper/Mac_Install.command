@@ -14,11 +14,6 @@ UTILITY_DIR="/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusi
 
 WHEEL_DIR="/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/HB/$SCRIPT_NAME/wheel"
 TARGET_DIR="/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/HB/$SCRIPT_NAME/Lib"
-PACKAGES=(
-  "faster_whisper==1.1.1"
-  "requests"
-  "regex"
-)
 
 # Official and mirror PyPI indexes
 PIP_OFFICIAL="https://pypi.org/simple"
@@ -85,14 +80,21 @@ log INFO "Ensuring Utility scripts directory: $UTILITY_DIR"
 mkdir -p "$UTILITY_DIR"
 if [ -d "$SOURCE_DIR" ]; then
   if [ -d "$UTILITY_DIR/$SCRIPT_NAME" ]; then
-    log INFO "Target exists: $UTILITY_DIR/$SCRIPT_NAME. Overwriting..."
-    rm -rf "$UTILITY_DIR/$SCRIPT_NAME"
-  fi
-  log INFO "Copying \"$SOURCE_DIR\" to \"$UTILITY_DIR/$SCRIPT_NAME\""
-  if ditto "$SOURCE_DIR" "$UTILITY_DIR/$SCRIPT_NAME"; then
-    log SUCCESS "Folder copied to Utility scripts."
+    # 目标已存在时，使用 rsync 跳过 model 文件夹，保留用户已下载的模型
+    log INFO "Target exists: $UTILITY_DIR/$SCRIPT_NAME. Updating while preserving model folder..."
+    if rsync -a --exclude='model/' "$SOURCE_DIR/" "$UTILITY_DIR/$SCRIPT_NAME/"; then
+      log SUCCESS "Folder updated (model folder preserved)."
+    else
+      log ERROR "Failed to update folder. Please copy it manually."
+    fi
   else
-    log ERROR "Failed to copy folder. Please copy it manually."
+    # 目标不存在时，直接完整复制
+    log INFO "Copying \"$SOURCE_DIR\" to \"$UTILITY_DIR/$SCRIPT_NAME\""
+    if ditto "$SOURCE_DIR" "$UTILITY_DIR/$SCRIPT_NAME"; then
+      log SUCCESS "Folder copied to Utility scripts."
+    else
+      log ERROR "Failed to copy folder. Please copy it manually."
+    fi
   fi
 else
   log WARN "Source folder not found next to this script: $SOURCE_DIR"
@@ -100,10 +102,6 @@ fi
 
 # Step 2: Prepare wheel download directory
 log INFO "Preparing wheel download directory: $WHEEL_DIR"
-if [ -d "$WHEEL_DIR" ]; then
-  log WARN "Existing wheel directory detected. Cleaning: $WHEEL_DIR"
-  rm -rf "$WHEEL_DIR"
-fi
 mkdir -p "$WHEEL_DIR"
 
 # Step 3: Clear pip cache (optional)
@@ -119,43 +117,72 @@ else
   log INFO "Region not CN. Using official first: $PRIMARY_INDEX"
 fi
 
-if $PYTHON -m pip download "${PACKAGES[@]}" \
+# 分两步下载：二进制包 + 纯 Python 包（jieba）
+BINARY_PACKAGES=(
+  "faster_whisper==1.1.1"
+  "requests"
+  "regex"
+)
+PURE_PYTHON_PACKAGES=(
+  "jieba"
+)
+
+# 下载二进制包
+if $PYTHON -m pip download "${BINARY_PACKAGES[@]}" \
     --dest "$WHEEL_DIR" \
     --only-binary=:all: \
     --use-feature=fast-deps \
     --no-cache-dir \
     --progress-bar=on \
     -i "$PRIMARY_INDEX"; then
-  log SUCCESS "Download succeeded using primary index."
+  log SUCCESS "Binary packages downloaded from primary index."
 else
-  log WARN "Primary index failed. Trying secondary: $SECONDARY_INDEX ..."
-  if $PYTHON -m pip download "${PACKAGES[@]}" \
+  log WARN "Primary index failed for binary packages. Trying secondary: $SECONDARY_INDEX ..."
+  if $PYTHON -m pip download "${BINARY_PACKAGES[@]}" \
       --dest "$WHEEL_DIR" \
       --only-binary=:all: \
       --use-feature=fast-deps \
       --no-cache-dir \
       --progress-bar=on \
       -i "$SECONDARY_INDEX"; then
-    log SUCCESS "Download succeeded using secondary index."
+    log SUCCESS "Binary packages downloaded from secondary index."
   else
-    log ERROR "Download failed from both indexes. Please check your network."
+    log ERROR "Binary packages download failed from both indexes."
     exit 1
+  fi
+fi
+
+# 下载纯 Python 包（不使用 --only-binary）
+log INFO "Downloading pure Python packages (jieba)..."
+if $PYTHON -m pip download "${PURE_PYTHON_PACKAGES[@]}" \
+    --dest "$WHEEL_DIR" \
+    --no-cache-dir \
+    --progress-bar=on \
+    -i "$PRIMARY_INDEX"; then
+  log SUCCESS "Pure Python packages downloaded from primary index."
+else
+  log WARN "Primary index failed for jieba. Trying secondary: $SECONDARY_INDEX ..."
+  if $PYTHON -m pip download "${PURE_PYTHON_PACKAGES[@]}" \
+      --dest "$WHEEL_DIR" \
+      --no-cache-dir \
+      --progress-bar=on \
+      -i "$SECONDARY_INDEX"; then
+    log SUCCESS "Pure Python packages downloaded from secondary index."
+  else
+    log WARN "jieba download failed. It will be installed separately if needed."
   fi
 fi
 
 # Step 5: Create target directory & fix ownership
 log INFO "Preparing target installation directory: $TARGET_DIR"
-if [ -d "$TARGET_DIR" ]; then
-  log WARN "Existing target directory detected. Cleaning: $TARGET_DIR"
-  sudo rm -rf "$TARGET_DIR"
-fi
 sudo mkdir -p "$TARGET_DIR"
 sudo chown -R "$(whoami)" "$TARGET_DIR"
 log SUCCESS "Target directory ready and owned by $(whoami)."
 
 # Step 6: Offline install specified packages and dependencies
 log INFO "Installing specified packages offline..."
-if $PYTHON -m pip install "${PACKAGES[@]}" \
+ALL_PACKAGES=("${BINARY_PACKAGES[@]}" "${PURE_PYTHON_PACKAGES[@]}")
+if $PYTHON -m pip install "${ALL_PACKAGES[@]}" \
      --no-index \
      --find-links "$WHEEL_DIR" \
      --target "$TARGET_DIR"; then

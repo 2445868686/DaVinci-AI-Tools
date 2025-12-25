@@ -1,5 +1,5 @@
 local SCRIPT_NAME = "DaVinci Sub Editor"
-local SCRIPT_VERSION = "1.1.3-Free" -- 标记为免费版
+local SCRIPT_VERSION = "1.1.4-Free" -- 标记为免费版
 local SCRIPT_AUTHOR = "HEIBA"
 print(string.format("%s | %s | %s", SCRIPT_NAME, SCRIPT_VERSION, SCRIPT_AUTHOR))
 local SCRIPT_KOFI_URL = "https://ko-fi.com/s/5e9dcdeae5"
@@ -36,7 +36,7 @@ local GLMService = Services.GLM
 local SiliconFlowService = Services.SiliconFlow 
 local httpClient = Services.HttpClient
 local SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
-local WINDOW_WIDTH, WINDOW_HEIGHT = 550, 600
+local WINDOW_WIDTH, WINDOW_HEIGHT = 625, 600
 local X_CENTER = math.floor((SCREEN_WIDTH - WINDOW_WIDTH ) / 2)
 local Y_CENTER = math.floor((SCREEN_HEIGHT - WINDOW_HEIGHT) / 2)
 local LOADING_WINDOW_WIDTH, LOADING_WINDOW_HEIGHT = 220, 120
@@ -86,6 +86,12 @@ local TRANSLATE_PROVIDER_LIST = {
     TRANSLATE_PROVIDER_GL_LABEL,
     TRANSLATE_PROVIDER_OPENAI_LABEL,
 }
+local PROVIDER_LANG_MAP_KEYS = {
+    [TRANSLATE_PROVIDER_AZURE_LABEL] = "azure",
+    [TRANSLATE_PROVIDER_GL_LABEL] = "google",
+    [TRANSLATE_PROVIDER_OPENAI_LABEL] = "google",
+    [TRANSLATE_PROVIDER_SILICONFLOUW_LABEL] = "google",
+}
 function Translate.isSupportedProvider(label)
     for _, value in ipairs(TRANSLATE_PROVIDER_LIST) do
         if value == label then
@@ -117,30 +123,11 @@ Follow these rules:
 2. Do not output any explanations, apologies, or extra text.
 3. Keep names, brands, and code unchanged.
 ]]
-local LANG_LABELS = {
-    "中文（普通话）",
-    "English",
-    "Japanese",
-    "Korean",
-    "Spanish",
-    "Portuguese",
-    "French",
-    "Indonesian",
-    "German",
-    "Russian",
-    "Italian",
-    "Arabic",
-    "Turkish",
-    "Ukrainian",
-    "Vietnamese",
-    "Uzbek",
-    "Dutch",
-}
-
-
-local FREE_LANG_LIST = {
-    ["中文（普通话）"] = true,
-    ["English"] = true,
+local LANG_CODE_MAPS = {}
+local DEFAULT_FREE_CODE = "en"
+local FREE_LANG_CODES = {
+    ["en"] = true,
+    ["zh-CN"] = true,
 }
 
 Translate.secretCache = {}
@@ -178,6 +165,8 @@ App.State = {
         selectedIndex = nil,
         provider = TRANSLATE_PROVIDER_SILICONFLOUW_LABEL, 
         targetLabel = nil,
+        targetCode = nil,
+        targetCodes = {},
         concurrency = DEFAULT_TRANSLATE_CONCURRENCY,
         totalTokens = 0,
         lastStatusKey = "idle",
@@ -272,7 +261,7 @@ local uiText = {
         -- 新增：升级提示
         upgrade_title = "功能受限",
         upgrade_provider = "请升级至完整版以使用此服务商",
-        upgrade_language = "免费版仅支持翻译为 中文（普通话） 和 English\n\n请升级至完整版",
+        upgrade_language = "免费版仅支持翻译为 中文（简体） 和 英语\n\n请升级至完整版",
         upgrade_concurrency = "免费版仅支持 低速 模式\n\n请升级至完整版以使用高速模式",
         upgrade_config = "配置功能为完整版提供\n\n请升级至完整版",
         upgrade_auto_follow = "字幕跟随播放头为完整版功能\n\n请升级后使用",
@@ -346,7 +335,7 @@ local uiText = {
         -- 新增：升级提示
         upgrade_title = "Feature Restricted",
         upgrade_provider = "The free version only supports the Default provider. \n\nPlease upgrade to the full version.",
-        upgrade_language = "The free version only supports translation to '中文（普通话）' and 'English'. \n\nPlease upgrade to the full version.",
+        upgrade_language = "The free version only supports translation to 'Chinese (Simplified)' and 'English'.\n\nPlease upgrade to the full version.",
         upgrade_concurrency = "The free version only supports 'Low' speed mode.\n\nPlease upgrade to the full version.",
         upgrade_config = "Configuration is a full version feature. \n\nPlease upgrade to the full version.",
         upgrade_auto_follow = "Subtitles Follow Playhead is available in the full version only.\n\nPlease upgrade to use it.",
@@ -405,6 +394,7 @@ local translateErrorMessages = {
     no_timeline = { cn = "未找到有效的时间线", en = "No active timeline available." },
     invalid_response = { cn = "服务响应内容无效", en = "Service returned an invalid payload." },
     no_selection = { cn = "请先在列表中选择需要翻译的行", en = "Select a row to translate first." },
+    missing_target_lang = { cn = "请选择目标语言", en = "Select a target language." },
     openai_missing_key = { cn = "请在设置中填写 OpenAI API Key", en = "Enter the OpenAI API key in settings." },
     openai_missing_base = { cn = "请在设置中填写 OpenAI Base URL", en = "Enter the OpenAI Base URL in settings." },
     openai_missing_model = { cn = "请选择有效的 OpenAI 模型", en = "Select a valid OpenAI model." },
@@ -1628,6 +1618,7 @@ Utils.ensureDir(configDir)
 settingsFile = Utils.joinPath(configDir, "subedit_settings.json")
 local storedSettings
 local modelsFile = Utils.joinPath(configDir, "models.json")
+local langCodeMapPath = Utils.joinPath(configDir, "lang_code_map.json")
 local openAIModelStore = { builtin = {}, custom = {} }
 Storage.settingsKeyOrder = {
     "TranslateProviderCombo",
@@ -1687,6 +1678,56 @@ function Storage.loadSettings(path)
 
     return settings_table
 end
+
+function Storage.loadLangCodeMaps(path)
+    if not Utils.fileExists(path) then
+        error(string.format("Language code map file missing: %s", tostring(path)))
+    end
+    local content = Utils.readFile(path)
+    if not content or content == "" then
+        error(string.format("Language code map file is empty: %s", tostring(path)))
+    end
+    local ok, data = pcall(json.decode, content)
+    if not ok or type(data) ~= "table" then
+        error(string.format("Language code map decode failed: %s", tostring(path)))
+    end
+
+    local providers = data.providers
+    local labels = data.labels
+    local popular = data.popular
+    if type(providers) ~= "table" then
+        error("Language code map 'providers' must be a table.")
+    end
+    if type(labels) ~= "table" then
+        error("Language code map 'labels' must be a table.")
+    end
+    if type(popular) ~= "table" then
+        error("Language code map 'popular' must be a table.")
+    end
+
+    for _, key in ipairs({ "google", "azure", "deepl" }) do
+        if type(providers[key]) ~= "table" then
+            error(string.format("Language code map 'providers.%s' must be a list.", key))
+        end
+        if type(popular[key]) ~= "table" then
+            error(string.format("Language code map 'popular.%s' must be a list.", key))
+        end
+    end
+
+    for _, langKey in ipairs({ "en", "cn" }) do
+        if type(labels[langKey]) ~= "table" then
+            error(string.format("Language code map 'labels.%s' must be a table.", langKey))
+        end
+        for _, key in ipairs({ "google", "azure", "deepl" }) do
+            if type(labels[langKey][key]) ~= "table" then
+                error(string.format("Language code map 'labels.%s.%s' must be a table.", langKey, key))
+            end
+        end
+    end
+    return data
+end
+
+LANG_CODE_MAPS = Storage.loadLangCodeMaps(langCodeMapPath)
 
 
 
@@ -1795,12 +1836,93 @@ function UI.currentTranslateHeaders()
     return (pack and pack.translate_tree_headers) or uiText.cn.translate_tree_headers
 end
 
-function Translate.getLangLabels()
-    local copy = {}
-    for idx, label in ipairs(LANG_LABELS) do
-        copy[idx] = label
+local function getLangMapKey(provider)
+    local key = PROVIDER_LANG_MAP_KEYS[provider]
+    if not key then
+        error(string.format("Unsupported provider for language map: %s", tostring(provider)))
     end
-    return copy
+    return key
+end
+
+local function getProviderCodes(provider)
+    local key = getLangMapKey(provider)
+    local codes = LANG_CODE_MAPS.providers and LANG_CODE_MAPS.providers[key]
+    if type(codes) ~= "table" then
+        error(string.format("Missing provider codes for: %s", tostring(key)))
+    end
+    return codes
+end
+
+local function getPopularCodes(provider)
+    local key = getLangMapKey(provider)
+    local codes = LANG_CODE_MAPS.popular and LANG_CODE_MAPS.popular[key]
+    if type(codes) ~= "table" then
+        error(string.format("Missing popular codes for: %s", tostring(key)))
+    end
+    return codes
+end
+
+local function getLabelMap(provider, lang)
+    local key = getLangMapKey(provider)
+    local labelMap = LANG_CODE_MAPS.labels and LANG_CODE_MAPS.labels[lang] and LANG_CODE_MAPS.labels[lang][key]
+    if type(labelMap) ~= "table" then
+        error(string.format("Missing labels for %s.%s", tostring(lang), tostring(key)))
+    end
+    return labelMap
+end
+
+local function buildOrderedTargetCodes(provider)
+    local providerCodes = getProviderCodes(provider)
+    local popularCodes = getPopularCodes(provider)
+    local ordered = {}
+    local seen = {}
+    local providerSet = {}
+    for _, code in ipairs(providerCodes) do
+        providerSet[code] = true
+    end
+    for _, code in ipairs(popularCodes) do
+        if providerSet[code] and not seen[code] then
+            table.insert(ordered, code)
+            seen[code] = true
+        end
+    end
+    for _, code in ipairs(providerCodes) do
+        if not seen[code] then
+            table.insert(ordered, code)
+            seen[code] = true
+        end
+    end
+    return ordered
+end
+
+local function getTargetCodeFromIndex(provider, index)
+    local codes = state.translate and state.translate.targetCodes
+    if type(codes) ~= "table" or #codes == 0 then
+        codes = buildOrderedTargetCodes(provider)
+        if state.translate then
+            state.translate.targetCodes = codes
+        end
+    end
+    if type(index) ~= "number" or index < 0 or index >= #codes then
+        return nil
+    end
+    return codes[index + 1]
+end
+
+function Translate.getLangOptions(provider)
+    local useProvider = provider or (state.translate and state.translate.provider) or TRANSLATE_PROVIDER_SILICONFLOUW_LABEL
+    local langKey = UI.currentLanguage()
+    local codes = buildOrderedTargetCodes(useProvider)
+    local labelMap = getLabelMap(useProvider, langKey)
+    local labels = {}
+    for idx, code in ipairs(codes) do
+        local label = labelMap[code]
+        if not label then
+            error(string.format("Missing label for %s: %s", tostring(useProvider), tostring(code)))
+        end
+        labels[idx] = label
+    end
+    return labels, codes, labelMap
 end
 
 
@@ -2788,6 +2910,51 @@ local function ensureTranslateEntries(force)
     setTranslateStatus("idle")
 end
 
+local function refreshTranslateTargetCombo(provider, preferredLabel, preferredCode)
+    if not it.TranslateTargetCombo then
+        return
+    end
+    it.TranslateTargetCombo:Clear()
+    it.TranslateTargetCombo.PlaceholderText = UI.uiString("translate_target_placeholder")
+    local labels, codes, labelMap = Translate.getLangOptions(provider)
+    state.translate.targetCodes = codes
+    if #labels == 0 then
+        it.TranslateTargetCombo.CurrentIndex = -1
+        state.translate.targetLabel = nil
+        state.translate.targetCode = nil
+        return
+    end
+
+    local selectedIndex
+    if preferredCode and preferredCode ~= "" then
+        for idx, code in ipairs(codes) do
+            if code == preferredCode then
+                selectedIndex = idx - 1
+                break
+            end
+        end
+    end
+    if selectedIndex == nil and preferredLabel and preferredLabel ~= "" then
+        for idx, code in ipairs(codes) do
+            if labelMap[code] == preferredLabel then
+                selectedIndex = idx - 1
+                break
+            end
+        end
+    end
+    if selectedIndex == nil then
+        selectedIndex = 0
+    end
+
+    for _, label in ipairs(labels) do
+        it.TranslateTargetCombo:AddItem(label)
+    end
+
+    it.TranslateTargetCombo.CurrentIndex = selectedIndex
+    state.translate.targetLabel = it.TranslateTargetCombo.CurrentText
+    state.translate.targetCode = codes[selectedIndex + 1]
+end
+
 local function initTranslateTab()
     if translateTabInitialized then
         normalizeTranslateTree()
@@ -2814,21 +2981,7 @@ local function initTranslateTab()
         it.TranslateProviderCombo.CurrentIndex = selectedIndex
         state.translate.provider = it.TranslateProviderCombo.CurrentText or TRANSLATE_PROVIDER_SILICONFLOUW_LABEL
     end
-    if it.TranslateTargetCombo then
-        it.TranslateTargetCombo:Clear()
-        it.TranslateTargetCombo.PlaceholderText = UI.uiString("translate_target_placeholder")
-        local labels = Translate.getLangLabels()
-        local stored = state.translate.targetLabel
-        local selectedIndex = 0
-        for idx, label in ipairs(labels) do
-            it.TranslateTargetCombo:AddItem(label)
-            if stored and stored == label then
-                selectedIndex = idx - 1
-            end
-        end
-        it.TranslateTargetCombo.CurrentIndex = selectedIndex
-        state.translate.targetLabel = it.TranslateTargetCombo.CurrentText
-    end
+    refreshTranslateTargetCombo(state.translate.provider, state.translate.targetLabel, state.translate.targetCode)
     if it.TranslateTransButton then
         it.TranslateTransButton.Text = UI.uiString("translate_trans_button")
     end
@@ -2917,7 +3070,10 @@ end
 -- 为 SiliconFlow 构建请求体 (OpenAI 兼容格式)
 function SiliconFlowService.buildRequestPayload(sentence, targetLabel)
     -- 使用简化的专用提示
-    local prompt = SILICONFLOUW_SYSTEM_PROMPT:gsub("{target_lang}", targetLabel or "English")
+    if not targetLabel or Utils.trim(targetLabel) == "" then
+        error("missing_target_lang")
+    end
+    local prompt = SILICONFLOUW_SYSTEM_PROMPT:gsub("{target_lang}", targetLabel)
     
     local messages = {
         { role = "system", content = prompt },
@@ -3004,6 +3160,46 @@ function SiliconFlowService.translateEntries(entries, targetLabel)
 end
 
 
+local function resolveTargetSelection(provider, targetLabel)
+    local label = targetLabel
+    if not label or Utils.trim(label) == "" then
+        return nil, nil, "missing_target_lang"
+    end
+    local _, codes, labelMap = Translate.getLangOptions(provider)
+    state.translate.targetCodes = codes
+    local code = state.translate and state.translate.targetCode
+    if code and code ~= "" then
+        local found = false
+        for _, value in ipairs(codes) do
+            if value == code then
+                found = true
+                break
+            end
+        end
+        if not found then
+            code = nil
+        end
+    end
+    if not code or code == "" then
+        local index = it.TranslateTargetCombo and it.TranslateTargetCombo.CurrentIndex
+        code = getTargetCodeFromIndex(provider, index)
+    end
+    if not code or code == "" then
+        for _, value in ipairs(codes) do
+            if labelMap[value] == label then
+                code = value
+                break
+            end
+        end
+    end
+    if not code or code == "" then
+        return nil, nil, "missing_target_lang"
+    end
+    state.translate.targetLabel = label
+    state.translate.targetCode = code
+    return label, code, nil
+end
+
 -- 修改：翻译主流程，增加免费版限制检查
 local function performTranslateWorkflow()
     if state.translate.busy then
@@ -3023,8 +3219,13 @@ local function performTranslateWorkflow()
     end
     state.translate.provider = provider
     
-    local targetLabel = it.TranslateTargetCombo and it.TranslateTargetCombo.CurrentText or state.translate.targetLabel or "English"
-    state.translate.targetLabel = targetLabel
+    local targetLabel = it.TranslateTargetCombo and it.TranslateTargetCombo.CurrentText or state.translate.targetLabel
+    local resolvedLabel, targetCode, targetErr = resolveTargetSelection(provider, targetLabel)
+    if not resolvedLabel then
+        setTranslateStatus("failed", resolveTranslateError(targetErr or "missing_target_lang"))
+        return false
+    end
+    targetLabel = resolvedLabel
 
     local concurrencyValue = state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY
 
@@ -3037,7 +3238,7 @@ local function performTranslateWorkflow()
         return false
     end
 
-    if not FREE_LANG_LIST[targetLabel] then
+    if not FREE_LANG_CODES[targetCode] then
         show_upgrade_message("upgrade_language")
         setTranslateStatus("failed", resolveTranslateError("upgrade_language"))
         return false
@@ -3106,7 +3307,13 @@ local function translateSingleEntry(index, targetLabel)
         return false
     end
 
-    if not FREE_LANG_LIST[targetLabel] then
+    local resolvedLabel, targetCode, targetErr = resolveTargetSelection(provider, targetLabel)
+    if not resolvedLabel then
+        setTranslateStatus("failed", resolveTranslateError(targetErr or "missing_target_lang"))
+        return false
+    end
+    targetLabel = resolvedLabel
+    if not FREE_LANG_CODES[targetCode] then
         show_upgrade_message("upgrade_language")
         setTranslateStatus("failed", resolveTranslateError("upgrade_language"))
         return false
@@ -3767,6 +3974,7 @@ function UI.applyLanguage(lang)
     if it.TranslateTargetCombo then
         it.TranslateTargetCombo.PlaceholderText = UI.uiString("translate_target_placeholder")
     end
+    refreshTranslateTargetCombo(state.translate.provider, state.translate.targetLabel, state.translate.targetCode)
     if it.TranslateTransButton then
         it.TranslateTransButton.Text = UI.uiString("translate_trans_button")
     end
@@ -4211,6 +4419,7 @@ function win.On.TranslateProviderCombo.CurrentIndexChanged(ev)
         -- 用户选择了有效的服务商
         state.translate.provider = currentText
     end
+    refreshTranslateTargetCombo(state.translate.provider, state.translate.targetLabel, state.translate.targetCode)
 end
 
 function win.On.TranslateConcurrencyCombo.CurrentIndexChanged(ev)
@@ -4240,34 +4449,47 @@ function win.On.TranslateTargetCombo.CurrentIndexChanged(ev)
     if not it.TranslateTargetCombo then
         return
     end
-    
-    local currentText = it.TranslateTargetCombo.CurrentText
-    local defaultFreeLang = "English" -- 默认回退的免费语言
-    
-    if not currentText or currentText == "" then
-        currentText = defaultFreeLang 
+
+    local provider = state.translate.provider or TRANSLATE_PROVIDER_SILICONFLOUW_LABEL
+    local index = it.TranslateTargetCombo.CurrentIndex
+    state.translate.targetLabel = it.TranslateTargetCombo.CurrentText
+    state.translate.targetCode = getTargetCodeFromIndex(provider, index)
+
+    if not state.translate.targetCode or state.translate.targetCode == "" then
+        return
     end
 
-    if not FREE_LANG_LIST[currentText] then
+    if not FREE_LANG_CODES[state.translate.targetCode] then
         -- 用户选择了无效的语言
         show_upgrade_message("upgrade_language")
-        
-        -- 自动切回免费版默认语言 (例如 "English")
-        local freeIndex = 0
-        local labels = Translate.getLangLabels()
-        
-        for idx, label in ipairs(labels) do
-            if label == defaultFreeLang then
+
+        local _, codes = Translate.getLangOptions(provider)
+        state.translate.targetCodes = codes
+        local freeIndex
+        for idx, code in ipairs(codes) do
+            if code == DEFAULT_FREE_CODE then
                 freeIndex = idx - 1
                 break
             end
         end
-        
-        it.TranslateTargetCombo.CurrentIndex = freeIndex
-        state.translate.targetLabel = defaultFreeLang
-    else
-        -- 用户选择了有效的语言
-        state.translate.targetLabel = currentText
+        if freeIndex == nil then
+            for idx, code in ipairs(codes) do
+                if FREE_LANG_CODES[code] then
+                    freeIndex = idx - 1
+                    break
+                end
+            end
+        end
+
+        if freeIndex ~= nil then
+            it.TranslateTargetCombo.CurrentIndex = freeIndex
+            state.translate.targetLabel = it.TranslateTargetCombo.CurrentText
+            state.translate.targetCode = codes[freeIndex + 1]
+        else
+            it.TranslateTargetCombo.CurrentIndex = -1
+            state.translate.targetLabel = nil
+            state.translate.targetCode = nil
+        end
     end
 end
 
@@ -4296,8 +4518,7 @@ function win.On.TranslateSelectedButton.Clicked(ev)
         return
     end
 
-    local targetLabel = it.TranslateTargetCombo and it.TranslateTargetCombo.CurrentText or state.translate.targetLabel or "English"
-    state.translate.targetLabel = targetLabel
+    local targetLabel = it.TranslateTargetCombo and it.TranslateTargetCombo.CurrentText or state.translate.targetLabel
     
     -- ==================================
     -- 免费版限制检查 (开始)
@@ -4308,7 +4529,13 @@ function win.On.TranslateSelectedButton.Clicked(ev)
         setTranslateStatus("failed", resolveTranslateError("upgrade_provider"))
         return
     end
-    if not FREE_LANG_LIST[targetLabel] then
+    local resolvedLabel, targetCode, targetErr = resolveTargetSelection(provider, targetLabel)
+    if not resolvedLabel then
+        setTranslateStatus("failed", resolveTranslateError(targetErr or "missing_target_lang"))
+        return
+    end
+    targetLabel = resolvedLabel
+    if not FREE_LANG_CODES[targetCode] then
         show_upgrade_message("upgrade_language")
         setTranslateStatus("failed", resolveTranslateError("upgrade_language"))
         return

@@ -1,6 +1,6 @@
 
 local SCRIPT_NAME = "DaVinci Sub Tool"
-local SCRIPT_VERSION = "1.1.4"
+local SCRIPT_VERSION = "1.1.5"
 local SCRIPT_AUTHOR = "HEIBA"
 print(string.format("%s | %s | %s", SCRIPT_NAME, SCRIPT_VERSION, SCRIPT_AUTHOR))
 local SCRIPT_KOFI_URL = "https://ko-fi.com/heiba"
@@ -13,6 +13,7 @@ local App = {
     Services = {
         HttpClient = {},
         Azure = {},
+        DeepL = {},
         OpenAIFormat = {},
         GLM = {},
         Parallel = {},
@@ -34,13 +35,14 @@ local Subtitle = App.Subtitle
 local Translate = App.Translate
 local UI = App.UI
 local Azure = Services.Azure
+local DeepL = Services.DeepL
 local OpenAIService = Services.OpenAIFormat
 local GLMService = Services.GLM
 local ParallelServices = Services.Parallel
 local ChatProviders = Services.ChatProviders
 local httpClient = Services.HttpClient
 local SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
-local WINDOW_WIDTH, WINDOW_HEIGHT = 600, 600
+local WINDOW_WIDTH, WINDOW_HEIGHT = 625, 600
 local X_CENTER = math.floor((SCREEN_WIDTH - WINDOW_WIDTH ) / 2)
 local Y_CENTER = math.floor((SCREEN_HEIGHT - WINDOW_HEIGHT) / 2)
 local LOADING_WINDOW_WIDTH, LOADING_WINDOW_HEIGHT = 220, 120
@@ -80,6 +82,7 @@ local disp = bmd.UIDispatcher(ui)
 local json = require('dkjson')
 
 local TRANSLATE_PROVIDER_AZURE_LABEL = "Microsoft"
+local TRANSLATE_PROVIDER_DEEPL_LABEL = "DeepL                  ( API Key )"
 local TRANSLATE_PROVIDER_SILICONFLOW_LABEL = "SiliconFlow         ( Free AI  )"
 local TRANSLATE_PROVIDER_GL_LABEL = "GLM-4-Flash       ( Free AI  )"
 local TRANSLATE_PROVIDER_OPENAI_LABEL = "OpenAI Format  ( API Key )"
@@ -88,6 +91,14 @@ local TRANSLATE_PROVIDER_LIST = {
     TRANSLATE_PROVIDER_SILICONFLOW_LABEL,
     TRANSLATE_PROVIDER_GL_LABEL,
     TRANSLATE_PROVIDER_OPENAI_LABEL,
+    TRANSLATE_PROVIDER_DEEPL_LABEL,
+}
+local PROVIDER_LANG_MAP_KEYS = {
+    [TRANSLATE_PROVIDER_AZURE_LABEL] = "azure",
+    [TRANSLATE_PROVIDER_DEEPL_LABEL] = "deepl",
+    [TRANSLATE_PROVIDER_SILICONFLOW_LABEL] = "google",
+    [TRANSLATE_PROVIDER_GL_LABEL] = "google",
+    [TRANSLATE_PROVIDER_OPENAI_LABEL] = "google",
 }
 function Translate.isSupportedProvider(label)
     for _, value in ipairs(TRANSLATE_PROVIDER_LIST) do
@@ -109,6 +120,10 @@ local AZURE_DEFAULT_REGION = ""
 local AZURE_FALLBACK_REGION = "eastus"
 local AZURE_TIMEOUT = 10
 local AZURE_REGISTER_URL = "https://azure.microsoft.com/"
+local DEEPL_FREE_API_URL = "https://api-free.deepl.com/v2/translate"
+local DEEPL_PRO_API_URL = "https://api.deepl.com/v2/translate"
+local DEEPL_TIMEOUT = 10
+local DEEPL_REGISTER_URL = "https://www.deepl.com/pro-api"
 local GLM_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 local GLM_MODEL = "GLM-4-Flash"
 local GLM_MAX_RETRY = 1
@@ -147,33 +162,7 @@ Note:
 
 local OPENAI_DEFAULT_SYSTEM_PROMPT = TRANSLATE_SYSTEM_PROMPT
 
-local function buildLangLabels(langMap, priorityList)
-    local labels, seen = {}, {}
-    if type(priorityList) == "table" then
-        for _, label in ipairs(priorityList) do
-            if langMap[label] and not seen[label] then
-                table.insert(labels, label)
-                seen[label] = true
-            end
-        end
-    end
-    local rest = {}
-    for label in pairs(langMap) do
-        if not seen[label] then
-            table.insert(rest, label)
-        end
-    end
-    table.sort(rest, function(a, b)
-        return tostring(a) < tostring(b)
-    end)
-    for _, label in ipairs(rest) do
-        table.insert(labels, label)
-    end
-    return labels
-end
-
-local LANG_CODE_MAP = {}
-local LANG_LABELS = {}
+local LANG_CODE_MAPS = {}
 
 Translate.secretCache = {}
 
@@ -210,6 +199,8 @@ App.State = {
         selectedIndex = nil,
         provider = TRANSLATE_PROVIDER_AZURE_LABEL,
         targetLabel = nil,
+        targetCode = nil,
+        targetCodes = {},
         concurrency = DEFAULT_TRANSLATE_CONCURRENCY,
         totalTokens = 0,
         lastStatusKey = "idle",
@@ -233,6 +224,9 @@ state.azure = {
     apiKey = "",
     region = AZURE_DEFAULT_REGION,
     baseUrl = AZURE_DEFAULT_BASE_URL,
+}
+state.deepl = {
+    apiKey = "",
 }
 math.randomseed(os.time() + tonumber(tostring({}):sub(8), 16))
 state.sessionCode = string.format("%04X", math.random(0, 0xFFFF))
@@ -285,6 +279,13 @@ local uiText = {
         azure_api_key_label = "密钥",
         azure_confirm_button = "确定",
         azure_register_button = "注册",
+        deepl_config_label = "DeepL API",
+        deepl_config_button = "配置",
+        deepl_config_window_title = "DeepL API",
+        deepl_config_header = "填写 DeepL API 信息",
+        deepl_api_key_label = "密钥",
+        deepl_confirm_button = "确定",
+        deepl_register_button = "注册",
         concurrency_label = "模式",
         concurrency_option_low = "低速",
         concurrency_option_standard = "标准",
@@ -350,6 +351,13 @@ local uiText = {
         azure_api_key_label = "Key",
         azure_confirm_button = "OK",
         azure_register_button = "Register",
+        deepl_config_label = "DeepL API",
+        deepl_config_button = "Config",
+        deepl_config_window_title = "DeepL API",
+        deepl_config_header = "DeepL API",
+        deepl_api_key_label = "Key",
+        deepl_confirm_button = "OK",
+        deepl_register_button = "Register",
         concurrency_label = "Mode",
         concurrency_option_low = "Low",
         concurrency_option_standard = "Medium",
@@ -433,10 +441,12 @@ local translateErrorMessages = {
     no_timeline = { cn = "未找到有效的时间线", en = "No active timeline available." },
     invalid_response = { cn = "服务响应内容无效", en = "Service returned an invalid payload." },
     no_selection = { cn = "请先在列表中选择需要翻译的行", en = "Select a row to translate first." },
+    missing_target_lang = { cn = "请选择目标语言", en = "Select a target language." },
     openai_missing_key = { cn = "请在设置中填写 OpenAI API Key", en = "Enter the OpenAI API key in settings." },
     openai_missing_base = { cn = "请在设置中填写 OpenAI Base URL", en = "Enter the OpenAI Base URL in settings." },
     openai_missing_model = { cn = "请选择有效的 OpenAI 模型", en = "Select a valid OpenAI model." },
     openai_parallel_failed = { cn = "并发请求失败，已为对应字幕写入错误提示", en = "Parallel requests failed; affected lines were marked with error text." },
+    deepl_missing_key = { cn = "请在设置中填写 DeepL API Key", en = "Enter the DeepL API key in settings." },
 }
 
 local SUPABASE_URL = "https://tbjlsielfxmkxldzmokc.supabase.co"
@@ -1878,6 +1888,7 @@ Storage.settingsKeyOrder = {
     "TranslateConcurrencyCombo",
     "AzureRegion",
     "AzureApiKey",
+    "DeepLApiKey",
     "OpenAIFormatModelCombo",
     "OpenAIFormatBaseURL",
     "OpenAIFormatApiKey",
@@ -1966,49 +1977,55 @@ function Storage.loadSettings(path)
     return settings_table
 end
 
-local fallbackLangConfig = {
-    map = {
-        ["中文（简体）"] = "zh-Hans",
-        ["English"] = "en",
-    },
-    priority = { "中文（简体）", "English" },
-}
+function Storage.loadLangCodeMaps(path)
+    if not Utils.fileExists(path) then
+        error(string.format("Language code map file missing: %s", tostring(path)))
+    end
+    local content = Utils.readFile(path)
+    if not content or content == "" then
+        error(string.format("Language code map file is empty: %s", tostring(path)))
+    end
+    local ok, data = pcall(json.decode, content)
+    if not ok or type(data) ~= "table" then
+        error(string.format("Language code map decode failed: %s", tostring(path)))
+    end
 
-function Storage.sanitizePriorityList(list)
-    local result = {}
-    if type(list) == "table" then
-        for _, label in ipairs(list) do
-            if type(label) == "string" and label ~= "" then
-                table.insert(result, label)
+    local providers = data.providers
+    local labels = data.labels
+    local popular = data.popular
+    if type(providers) ~= "table" then
+        error("Language code map 'providers' must be a table.")
+    end
+    if type(labels) ~= "table" then
+        error("Language code map 'labels' must be a table.")
+    end
+    if type(popular) ~= "table" then
+        error("Language code map 'popular' must be a table.")
+    end
+
+    for _, key in ipairs({ "google", "azure", "deepl" }) do
+        if type(providers[key]) ~= "table" then
+            error(string.format("Language code map 'providers.%s' must be a list.", key))
+        end
+        if type(popular[key]) ~= "table" then
+            error(string.format("Language code map 'popular.%s' must be a list.", key))
+        end
+    end
+
+    for _, langKey in ipairs({ "en", "cn" }) do
+        if type(labels[langKey]) ~= "table" then
+            error(string.format("Language code map 'labels.%s' must be a table.", langKey))
+        end
+        for _, key in ipairs({ "google", "azure", "deepl" }) do
+            if type(labels[langKey][key]) ~= "table" then
+                error(string.format("Language code map 'labels.%s.%s' must be a table.", langKey, key))
             end
         end
     end
-    return result
+    return data
 end
 
-function Storage.loadLangConfig()
-    Utils.ensureDir(configDir)
-    local config = Storage.loadSettings(langCodeMapPath)
-    if type(config) == "table" and type(config.map) == "table" then
-        local priority = Storage.sanitizePriorityList(config.priority)
-        return config.map, priority
-    end
-    if not Utils.fileExists(langCodeMapPath) then
-        Storage.saveSettings(langCodeMapPath, fallbackLangConfig)
-    end
-    return fallbackLangConfig.map, Storage.sanitizePriorityList(fallbackLangConfig.priority)
-end
-
-function Storage.applyLangConfig(map, priority)
-    if type(map) ~= "table" then
-        map = {}
-    end
-    LANG_CODE_MAP = map
-    LANG_LABELS = buildLangLabels(LANG_CODE_MAP, priority or {})
-end
-
-local langCodeMap, langPriorityList = Storage.loadLangConfig()
-Storage.applyLangConfig(langCodeMap, langPriorityList)
+LANG_CODE_MAPS = Storage.loadLangCodeMaps(langCodeMapPath)
 
 function Storage.loadOpenAIModelStore()
     Utils.ensureDir(configDir)
@@ -2103,12 +2120,93 @@ function UI.currentTranslateHeaders()
     return (pack and pack.translate_tree_headers) or uiText.cn.translate_tree_headers
 end
 
-function Translate.getLangLabels()
-    local copy = {}
-    for idx, label in ipairs(LANG_LABELS) do
-        copy[idx] = label
+local function getLangMapKey(provider)
+    local key = PROVIDER_LANG_MAP_KEYS[provider]
+    if not key then
+        error(string.format("Unsupported provider for language map: %s", tostring(provider)))
     end
-    return copy
+    return key
+end
+
+local function getProviderCodes(provider)
+    local key = getLangMapKey(provider)
+    local codes = LANG_CODE_MAPS.providers and LANG_CODE_MAPS.providers[key]
+    if type(codes) ~= "table" then
+        error(string.format("Missing provider codes for: %s", tostring(key)))
+    end
+    return codes
+end
+
+local function getPopularCodes(provider)
+    local key = getLangMapKey(provider)
+    local codes = LANG_CODE_MAPS.popular and LANG_CODE_MAPS.popular[key]
+    if type(codes) ~= "table" then
+        error(string.format("Missing popular codes for: %s", tostring(key)))
+    end
+    return codes
+end
+
+local function getLabelMap(provider, lang)
+    local key = getLangMapKey(provider)
+    local labelMap = LANG_CODE_MAPS.labels and LANG_CODE_MAPS.labels[lang] and LANG_CODE_MAPS.labels[lang][key]
+    if type(labelMap) ~= "table" then
+        error(string.format("Missing labels for %s.%s", tostring(lang), tostring(key)))
+    end
+    return labelMap
+end
+
+local function buildOrderedTargetCodes(provider)
+    local providerCodes = getProviderCodes(provider)
+    local popularCodes = getPopularCodes(provider)
+    local ordered = {}
+    local seen = {}
+    local providerSet = {}
+    for _, code in ipairs(providerCodes) do
+        providerSet[code] = true
+    end
+    for _, code in ipairs(popularCodes) do
+        if providerSet[code] and not seen[code] then
+            table.insert(ordered, code)
+            seen[code] = true
+        end
+    end
+    for _, code in ipairs(providerCodes) do
+        if not seen[code] then
+            table.insert(ordered, code)
+            seen[code] = true
+        end
+    end
+    return ordered
+end
+
+local function getTargetCodeFromIndex(provider, index)
+    local codes = state.translate and state.translate.targetCodes
+    if type(codes) ~= "table" or #codes == 0 then
+        codes = buildOrderedTargetCodes(provider)
+        if state.translate then
+            state.translate.targetCodes = codes
+        end
+    end
+    if type(index) ~= "number" or index < 0 or index >= #codes then
+        return nil
+    end
+    return codes[index + 1]
+end
+
+function Translate.getLangOptions(provider)
+    local useProvider = provider or (state.translate and state.translate.provider) or TRANSLATE_PROVIDER_AZURE_LABEL
+    local langKey = UI.currentLanguage()
+    local codes = buildOrderedTargetCodes(useProvider)
+    local labelMap = getLabelMap(useProvider, langKey)
+    local labels = {}
+    for idx, code in ipairs(codes) do
+        local label = labelMap[code]
+        if not label then
+            error(string.format("Missing label for %s: %s", tostring(useProvider), tostring(code)))
+        end
+        labels[idx] = label
+    end
+    return labels, codes, labelMap
 end
 
 
@@ -2145,6 +2243,11 @@ if storedSettings then
     local azureRegion = storedSettings.AzureRegion 
     if type(azureRegion) == "string" and Utils.trim(azureRegion) ~= "" then
         state.azure.region = Utils.trim(azureRegion)
+    end
+
+    local deeplKey = storedSettings.DeepLApiKey
+    if type(deeplKey) == "string" and Utils.trim(deeplKey) ~= "" then
+        state.deepl.apiKey = Utils.trim(deeplKey)
     end
 
     local baseUrl = storedSettings.OpenAIFormatBaseURL
@@ -2371,6 +2474,7 @@ local win = disp:AddWindow(
         ui:VGap(20),
 
         ui:HGroup{ Weight = 0, ui:Label{ ID = "AzureConfigLabel",    Text = UI.uiString("azure_config_label"),    Alignment = { AlignVCenter = true }, Weight = 1 }, ui:Button{ ID = "AzureConfigButton",    Text = UI.uiString("azure_config_button"),    Weight = 0 } },
+        ui:HGroup{ Weight = 0, ui:Label{ ID = "DeepLConfigLabel",    Text = UI.uiString("deepl_config_label"),    Alignment = { AlignVCenter = true }, Weight = 1 }, ui:Button{ ID = "DeepLConfigButton",    Text = UI.uiString("deepl_config_button"),    Weight = 0 } },
         ui:HGroup{ Weight = 0, ui:Label{ ID = "OpenAIFormatConfigLabel", Text = UI.uiString("openai_config_label"), Alignment = { AlignVCenter = true }, Weight = 1 }, ui:Button{ ID = "OpenAIFormatConfigButton", Text = UI.uiString("openai_config_button"), Weight = 0 } },
 
         ui:HGroup{ Weight = 0, ui:CheckBox{ ID = "LangCnCheckBox", Text = UI.uiString("lang_cn"), Checked = false, Weight = 0 }, ui:CheckBox{ ID = "LangEnCheckBox", Text = UI.uiString("lang_en"), Checked = true,  Weight = 0 } },
@@ -2398,6 +2502,23 @@ local azureConfigWin = disp:AddWindow(
     ui:HGroup{ Weight = 0, ui:Label{ ID = "AzureApiKeyLabel", Text = UI.uiString("azure_api_key_label"), Alignment = { AlignVCenter = true }, Weight = 0.3 }, ui:LineEdit{ ID = "AzureApiKey", Text = state.azure.apiKey or "", EchoMode = "Password", Weight = 0.7 } },
 
     ui:HGroup{ Weight = 0, ui:Button{ ID = "AzureConfirm", Text = UI.uiString("azure_confirm_button"), Weight = 1 }, ui:Button{ ID = "AzureRegisterButton", Text = UI.uiString("azure_register_button"), Weight = 1 } },
+  }
+)
+
+local deeplConfigWin = disp:AddWindow(
+  {
+    ID = "DeepLConfigWin",
+    WindowTitle = UI.uiString("deepl_config_window_title"),
+    Geometry = { X_CENTER + 35, Y_CENTER + 35, 300, 130 },
+    Hidden = true,
+    StyleSheet = "*{font-size:14px;}",
+  },
+  ui:VGroup{
+    ui:Label{ ID = "DeepLLabel", Text = UI.uiString("deepl_config_header"), Alignment = { AlignHCenter = true, AlignVCenter = true }, Weight = 0 },
+
+    ui:HGroup{ Weight = 0, ui:Label{ ID = "DeepLApiKeyLabel", Text = UI.uiString("deepl_api_key_label"), Alignment = { AlignVCenter = true }, Weight = 0.3 }, ui:LineEdit{ ID = "DeepLApiKey", Text = state.deepl.apiKey or "", EchoMode = "Password", Weight = 0.7 } },
+
+    ui:HGroup{ Weight = 0, ui:Button{ ID = "DeepLConfirm", Text = UI.uiString("deepl_confirm_button"), Weight = 1 }, ui:Button{ ID = "DeepLRegisterButton", Text = UI.uiString("deepl_register_button"), Weight = 1 } },
   }
 )
 
@@ -2474,6 +2595,7 @@ local messageWin = disp:AddWindow(
 
 local it = win:GetItems()
 local azureConfigItems = azureConfigWin:GetItems() or {}
+local deeplConfigItems = deeplConfigWin:GetItems() or {}
 local openAIConfigItems = openAIConfigWin:GetItems() or {}
 local addModelItems = addModelWin:GetItems() or {}
 local messageItems = messageWin:GetItems() or {}
@@ -2753,6 +2875,62 @@ function Azure.closeConfigWindow()
     end
     Azure.applyConfigFromControls()
     azureConfigWin:Hide()
+end
+
+function DeepL.refreshConfigTexts()
+    if not deeplConfigItems then
+        return
+    end
+    if deeplConfigWin then
+        deeplConfigWin.WindowTitle = UI.uiString("deepl_config_window_title")
+    end
+    local textMap = {
+        DeepLLabel = "deepl_config_header",
+        DeepLApiKeyLabel = "deepl_api_key_label",
+        DeepLConfirm = "deepl_confirm_button",
+        DeepLRegisterButton = "deepl_register_button",
+    }
+    for id, key in pairs(textMap) do
+        local widget = deeplConfigItems[id]
+        if widget and widget.Text ~= nil then
+            widget.Text = UI.uiString(key)
+        end
+    end
+end
+
+function DeepL.syncConfigControls()
+    if not deeplConfigItems then
+        return
+    end
+    if deeplConfigItems.DeepLApiKey then
+        deeplConfigItems.DeepLApiKey.Text = state.deepl.apiKey or ""
+    end
+end
+
+function DeepL.applyConfigFromControls()
+    if not deeplConfigItems then
+        return
+    end
+    if deeplConfigItems.DeepLApiKey then
+        state.deepl.apiKey = Utils.trim(deeplConfigItems.DeepLApiKey.Text or "")
+    end
+end
+
+function DeepL.openConfigWindow()
+    if not deeplConfigWin then
+        return
+    end
+    DeepL.refreshConfigTexts()
+    DeepL.syncConfigControls()
+    deeplConfigWin:Show()
+end
+
+function DeepL.closeConfigWindow()
+    if not deeplConfigWin then
+        return
+    end
+    DeepL.applyConfigFromControls()
+    deeplConfigWin:Hide()
 end
 
 
@@ -3587,6 +3765,49 @@ local function ensureTranslateEntries(force)
     setTranslateStatus("idle")
 end
 
+local function refreshTranslateTargetCombo(provider, preferredLabel, preferredCode)
+    if not it.TranslateTargetCombo then
+        return
+    end
+    it.TranslateTargetCombo:Clear()
+    it.TranslateTargetCombo.PlaceholderText = UI.uiString("translate_target_placeholder")
+    local labels, codes, labelMap = Translate.getLangOptions(provider)
+    state.translate.targetCodes = codes
+    if #labels == 0 then
+        it.TranslateTargetCombo.CurrentIndex = -1
+        state.translate.targetLabel = nil
+        state.translate.targetCode = nil
+        return
+    end
+
+    local selectedIndex
+    if preferredCode and preferredCode ~= "" then
+        for idx, code in ipairs(codes) do
+            if code == preferredCode then
+                selectedIndex = idx - 1
+                break
+            end
+        end
+    end
+    if selectedIndex == nil and preferredLabel and preferredLabel ~= "" then
+        for idx, code in ipairs(codes) do
+            if labelMap[code] == preferredLabel then
+                selectedIndex = idx - 1
+                break
+            end
+        end
+    end
+    if selectedIndex == nil then
+        selectedIndex = 0
+    end
+    for _, label in ipairs(labels) do
+        it.TranslateTargetCombo:AddItem(label)
+    end
+    it.TranslateTargetCombo.CurrentIndex = selectedIndex
+    state.translate.targetLabel = it.TranslateTargetCombo.CurrentText
+    state.translate.targetCode = codes[selectedIndex + 1]
+end
+
 local function initTranslateTab()
     if translateTabInitialized then
         normalizeTranslateTree()
@@ -3613,21 +3834,7 @@ local function initTranslateTab()
         it.TranslateProviderCombo.CurrentIndex = selectedIndex
         state.translate.provider = it.TranslateProviderCombo.CurrentText or TRANSLATE_PROVIDER_AZURE_LABEL
     end
-    if it.TranslateTargetCombo then
-        it.TranslateTargetCombo:Clear()
-        it.TranslateTargetCombo.PlaceholderText = UI.uiString("translate_target_placeholder")
-        local labels = Translate.getLangLabels()
-        local stored = state.translate.targetLabel
-        local selectedIndex = 0
-        for idx, label in ipairs(labels) do
-            it.TranslateTargetCombo:AddItem(label)
-            if stored and stored == label then
-                selectedIndex = idx - 1
-            end
-        end
-        it.TranslateTargetCombo.CurrentIndex = selectedIndex
-        state.translate.targetLabel = it.TranslateTargetCombo.CurrentText
-    end
+    refreshTranslateTargetCombo(state.translate.provider, state.translate.targetLabel, state.translate.targetCode)
     if it.TranslateTransButton then
         it.TranslateTransButton.Text = UI.uiString("translate_trans_button")
     end
@@ -3649,15 +3856,51 @@ local function initTranslateTab()
     setTranslateStatus("idle")
 end
 
-local function getTargetLangCode(label)
-    if label and label ~= "" then
-        return LANG_CODE_MAP[label] or LANG_CODE_MAP["English"] or "en"
+local function resolveTargetSelection(provider, targetLabel)
+    local label = targetLabel
+    if not label or Utils.trim(label) == "" then
+        return nil, nil, "missing_target_lang"
     end
-    return LANG_CODE_MAP["English"] or "en"
+    local _, codes, labelMap = Translate.getLangOptions(provider)
+    state.translate.targetCodes = codes
+    local code = state.translate and state.translate.targetCode
+    if code and code ~= "" then
+        local found = false
+        for _, value in ipairs(codes) do
+            if value == code then
+                found = true
+                break
+            end
+        end
+        if not found then
+            code = nil
+        end
+    end
+    if not code or code == "" then
+        local index = it.TranslateTargetCombo and it.TranslateTargetCombo.CurrentIndex
+        code = getTargetCodeFromIndex(provider, index)
+    end
+    if not code or code == "" then
+        for _, value in ipairs(codes) do
+            if labelMap[value] == label then
+                code = value
+                break
+            end
+        end
+    end
+    if not code or code == "" then
+        return nil, nil, "missing_target_lang"
+    end
+    state.translate.targetLabel = label
+    state.translate.targetCode = code
+    return label, code, nil
 end
 
 local function composeTranslatePrompt(targetLabel)
-    local target = targetLabel and Utils.trim(targetLabel) ~= "" and targetLabel or "English"
+    if not targetLabel or Utils.trim(targetLabel) == "" then
+        error("missing_target_lang")
+    end
+    local target = targetLabel
     local prefix = TRANSLATE_PREFIX_PROMPT:gsub("{target_lang}", target)
     local corePrompt = OPENAI_DEFAULT_SYSTEM_PROMPT
     if state and state.openaiFormat and type(state.openaiFormat.systemPrompt) == "string" then
@@ -4112,6 +4355,181 @@ function GLMService.translateEntries(entries, targetLabel)
     return ChatProviders.translateEntries(GLM_CHAT_PROVIDER, entries, targetLabel)
 end
 
+function DeepL.resolveApiUrl(apiKey)
+    local key = Utils.trim(apiKey or "")
+    if key ~= "" and key:match(":fx$") then
+        return DEEPL_FREE_API_URL
+    end
+    return DEEPL_PRO_API_URL
+end
+
+function DeepL.parseResponseBody(body)
+    local ok, decoded = pcall(json.decode, body or "")
+    if not ok or type(decoded) ~= "table" then
+        return nil, 0, "decode_failed"
+    end
+    local translations = decoded.translations
+    if type(translations) ~= "table" or type(translations[1]) ~= "table" then
+        if decoded.message then
+            return nil, 0, tostring(decoded.message)
+        end
+        return nil, 0, "invalid_response"
+    end
+    local translated = translations[1].text
+    if not translated or Utils.trim(translated) == "" then
+        return nil, 0, "empty_translation"
+    end
+    return translated, 0, nil
+end
+
+function DeepL.requestTranslation(text, targetCode, apiKey)
+    local key = Utils.trim(apiKey or "")
+    if key == "" then
+        return nil, 0, "deepl_missing_key"
+    end
+    if not targetCode or targetCode == "" then
+        return nil, 0, "missing_target_lang"
+    end
+    local payload = json.encode({
+        text = { text or "" },
+        target_lang = targetCode,
+    })
+    local headers = {
+        Authorization = "DeepL-Auth-Key " .. key,
+        ["Content-Type"] = "application/json",
+        ["User-Agent"] = string.format("%s/%s", SCRIPT_NAME, SCRIPT_VERSION),
+    }
+    local apiUrl = DeepL.resolveApiUrl(key)
+    local body, status = Services.httpPostJson(apiUrl, payload, headers, DEEPL_TIMEOUT)
+    if not body then
+        return nil, 0, status or "request_failed"
+    end
+    local translation, _, err = DeepL.parseResponseBody(body)
+    if not translation then
+        local ok, decoded = pcall(json.decode, body)
+        if ok and type(decoded) == "table" and decoded.message then
+            return nil, 0, tostring(decoded.message)
+        end
+    end
+    return translation, 0, err
+end
+
+function DeepL.translateEntries(entries, targetLabel)
+    if not entries or #entries == 0 then
+        return nil, "no_entries"
+    end
+    local apiKey = Utils.trim(state.deepl and state.deepl.apiKey or "")
+    if apiKey == "" then
+        return nil, "deepl_missing_key"
+    end
+    local _, targetCode, targetErr = resolveTargetSelection(TRANSLATE_PROVIDER_DEEPL_LABEL, targetLabel)
+    if not targetCode then
+        return nil, targetErr or "missing_target_lang"
+    end
+
+    local totalTokens = 0
+    local total = #entries
+    local processed = 0
+    local concurrency = math.max(1, state.translate and state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY)
+    local useParallel = concurrency > 1
+    local apiUrl = DeepL.resolveApiUrl(apiKey)
+    local headers = {
+        string.format("Authorization: DeepL-Auth-Key %s", apiKey),
+        "Content-Type: application/json",
+        string.format("User-Agent: %s/%s", SCRIPT_NAME, SCRIPT_VERSION),
+    }
+
+    setTranslateStatus("progress", processed, total, totalTokens)
+
+    if useParallel then
+        local startIndex = 1
+	        while startIndex <= total do
+	            local batchEnd = math.min(total, startIndex + concurrency - 1)
+	            local tasks = {}
+	            for idx = startIndex, batchEnd do
+	                local entry = entries[idx]
+                tasks[#tasks + 1] = {
+                    index = idx,
+                    payload = json.encode({
+                        text = { entry and entry.original or "" },
+                        target_lang = targetCode,
+                    }),
+                    url = apiUrl,
+                }
+            end
+
+	            local results, batchErr = ParallelServices.runCurlParallel(tasks, {
+	                apiUrl = apiUrl,
+	                timeout = DEEPL_TIMEOUT,
+	                parallelLimit = concurrency,
+	                headers = headers,
+	                payloadPrefix = "deepl_payload",
+	                outputPrefix = "deepl_output",
+	                parseResponse = DeepL.parseResponseBody,
+	            })
+	            if not results then
+	                local errMsg = batchErr or "translation_failed"
+	                for idx = startIndex, batchEnd do
+	                    local entry = entries[idx]
+	                    local rowIndex = entry and entry.index or idx
+	                    processed = processed + 1
+	                    local fallback = string.format("[Error: %s]", tostring(errMsg))
+	                    if entry then
+	                        entry.translation = fallback
+	                    end
+	                    updateTranslateTreeRow(rowIndex, fallback)
+	                    markTranslateFailure(rowIndex, errMsg)
+	                    setTranslateStatus("progress", processed, total, totalTokens)
+	                end
+	            else
+	                for idx = startIndex, batchEnd do
+	                    local result = results[idx]
+	                    local entry = entries[idx]
+	                    local rowIndex = entry and entry.index or idx
+	                    if result and result.success then
+	                        if entry then
+	                            entry.translation = result.translation
+	                        end
+	                        updateTranslateTreeRow(rowIndex, result.translation)
+	                        clearTranslateFailure(rowIndex)
+	                    else
+	                        local errMsg = (result and result.err) or batchErr or "translation_failed"
+	                        local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
+	                        if entry then
+	                            entry.translation = fallback
+	                        end
+	                        updateTranslateTreeRow(rowIndex, fallback)
+	                        markTranslateFailure(rowIndex, errMsg)
+	                    end
+	                    processed = processed + 1
+	                    setTranslateStatus("progress", processed, total, totalTokens)
+	                end
+	            end
+	            startIndex = batchEnd + 1
+	        end
+	    else
+	        for index = 1, total do
+            local entry = entries[index]
+            local rowIndex = entry and entry.index or index
+            local translation, _, errMsg = DeepL.requestTranslation(entry.original or "", targetCode, apiKey)
+            if translation then
+                entry.translation = translation
+                updateTranslateTreeRow(rowIndex, translation)
+                clearTranslateFailure(rowIndex)
+            else
+                local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
+                entry.translation = fallback
+                updateTranslateTreeRow(rowIndex, fallback)
+                markTranslateFailure(rowIndex, errMsg)
+            end
+            processed = processed + 1
+            setTranslateStatus("progress", processed, total, totalTokens)
+        end
+    end
+
+    return totalTokens, nil
+end
+
 function Azure.resolveCredential()
     local key = Utils.trim(state.azure and state.azure.apiKey or "")
     local region = Utils.trim(state.azure and state.azure.region or "")
@@ -4146,12 +4564,15 @@ function Azure.parseResponseBody(body)
 end
 
 function Azure.requestTranslation(text, targetCode, baseUrl, apiKey, region)
+    if not targetCode or targetCode == "" then
+        return nil, 0, "missing_target_lang"
+    end
     local cleanBase = Utils.trim(baseUrl or "")
     if cleanBase == "" then
         cleanBase = AZURE_DEFAULT_BASE_URL
     end
     cleanBase = cleanBase:gsub("/+$", "")
-    local query = string.format("?api-version=3.0&to=%s", Utils.urlEncode(targetCode or "en"))
+    local query = string.format("?api-version=3.0&to=%s", Utils.urlEncode(targetCode))
     local url = cleanBase .. "/translate" .. query
     local payload = json.encode({
         { Text = text or "" },
@@ -4244,9 +4665,9 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
             return nil, "no_entries"
         end
 
-        local targetCode = getTargetLangCode(targetLabel)
-        if not targetCode or targetCode == "" then
-            targetCode = "en"
+        local _, targetCode, targetErr = resolveTargetSelection(TRANSLATE_PROVIDER_AZURE_LABEL, targetLabel)
+        if not targetCode then
+            return nil, targetErr or "missing_target_lang"
         end
 
         local userKey = Utils.trim(state.azure and state.azure.apiKey or "")
@@ -4275,7 +4696,7 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
         end
         cleanBase = cleanBase:gsub("/+$", "")
         baseUrl = cleanBase
-        local translateUrl = cleanBase .. "/translate" .. string.format("?api-version=3.0&to=%s", Utils.urlEncode(targetCode or "en"))
+        local translateUrl = cleanBase .. "/translate" .. string.format("?api-version=3.0&to=%s", Utils.urlEncode(targetCode))
         local headers = {
             string.format("Ocp-Apim-Subscription-Key: %s", apiKey),
             string.format("Ocp-Apim-Subscription-Region: %s", region),
@@ -4588,6 +5009,8 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
         local translateFunc
         if provider == TRANSLATE_PROVIDER_AZURE_LABEL then
             translateFunc = Azure.translateEntries
+        elseif provider == TRANSLATE_PROVIDER_DEEPL_LABEL then
+            translateFunc = DeepL.translateEntries
         elseif provider == TRANSLATE_PROVIDER_OPENAI_LABEL then
             translateFunc = OpenAIService.translateEntries
         elseif providerConfig then
@@ -4601,8 +5024,13 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
             return false
         end
 
-        local targetLabel = it.TranslateTargetCombo and it.TranslateTargetCombo.CurrentText or state.translate.targetLabel or "English"
-        state.translate.targetLabel = targetLabel
+        local targetLabel = it.TranslateTargetCombo and it.TranslateTargetCombo.CurrentText or state.translate.targetLabel
+        local resolvedLabel, _, targetErr = resolveTargetSelection(provider, targetLabel)
+        if not resolvedLabel then
+            setTranslateStatus("failed", resolveTranslateError(targetErr or "missing_target_lang"))
+            return false
+        end
+        targetLabel = resolvedLabel
 
         state.translate.busy = true
         setTranslateControlsEnabled(false)
@@ -4643,12 +5071,14 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
         end
         local rowIndex = entry.index or index
         local provider = state.translate.provider or TRANSLATE_PROVIDER_AZURE_LABEL
+        local resolvedLabel, targetCode, targetErr = resolveTargetSelection(provider, targetLabel)
+        if not resolvedLabel then
+            setTranslateStatus("failed", resolveTranslateError(targetErr or "missing_target_lang"))
+            return false
+        end
+        targetLabel = resolvedLabel
         local providerConfig = ChatProviders.getByLabel(provider)
         if provider == TRANSLATE_PROVIDER_AZURE_LABEL then
-            local targetCode = getTargetLangCode(targetLabel)
-            if not targetCode or targetCode == "" then
-                targetCode = "en"
-            end
             local userKey = Utils.trim(state.azure and state.azure.apiKey or "")
             local userRegion = Utils.trim(state.azure and state.azure.region or "")
             if userKey == "" or userRegion == "" then
@@ -4665,6 +5095,28 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
             local baseUrl = state.azure and state.azure.baseUrl or AZURE_DEFAULT_BASE_URL
             setTranslateStatus("progress", 0, 1, state.translate.totalTokens or 0)
             local translation, _, errMsg = Azure.requestTranslation(entry.original or "", targetCode, baseUrl, apiKey, region)
+            if translation then
+                entry.translation = translation
+                updateTranslateTreeRow(rowIndex, translation)
+                clearTranslateFailure(rowIndex)
+                state.translate.totalTokens = state.translate.totalTokens or 0
+                applyTranslateSuccessStatus({ entry }, state.translate.totalTokens)
+                return true
+            end
+            local fallback = string.format("[Error: %s]", tostring(errMsg or "failed"))
+            entry.translation = fallback
+            updateTranslateTreeRow(rowIndex, fallback)
+            markTranslateFailure(rowIndex, errMsg)
+            applyTranslateSuccessStatus({ entry }, state.translate.totalTokens)
+            return true
+        elseif provider == TRANSLATE_PROVIDER_DEEPL_LABEL then
+            local apiKey = Utils.trim(state.deepl and state.deepl.apiKey or "")
+            if apiKey == "" then
+                setTranslateStatus("failed", resolveTranslateError("deepl_missing_key"))
+                return false
+            end
+            setTranslateStatus("progress", 0, 1, state.translate.totalTokens or 0)
+            local translation, _, errMsg = DeepL.requestTranslation(entry.original or "", targetCode, apiKey)
             if translation then
                 entry.translation = translation
                 updateTranslateTreeRow(rowIndex, translation)
@@ -4814,6 +5266,8 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
         local translateFunc
         if provider == TRANSLATE_PROVIDER_AZURE_LABEL then
             translateFunc = Azure.translateEntries
+        elseif provider == TRANSLATE_PROVIDER_DEEPL_LABEL then
+            translateFunc = DeepL.translateEntries
         elseif provider == TRANSLATE_PROVIDER_OPENAI_LABEL then
             translateFunc = OpenAIService.translateEntries
         elseif providerConfig then
@@ -4827,8 +5281,14 @@ function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targ
             return false
         end
 
-        local targetLabel = state.translate.targetLabel or (it.TranslateTargetCombo and it.TranslateTargetCombo.CurrentText) or "English"
-        state.translate.targetLabel = targetLabel
+        local targetLabel = (it.TranslateTargetCombo and it.TranslateTargetCombo.CurrentText) or state.translate.targetLabel
+        local resolvedLabel, _, targetErr = resolveTargetSelection(provider, targetLabel)
+        if not resolvedLabel then
+            setTranslateStatus("failed", resolveTranslateError(targetErr or "missing_target_lang"))
+            updateRetryButtonState()
+            return false
+        end
+        targetLabel = resolvedLabel
 
         local originalConcurrency = state.translate.concurrency
         state.translate.concurrency = 3
@@ -5628,6 +6088,12 @@ function UI.applyLanguage(lang)
     if it.AzureConfigButton then
         it.AzureConfigButton.Text = UI.uiString("azure_config_button")
     end
+    if it.DeepLConfigLabel then
+        it.DeepLConfigLabel.Text = UI.uiString("deepl_config_label")
+    end
+    if it.DeepLConfigButton then
+        it.DeepLConfigButton.Text = UI.uiString("deepl_config_button")
+    end
     if it.OpenAIFormatConfigLabel then
         it.OpenAIFormatConfigLabel.Text = UI.uiString("openai_config_label")
     end
@@ -5647,6 +6113,7 @@ function UI.applyLanguage(lang)
     if it.TranslateTargetCombo then
         it.TranslateTargetCombo.PlaceholderText = UI.uiString("translate_target_placeholder")
     end
+    refreshTranslateTargetCombo(state.translate.provider, state.translate.targetLabel, state.translate.targetCode)
     if it.TranslateTransButton then
         it.TranslateTransButton.Text = UI.uiString("translate_trans_button")
     end
@@ -5670,6 +6137,7 @@ function UI.applyLanguage(lang)
     UI.refreshUpdateNotice()
 
     Azure.refreshConfigTexts()
+    DeepL.refreshConfigTexts()
     OpenAIService.refreshConfigTexts()
 
     if it.SubtitleTree then
@@ -6032,12 +6500,18 @@ function win.On.AzureConfigButton.Clicked(ev)
     Azure.openConfigWindow()
 end
 
+function win.On.DeepLConfigButton.Clicked(ev)
+    DeepL.openConfigWindow()
+end
+
 function win.On.OpenAIFormatConfigButton.Clicked(ev)
     OpenAIService.openConfigWindow()
 end
 
 Azure.refreshConfigTexts()
 Azure.syncConfigControls()
+DeepL.refreshConfigTexts()
+DeepL.syncConfigControls()
 OpenAIService.refreshConfigTexts()
 OpenAIService.syncOpenAIConfigControls()
 
@@ -6050,6 +6524,18 @@ if azureConfigWin then
     end
     function azureConfigWin.On.AzureRegisterButton.Clicked(ev)
         Utils.openExternalUrl(AZURE_REGISTER_URL)
+    end
+end
+
+if deeplConfigWin then
+    function deeplConfigWin.On.DeepLConfirm.Clicked(ev)
+        DeepL.closeConfigWindow()
+    end
+    function deeplConfigWin.On.DeepLConfigWin.Close(ev)
+        DeepL.closeConfigWindow()
+    end
+    function deeplConfigWin.On.DeepLRegisterButton.Clicked(ev)
+        Utils.openExternalUrl(DEEPL_REGISTER_URL)
     end
 end
 
@@ -6143,14 +6629,25 @@ function win.On.TranslateSubtitleEditor.TextChanged(ev)
         return
     end
     local text = (it.TranslateSubtitleEditor and (it.TranslateSubtitleEditor.PlainText or it.TranslateSubtitleEditor.Text)) or ""
-    entry.translation = text
-    Translate.updateTreeRow(idx, text)
-    clearTranslateFailure(idx)
+    
+    -- 检查文本内容是否真正发生变化
+    local originalText = entry.translation or ""
+    local textChanged = (text ~= originalText)
+    
+    -- 只有在文本真正变化时才更新并清除失败标记
+    if textChanged then
+        entry.translation = text
+        Translate.updateTreeRow(idx, text)
+        clearTranslateFailure(idx)
+    end
+    -- 如果文本没有变化，什么都不做，保持原状态（包括失败标记）
 end
 
 function win.On.TranslateProviderCombo.CurrentIndexChanged(ev)
     if it.TranslateProviderCombo then
-        state.translate.provider = it.TranslateProviderCombo.CurrentText or state.translate.provider
+        local provider = it.TranslateProviderCombo.CurrentText or state.translate.provider
+        state.translate.provider = provider
+        refreshTranslateTargetCombo(provider, state.translate.targetLabel, state.translate.targetCode)
     end
 end
 
@@ -6174,7 +6671,10 @@ end
 
 function win.On.TranslateTargetCombo.CurrentIndexChanged(ev)
     if it.TranslateTargetCombo then
-        state.translate.targetLabel = it.TranslateTargetCombo.CurrentText or state.translate.targetLabel
+        local provider = state.translate.provider or TRANSLATE_PROVIDER_AZURE_LABEL
+        local index = it.TranslateTargetCombo.CurrentIndex
+        state.translate.targetLabel = it.TranslateTargetCombo.CurrentText
+        state.translate.targetCode = getTargetCodeFromIndex(provider, index)
     end
 end
 function win.On.TranslateTransButton.Clicked(ev)
@@ -6202,8 +6702,14 @@ function win.On.TranslateSelectedButton.Clicked(ev)
         return
     end
 
-    local targetLabel = it.TranslateTargetCombo and it.TranslateTargetCombo.CurrentText or state.translate.targetLabel or "English"
-    state.translate.targetLabel = targetLabel
+    local targetLabel = it.TranslateTargetCombo and it.TranslateTargetCombo.CurrentText or state.translate.targetLabel
+    local provider = state.translate.provider or TRANSLATE_PROVIDER_AZURE_LABEL
+    local resolvedLabel, _, targetErr = resolveTargetSelection(provider, targetLabel)
+    if not resolvedLabel then
+        Translate.setStatus("failed", Translate.resolveError(targetErr or "missing_target_lang"))
+        return
+    end
+    targetLabel = resolvedLabel
 
     state.translate.busy = true
     Translate.setControlsEnabled(false)
@@ -6236,6 +6742,7 @@ function win.On.SubtitleUtilityWin.Close(ev)
     end
     OpenAIService.applyConfigFromControls()
     Azure.applyConfigFromControls()
+    DeepL.applyConfigFromControls()
     Storage.ensureOpenAIModelList(state.openaiFormat)
     local selectedModel = Storage.getOpenAISelectedModel(state.openaiFormat)
     local settingsPayload = {
@@ -6244,6 +6751,7 @@ function win.On.SubtitleUtilityWin.Close(ev)
         TranslateConcurrencyCombo = state.translate and state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY,
         AzureRegion = state.azure and state.azure.region or "",
         AzureApiKey = state.azure and state.azure.apiKey or "",
+        DeepLApiKey = state.deepl and state.deepl.apiKey or "",
         OpenAIFormatModelCombo = selectedModel and (selectedModel.display or selectedModel.name) or "",
         OpenAIFormatBaseURL = state.openaiFormat and state.openaiFormat.baseUrl or OPENAI_FORMAT_DEFAULT_BASE_URL,
         OpenAIFormatApiKey = state.openaiFormat and state.openaiFormat.apiKey or "",

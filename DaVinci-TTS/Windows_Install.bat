@@ -23,7 +23,13 @@ set "PACKAGES=requests azure-cognitiveservices-speech edge-tts pypinyin"
 rem Official and mirror indexes
 set "PIP_OFFICIAL=https://pypi.org/simple"
 set "PIP_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple"
-rem =============================================
+
+rem ======== SID constants (LANGUAGE-INDEPENDENT) ========
+rem Builtin\Users  : S-1-5-32-545
+rem Authenticated Users : S-1-5-11
+set "SID_USERS=*S-1-5-32-545"
+set "SID_AUTH=*S-1-5-11"
+rem =====================================================
 
 echo.
 echo [%DATE% %TIME%] Starting download and offline installation of dependencies
@@ -66,7 +72,7 @@ mkdir "%WHEEL_DIR%"
 
 rem 4. Clear pip cache to avoid potential corruption
 echo [%DATE% %TIME%] Clearing pip cache
-python -m pip cache purge --disable-pip-version-check
+%PYTHON% -m pip cache purge --disable-pip-version-check
 
 rem 5. Region detection (timezone). Use mirror first if China Standard Time
 set "PRIMARY_INDEX=%PIP_OFFICIAL%"
@@ -82,11 +88,11 @@ if /I "!TZ_NAME!"=="China Standard Time" (
 
 echo.
 echo [%DATE% %TIME%] Attempting to download from: !PRIMARY_INDEX!
-python -m pip download %PACKAGES% --dest "%WHEEL_DIR%" --only-binary=:all: ^
+%PYTHON% -m pip download %PACKAGES% --dest "%WHEEL_DIR%" --only-binary=:all: ^
     --no-cache-dir -i "!PRIMARY_INDEX!" --retries 3 --timeout 30
 if errorlevel 1 (
     echo [%DATE% %TIME%] WARNING: Primary index failed. Trying secondary: !SECONDARY_INDEX!
-    python -m pip download %PACKAGES% --dest "%WHEEL_DIR%" --only-binary=:all: ^
+    %PYTHON% -m pip download %PACKAGES% --dest "%WHEEL_DIR%" --only-binary=:all: ^
         --no-cache-dir -i "!SECONDARY_INDEX!" --retries 3 --timeout 30
     if errorlevel 1 (
         echo [%DATE% %TIME%] ERROR: Failed to download packages from both indexes. Check your network or package names.
@@ -109,19 +115,22 @@ mkdir "%TARGET_DIR%"
 rem 7. Perform offline installation of all packages
 echo.
 echo [%DATE% %TIME%] Installing packages offline into: "%TARGET_DIR%"
-python -m pip install %PACKAGES% --no-index --find-links "%WHEEL_DIR%" ^
+%PYTHON% -m pip install %PACKAGES% --no-index --find-links "%WHEEL_DIR%" ^
     --target "%TARGET_DIR%" --upgrade --disable-pip-version-check
 if errorlevel 1 (
     echo [%DATE% %TIME%] ERROR: Offline installation failed. Please review the errors above.
     pause & exit /b 1
 )
 
-rem 8. Set folder permissions for user access (NEWLY ADDED SECTION)
+rem 8. Set folder permissions for user access (SID-based; language independent)
 echo.
-echo [%DATE% %TIME%] Setting permissions to allow standard user access...
+echo [%DATE% %TIME%] Setting permissions to allow standard user access (SID)...
 
 echo [%DATE% %TIME%] Applying permissions to library directory: "%TARGET_DIR%"
-icacls "%TARGET_DIR%" /inheritance:e /grant Users:(RX) /grant "Authenticated Users":(M) /T /C >nul
+icacls "%TARGET_DIR%" /inheritance:e ^
+  /grant "%SID_USERS%:(OI)(CI)RX" ^
+  /grant "%SID_AUTH%:(OI)(CI)M" ^
+  /T /C >nul
 if errorlevel 1 (
     echo [%DATE% %TIME%] WARNING: Failed to set all permissions on "%TARGET_DIR%".
 ) else (
@@ -129,7 +138,10 @@ if errorlevel 1 (
 )
 
 echo [%DATE% %TIME%] Applying permissions to script directory: "%UTILITY_DIR%\%SCRIPT_NAME%"
-icacls "%UTILITY_DIR%\%SCRIPT_NAME%" /inheritance:e /grant Users:(RX) /grant "Authenticated Users":(M) /T /C >nul
+icacls "%UTILITY_DIR%\%SCRIPT_NAME%" /inheritance:e ^
+  /grant "%SID_USERS%:(OI)(CI)RX" ^
+  /grant "%SID_AUTH%:(OI)(CI)M" ^
+  /T /C >nul
 if errorlevel 1 (
     echo [%DATE% %TIME%] WARNING: Failed to set all permissions on "%UTILITY_DIR%\%SCRIPT_NAME%".
 ) else (

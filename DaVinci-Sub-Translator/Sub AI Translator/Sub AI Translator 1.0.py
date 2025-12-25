@@ -1,6 +1,6 @@
 # ================= 用户配置 =================
 SCRIPT_NAME    = "Sub AI Translator"
-SCRIPT_VERSION = " 1.9"
+SCRIPT_VERSION = " 2.0"
 SCRIPT_AUTHOR  = "HEIBA"
 print(f"{SCRIPT_NAME} | {SCRIPT_VERSION.strip()} | {SCRIPT_AUTHOR}")
 SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
@@ -56,23 +56,6 @@ Note:
 - The messages with role=assistant are only CONTEXT; do NOT translate them or include them in your output.
 - Translate ONLY the line after <<< Sentence >>>
 """
-# --------------------------------------------
-# 语言映射
-# --------------------------------------------
-AZURE_LANG_CODE_MAP = {  # Microsoft
-    "中文（普通话）": "zh-Hans",  "中文（粤语）": "yue",
-    "English": "en", "Japanese": "ja", "Korean": "ko", "Spanish": "es",
-    "Portuguese": "pt", "French": "fr", "Indonesian": "id", "German": "de",
-    "Russian": "ru", "Italian": "it", "Arabic": "ar", "Turkish": "tr",
-    "Ukrainian": "uk", "Vietnamese": "vi", "Uzbek": "uz", "Dutch": "nl",
-}
-GOOGLE_LANG_CODE_MAP = {   # Google
-    "中文（普通话）": "zh-CN", "中文（粤语）": "zh-TW",
-    "English": "en", "Japanese": "ja", "Korean": "ko", "Spanish": "es",
-    "Portuguese": "pt", "French": "fr", "Indonesian": "id", "German": "de",
-    "Russian": "ru", "Italian": "it", "Arabic": "ar", "Turkish": "tr",
-    "Ukrainian": "uk", "Vietnamese": "vi", "Uzbek": "uz", "Dutch": "nl",
-}
 DEFAULT_SETTINGS = {
     "AZURE_DEFAULT_KEY":"",
     "AZURE_DEFAULT_REGION":"",
@@ -84,6 +67,7 @@ DEFAULT_SETTINGS = {
     "OPENAI_FORMAT_TEMPERATURE":0.3,
     "SYSTEM_PROMPT":SYSTEM_PROMPT,
     "TARGET_LANG":0,
+    "TARGET_LANG_CODE":"",
     "CN":False,
     "EN":True,
     "TRANSLATE_MODE": 1,
@@ -612,7 +596,6 @@ def frames_to_srt_tc(frames, fps_frac):
 try:
     import requests
     from deep_translator import GoogleTranslator
-    from deep_translator import DeeplTranslator
 except ImportError:
     system = platform.system()
     if system == "Windows":
@@ -651,7 +634,6 @@ except ImportError:
     try:
         import requests
         from deep_translator import GoogleTranslator
-        from deep_translator import DeeplTranslator
         print(lib_dir)
     except ImportError as e:
         print("Dependency import failed—please make sure all dependencies are bundled into the Lib directory:", lib_dir, "\nError message:", e)
@@ -661,6 +643,56 @@ config_dir        = os.path.join(SCRIPT_PATH, "config")
 settings_file     = os.path.join(config_dir, "translator_settings.json")
 custom_models_file = os.path.join(config_dir, "models.json")
 status_file = os.path.join(config_dir, 'status.json')
+lang_code_map_file = os.path.join(config_dir, "lang_code_map.json")
+
+def load_lang_code_maps(path: str) -> Dict[str, Any]:
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Language code map file missing: {path}")
+    with open(path, "r", encoding="utf-8") as file:
+        data = json.load(file)
+    if not isinstance(data, dict):
+        raise ValueError("Language code map must be a JSON object.")
+    required_keys = ("popular", "providers", "labels")
+    missing = [key for key in required_keys if key not in data]
+    if missing:
+        raise ValueError(f"Language code map missing keys: {', '.join(missing)}")
+    providers = data["providers"]
+    labels = data["labels"]
+    popular = data["popular"]
+    if not isinstance(providers, dict):
+        raise ValueError("Language code map 'providers' must be an object.")
+    if not isinstance(labels, dict):
+        raise ValueError("Language code map 'labels' must be an object.")
+    if not isinstance(popular, dict):
+        raise ValueError("Language code map 'popular' must be an object.")
+    for key in ("azure", "google", "deepl"):
+        values = providers.get(key)
+        if not isinstance(values, list):
+            raise ValueError(f"Language code map 'providers.{key}' must be a list.")
+    for key in ("azure", "google", "deepl"):
+        values = popular.get(key)
+        if not isinstance(values, list):
+            raise ValueError(f"Language code map 'popular.{key}' must be a list.")
+    for lang_key in ("en", "cn"):
+        lang_labels = labels.get(lang_key)
+        if not isinstance(lang_labels, dict):
+            raise ValueError(f"Language code map 'labels.{lang_key}' must be an object.")
+        for key in ("azure", "google", "deepl"):
+            values = lang_labels.get(key)
+            if not isinstance(values, dict):
+                raise ValueError(f"Language code map 'labels.{lang_key}.{key}' must be an object.")
+    return data
+
+LANG_CODE_MAPS = load_lang_code_maps(lang_code_map_file)
+PROVIDER_LANG_MAP_KEYS = {
+    AZURE_PROVIDER: "azure",
+    GOOGLE_PROVIDER: "google",
+    DEEPL_PROVIDER: "deepl",
+    OPENAI_FORMAT_PROVIDER: "google",
+    GLM_PROVIDER: "google",
+    SILICONFLOW_PROVIDER: "google",
+}
+CODED_PROVIDERS = {AZURE_PROVIDER, GOOGLE_PROVIDER, DEEPL_PROVIDER}
 
 # ================== Supabase 客户端 ==================
 SUPABASE_URL = "https://tbjlsielfxmkxldzmokc.supabase.co"
@@ -987,16 +1019,39 @@ class AzureProvider(BaseProvider):
 # -- DeepL ------------------------                
 class DeepLProvider(BaseProvider):
     name = DEEPL_PROVIDER
+    _session = requests.Session()
+
+    @staticmethod
+    def _get_api_base(api_key: str) -> str:
+        # DeepL free keys end with ":fx" and require the api-free host.
+        if api_key.endswith(":fx"):
+            return "https://api-free.deepl.com/v2"
+        return "https://api.deepl.com/v2"
 
     def translate(self, text, target_lang):
+        api_key = (self.cfg.get("api_key") or "").strip()
+        if not api_key:
+            raise ValueError("DeepL missing api key")
+        base_url = (self.cfg.get("base_url") or "").strip() or self._get_api_base(api_key)
+        url = base_url.rstrip("/") + "/translate"
+        payload = {
+            "auth_key": api_key,
+            "text": text,
+            "target_lang": target_lang,
+        }
+
         for attempt in range(1, self.cfg.get("max_retry", 3) + 1):
             try:
-                translator = DeeplTranslator(
-                    source='auto',
-                    target=target_lang,
-                    api_key=self.cfg.get("api_key", "")
-                )
-                return translator.translate(text)
+                r = self._session.post(url, data=payload, timeout=self.cfg.get("timeout", 15))
+                r.raise_for_status()
+                data = r.json()
+                translations = data.get("translations") if isinstance(data, dict) else None
+                if not translations:
+                    raise ValueError(f"DeepL empty response: {data}")
+                translated = translations[0].get("text")
+                if not isinstance(translated, str):
+                    raise ValueError("DeepL response missing translation text")
+                return translated
             except Exception:
                 if attempt == self.cfg.get("max_retry", 3):
                     raise
@@ -1731,14 +1786,33 @@ for tab_name in translations["cn"]["Tabs"]:
     items["MyTabs"].AddTab(tab_name)
 
 
-target_language = [
-    "中文（普通话）", "中文（粤语）", "English", "Japanese", "Korean",
-    "Spanish", "Portuguese", "French", "Indonesian", "German", "Russian",
-    "Italian", "Arabic", "Turkish", "Ukrainian", "Vietnamese","Uzbek", "Dutch"
-]
-
-for lang in target_language:
-    items["TargetLangCombo"].AddItem(lang)
+def _populate_target_languages(
+    provider_name: str,
+    *,
+    preferred_code: Optional[str] = None,
+    preferred_label: Optional[str] = None,
+    preferred_index: Optional[int] = None,
+) -> None:
+    combo = items.get("TargetLangCombo")
+    if not combo:
+        return
+    combo.Clear()
+    codes = _build_ordered_target_codes(provider_name)
+    label_map = _get_label_map(provider_name, _current_language_key())
+    translation_state["target_codes"] = codes
+    for code in codes:
+        combo.AddItem(label_map[code])
+    if not codes:
+        return
+    if preferred_code and preferred_code in codes:
+        idx = codes.index(preferred_code)
+    elif preferred_label and preferred_label in label_map.values():
+        idx = list(label_map.values()).index(preferred_label)
+    elif preferred_index is not None and 0 <= preferred_index < len(codes):
+        idx = preferred_index
+    else:
+        idx = 0
+    combo.CurrentIndex = idx
 
 
 
@@ -1757,6 +1831,7 @@ translation_state = {
     "selected_indices": [],
     "speed_key": "standard",
     "failed_rows": {},
+    "target_codes": [],
 }
 
 
@@ -2079,14 +2154,75 @@ def _get_selected_speed_value():
     return TRANSLATE_SPEED_OPTIONS[idx]["value"]
 
 
+def _get_lang_map_key(provider_name: str) -> str:
+    try:
+        return PROVIDER_LANG_MAP_KEYS[provider_name]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported provider for language map: {provider_name}") from exc
+
+
+def _get_provider_codes(provider_name: str) -> Sequence[str]:
+    key = _get_lang_map_key(provider_name)
+    try:
+        return LANG_CODE_MAPS["providers"][key]
+    except KeyError as exc:
+        raise ValueError(f"Missing provider codes for: {key}") from exc
+
+
+def _get_popular_codes(provider_name: str) -> Sequence[str]:
+    key = _get_lang_map_key(provider_name)
+    try:
+        return LANG_CODE_MAPS["popular"][key]
+    except KeyError as exc:
+        raise ValueError(f"Missing popular codes for: {key}") from exc
+
+
+def _get_label_map(provider_name: str, lang_key: str) -> Dict[str, str]:
+    key = _get_lang_map_key(provider_name)
+    try:
+        return LANG_CODE_MAPS["labels"][lang_key][key]
+    except KeyError as exc:
+        raise ValueError(f"Missing labels for {lang_key}.{key}") from exc
+
+
+def _build_ordered_target_codes(provider_name: str) -> Sequence[str]:
+    provider_codes = _get_provider_codes(provider_name)
+    popular_codes = _get_popular_codes(provider_name)
+    ordered = []
+    seen = set()
+    for code in popular_codes:
+        if code in provider_codes and code not in seen:
+            ordered.append(code)
+            seen.add(code)
+    for code in provider_codes:
+        if code not in seen:
+            ordered.append(code)
+            seen.add(code)
+    return ordered
+
+
+def _get_target_code_from_index(provider_name: str, index: int) -> str:
+    codes = translation_state.get("target_codes") or _build_ordered_target_codes(provider_name)
+    if not isinstance(index, int) or index < 0 or index >= len(codes):
+        raise ValueError("Invalid target language selection index.")
+    return codes[index]
+
+
 def _map_target_code(provider_name, target_label):
-    if provider_name == AZURE_PROVIDER:
-        return AZURE_LANG_CODE_MAP.get(target_label, target_label)
-    if provider_name == GOOGLE_PROVIDER:
-        return GOOGLE_LANG_CODE_MAP.get(target_label, target_label)
-    if provider_name == DEEPL_PROVIDER:
-        return GOOGLE_LANG_CODE_MAP.get(target_label, target_label)
-    return target_label
+    if provider_name in CODED_PROVIDERS:
+        combo = items.get("TargetLangCombo")
+        idx = None
+        if combo:
+            try:
+                idx = combo.CurrentIndex
+            except Exception:
+                idx = None
+        if idx is None:
+            raise ValueError("Target language selection is unavailable.")
+        return _get_target_code_from_index(provider_name, idx)
+    if provider_name in PROVIDER_LANG_MAP_KEYS:
+        return target_label
+    raise ValueError(f"Unsupported provider for target code: {provider_name}")
 
 
 def _current_target_code():
@@ -2186,6 +2322,23 @@ def update_openai_format_model_combo():
 
 update_openai_format_model_combo()
 
+saved_provider_index = DEFAULT_SETTINGS["PROVIDER"]
+saved_target_index = DEFAULT_SETTINGS["TARGET_LANG"]
+saved_target_code = None
+if saved_settings:
+    saved_provider_index = saved_settings.get("PROVIDER", DEFAULT_SETTINGS["PROVIDER"])
+    saved_target_index = saved_settings.get("TARGET_LANG", DEFAULT_SETTINGS["TARGET_LANG"])
+    saved_target_code = saved_settings.get("TARGET_LANG_CODE")
+try:
+    items["ProviderCombo"].CurrentIndex = saved_provider_index
+except Exception:
+    pass
+_populate_target_languages(
+    items["ProviderCombo"].CurrentText,
+    preferred_code=saved_target_code,
+    preferred_index=saved_target_index,
+)
+
 def switch_language(lang):
     """
     根据 lang (可取 'cn' 或 'en') 切换所有控件的文本
@@ -2217,6 +2370,20 @@ def switch_language(lang):
     for idx in range(len(rows)):
         update_translation_tree_row(idx)
     _apply_translate_editor_placeholder(lang)
+    try:
+        provider_name = items["ProviderCombo"].CurrentText
+    except Exception:
+        provider_name = ""
+    current_code = None
+    try:
+        idx = items["TargetLangCombo"].CurrentIndex
+    except Exception:
+        idx = None
+    codes = translation_state.get("target_codes") or []
+    if idx is not None and 0 <= idx < len(codes):
+        current_code = codes[idx]
+    if provider_name:
+        _populate_target_languages(provider_name, preferred_code=current_code)
 
 
 def on_lang_checkbox_clicked(ev):
@@ -2230,11 +2397,8 @@ translator_win.On.LangEnCheckBox.Clicked = on_lang_checkbox_clicked
 
 
 if saved_settings:
-
-    items["TargetLangCombo"].CurrentIndex = saved_settings.get("TARGET_LANG", DEFAULT_SETTINGS["TARGET_LANG"])
     items["LangCnCheckBox"].Checked = saved_settings.get("CN", DEFAULT_SETTINGS["CN"])
     items["LangEnCheckBox"].Checked = saved_settings.get("EN", DEFAULT_SETTINGS["EN"])
-    items["ProviderCombo"].CurrentIndex = saved_settings.get("PROVIDER", DEFAULT_SETTINGS["PROVIDER"])
     azure_items["AzureApiKey"].Text = saved_settings.get("AZURE_DEFAULT_KEY", DEFAULT_SETTINGS["AZURE_DEFAULT_KEY"])
     azure_items["AzureRegion"].Text = saved_settings.get("AZURE_DEFAULT_REGION", DEFAULT_SETTINGS["AZURE_DEFAULT_REGION"])
     deepL_items["DeepLApiKey"].Text = saved_settings.get("DEEPL_DEFAULT_KEY",DEFAULT_SETTINGS["DEEPL_DEFAULT_KEY"])
@@ -2283,6 +2447,10 @@ def close_and_save(settings_file):
         "OPENAI_FORMAT_API_KEY": openai_items["OpenAIFormatApiKey"].Text,
         "OPENAI_FORMAT_TEMPERATURE": openai_items["OpenAIFormatTemperatureSpinBox"].Value,
         "TARGET_LANG":items["TargetLangCombo"].CurrentIndex,
+        "TARGET_LANG_CODE":_get_target_code_from_index(
+            items["ProviderCombo"].CurrentText,
+            items["TargetLangCombo"].CurrentIndex,
+        ),
         "SYSTEM_PROMPT":openai_items["SystemPromptTxt"].PlainText,
         "TRANSLATE_MODE": mode_index,
 
@@ -3052,6 +3220,24 @@ def get_provider_and_target():
         )
         return prov_manager.get(OPENAI_FORMAT_PROVIDER), target_name
 
+    def _resolve_target_code():
+        idx = None
+        try:
+            idx = items["TargetLangCombo"].CurrentIndex
+        except Exception:
+            idx = None
+        if idx is None:
+            raise ValueError("Target language selection is unavailable.")
+        try:
+            return _get_target_code_from_index(provider_name, idx)
+        except ValueError:
+            label = provider_name.strip()
+            show_dynamic_message(
+                f"Unsupported language for {label}: {target_name}",
+                f"{label} 不支持该语言：{target_name}",
+            )
+            raise
+
     if provider_name == AZURE_PROVIDER:
         #if not azure_items["AzureApiKey"].Text.strip():
         #    show_warning_message(STATUS_MESSAGES.enter_api_key)
@@ -3060,7 +3246,7 @@ def get_provider_and_target():
             api_key = azure_items["AzureApiKey"].Text.strip(),
             region  = azure_items["AzureRegion"].Text.strip() or AZURE_DEFAULT_REGION
         )
-        return prov_manager.get(AZURE_PROVIDER), AZURE_LANG_CODE_MAP[target_name]
+        return prov_manager.get(AZURE_PROVIDER), _resolve_target_code()
 
     if provider_name == GLM_PROVIDER:
         # GLM 使用聊天补全，目标语言直接传入提示词
@@ -3071,7 +3257,7 @@ def get_provider_and_target():
         return prov_manager.get(SILICONFLOW_PROVIDER), target_name
 
     if provider_name == GOOGLE_PROVIDER:
-        return prov_manager.get(GOOGLE_PROVIDER), GOOGLE_LANG_CODE_MAP[target_name]
+        return prov_manager.get(GOOGLE_PROVIDER), _resolve_target_code()
 
     if provider_name == DEEPL_PROVIDER:
         # DeepL 缺少 Key 时阻断翻译
@@ -3082,7 +3268,7 @@ def get_provider_and_target():
             DEEPL_PROVIDER,
             api_key = deepL_items["DeepLApiKey"].Text.strip()
         )
-        return prov_manager.get(DEEPL_PROVIDER), GOOGLE_LANG_CODE_MAP[target_name]
+        return prov_manager.get(DEEPL_PROVIDER), _resolve_target_code()
 
 
 def on_load_subtitles(ev):
@@ -3275,6 +3461,20 @@ translator_win.On.StartTranslateButton.Clicked = on_start_translate
 translator_win.On.RetryFailedButton.Clicked = on_retry_failed
 translator_win.On.TranslateSelectedButton.Clicked = on_translate_selected
 translator_win.On.ApplyToTimelineButton.Clicked = on_apply_translations
+def _on_provider_changed(ev):
+    target_combo = items.get("TargetLangCombo")
+    keep_code = None
+    if target_combo:
+        try:
+            idx = target_combo.CurrentIndex
+        except Exception:
+            idx = None
+        codes = translation_state.get("target_codes") or []
+        if idx is not None and 0 <= idx < len(codes):
+            keep_code = codes[idx]
+    provider_name = items["ProviderCombo"].CurrentText if "ProviderCombo" in items else ""
+    _populate_target_languages(provider_name, preferred_code=keep_code)
+translator_win.On.ProviderCombo.CurrentIndexChanged = _on_provider_changed
 def _on_translate_mode_changed(ev):
     combo = items.get("TranslateModeCombo")
     if not combo:
@@ -3313,13 +3513,21 @@ def _on_translate_editor_text_changed(ev):
         except Exception:
             text = ""
     text = text or ""
-    rows[idx]["target"] = text
-    rows[idx]["error"] = ""
-    if rows[idx].get("status") not in ("translating",):
-        rows[idx]["status"] = "success" if text.strip() else "pending"
-    update_translation_tree_row(idx)
-    clear_translation_failure(idx)
-    refresh_translation_controls()
+    
+    # 检查文本内容是否真正发生变化
+    original_text = rows[idx].get("target") or ""
+    text_changed = (text != original_text)
+    
+    # 只有在文本真正变化时才更新 status 和清除失败标记
+    if text_changed:
+        rows[idx]["target"] = text
+        rows[idx]["error"] = ""
+        if rows[idx].get("status") not in ("translating",):
+            rows[idx]["status"] = "success" if text.strip() else "pending"
+        update_translation_tree_row(idx)
+        clear_translation_failure(idx)
+        refresh_translation_controls()
+    # 如果文本没有变化，什么都不做，保持原状态（包括 "failed" 状态）
 translator_win.On.TranslateSubtitleEditor.TextChanged = _on_translate_editor_text_changed
 
 
