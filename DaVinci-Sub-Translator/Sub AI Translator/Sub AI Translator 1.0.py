@@ -1,6 +1,6 @@
 # ================= 用户配置 =================
 SCRIPT_NAME    = "Sub AI Translator"
-SCRIPT_VERSION = " 2.0"
+SCRIPT_VERSION = " 2.0.1"
 SCRIPT_AUTHOR  = "HEIBA"
 print(f"{SCRIPT_NAME} | {SCRIPT_VERSION.strip()} | {SCRIPT_AUTHOR}")
 SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
@@ -11,9 +11,10 @@ Y_CENTER = (SCREEN_HEIGHT - WINDOW_HEIGHT) // 2
 SCRIPT_KOFI_URL      = "https://ko-fi.com/heiba"
 SCRIPT_TAOBAO_URL = "https://shop120058726.taobao.com/"
 
-CONCURRENCY = 10
 MAX_RETRY   = 1
-TIMEOUT     = 10
+TIMEOUT_SINGLE = 10   # 非合并模式（单条翻译）
+TIMEOUT_MERGE  = 120   # 合并模式（多条合并翻译）
+TRANSLATE_POLL_INTERVAL = 200  # ms
 
 OPENAI_FORMAT_API_KEY   = ""
 OPENAI_FORMAT_BASE_URL   = "https://api.openai.com"
@@ -72,16 +73,63 @@ DEFAULT_SETTINGS = {
     "EN":True,
     "TRANSLATE_MODE": 1,
 }
+# ================= 智能合并翻译配置 =================
+MAX_MERGE_CHUNKS = 5
+SENTENCE_END_PUNCT = r'[.!?。！？；;，,]$'
+LLM_STRUCTURED_PROVIDERS = {"OpenAI Format", "GLM", "SiliconFlow",
+                            OPENAI_FORMAT_PROVIDER, GLM_PROVIDER, SILICONFLOW_PROVIDER}
+
+SMART_MERGE_PREFIX_PROMPT = """You are a subtitle translation + segmentation engine.
+
+INPUT:
+A JSON object: {{"segments":[...]}}.
+These segments are consecutive subtitle fragments in the SAME sentence/utterance.
+
+GOAL:
+1) Mentally join all segments into ONE complete sentence.
+2) Translate the FULL meaning into natural {target_lang}.
+3) Cut this SINGLE translated sentence into exactly {chunk_count} parts.
+
+TRANSLATE RULES:
+{translate_rules}
+
+CRITICAL OUTPUT RULES:
+- Output ONLY raw JSON. No Markdown.
+- JSON schema: {{"translations":[string, ...], "ratios":[number, ...]}} with EXACTLY {chunk_count} items.
+- The concatenation of all "translations" parts MUST equal the ONE fluent sentence.
+- NO repetition across parts.
+- NO extra content/interpretation (e.g. Do NOT add "We have no choice").
+
+RATIO-ALIGNED SEGMENTATION (IMPORTANT):
+A) Calculate input ratios based on segment length.
+B) Split the translated sentence to match these ratios.
+   - Example Input: ["我们不", "得不找个地方..."] (Short + Long)
+   - Translation: "We have to find a place..."
+   - CORRECT Split: ["We have to", "find a place..."] (Short + Long)
+   - WRONG Split: ["We have to find a place...", "We have no choice"] (Hallucination)
+
+SEGMENTATION RULES:
+1) Each line must be a usable subtitle line (min 2 words for EN, 3 chars for CN).
+2) NEVER output a line that is only punctuation or whitespace.
+3) Attach orphaned function words (because, but, so) to the next line.
+4) Punctuation must stick to a neighboring line.
+5) Also output "ratios": [r1, r2, ...] where sum is 1.0.
+
+Return JSON only:
+{{"translations":[...], "ratios":[...]}}
+"""
+
 # ===========================================
 import base64
-import concurrent.futures
 import json
 import logging
 import os
 import platform
 import random
 import re
+import shutil
 import string
+import subprocess
 import sys
 import threading
 import time
@@ -90,7 +138,7 @@ import webbrowser
 from abc import ABC, abstractmethod
 from fractions import Fraction
 from typing import Any, Dict, Optional, Sequence, Tuple
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 SCRIPT_PATH = os.path.dirname(os.path.abspath(sys.argv[0]))
 TEMP_DIR         = os.path.join(SCRIPT_PATH, "temp")
 RAND_CODE = "".join(random.choices(string.digits, k=2))
@@ -1101,6 +1149,25 @@ class OpenAIFormatProvider(BaseProvider):
                     raise
                 time.sleep(2 ** attempt)
 
+    def translate_batch(self, text: str, target_lang: str, prompt_content: str, response_format: dict = None):
+        """批量翻译接口，支持结构化 JSON 输出。"""
+        messages = [{"role": "system", "content": prompt_content}, {"role": "user", "content": text}]
+        payload = {"model": self.cfg["model"], "messages": messages, "temperature": self.cfg["temperature"]}
+        if response_format:
+            payload["response_format"] = response_format
+        headers = {"Authorization": f"Bearer {self.cfg['api_key']}", "Content-Type": "application/json"}
+        url = self.cfg["base_url"].rstrip("/") + "/v1/chat/completions"
+        for attempt in range(1, self.cfg.get("max_retry", 3) + 1):
+            try:
+                r = self._session.post(url, headers=headers, json=payload, timeout=self.cfg.get("timeout", 30))
+                r.raise_for_status()
+                resp = r.json()
+                return resp["choices"][0]["message"]["content"].strip(), resp.get("usage", {})
+            except Exception:
+                if attempt == self.cfg.get("max_retry", 3):
+                    raise
+                time.sleep(2 ** attempt)
+
 # -- GLM (via Dify secret) ------------------------
 class GLMProvider(BaseProvider):
     _session = requests.Session()
@@ -1176,6 +1243,27 @@ class GLMProvider(BaseProvider):
                     raise
                 time.sleep(2 ** attempt)
 
+    def translate_batch(self, text: str, target_lang: str, prompt_content: str, response_format: dict = None):
+        """批量翻译接口，支持结构化 JSON 输出。"""
+        messages = [{"role": "system", "content": prompt_content}, {"role": "user", "content": text}]
+        payload = {"model": self.cfg.get("model", "glm-4-flash"), "messages": messages,
+                   "temperature": self.cfg.get("temperature", OPENAI_DEFAULT_TEMPERATURE), "thinking": {"type": "disabled"}}
+        if response_format:
+            payload["response_format"] = response_format
+        api_key = self._ensure_api_key()
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+        for attempt in range(1, self.cfg.get("max_retry", 3) + 1):
+            try:
+                r = self._session.post(url, headers=headers, json=payload, timeout=self.cfg.get("timeout", 30))
+                r.raise_for_status()
+                resp = r.json()
+                return resp["choices"][0]["message"]["content"].strip(), resp.get("usage", {})
+            except Exception:
+                if attempt == self.cfg.get("max_retry", 3):
+                    raise
+                time.sleep(2 ** attempt)
+
 # -- SiliconFlow (via Supabase secret) ------------------------
 class SiliconFlowProvider(BaseProvider):
     _session = requests.Session()
@@ -1231,6 +1319,28 @@ class SiliconFlowProvider(BaseProvider):
                 if attempt == self.cfg.get("max_retry", 3):
                     raise
                 time.sleep(2 ** attempt)
+
+    def translate_batch(self, text: str, target_lang: str, prompt_content: str, response_format: dict = None):
+        """批量翻译接口，支持结构化 JSON 输出。"""
+        messages = [{"role": "system", "content": prompt_content}, {"role": "user", "content": text}]
+        payload = {"model": self.cfg.get("model", "THUDM/GLM-4-9B-0414"), "messages": messages,
+                   "temperature": self.cfg.get("temperature", OPENAI_DEFAULT_TEMPERATURE), "stream": False}
+        if response_format:
+            payload["response_format"] = response_format
+        api_key = self._ensure_api_key()
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        url = self.cfg.get("base_url", "https://api.siliconflow.cn/v1/chat/completions")
+        for attempt in range(1, self.cfg.get("max_retry", 3) + 1):
+            try:
+                r = self._session.post(url, headers=headers, json=payload, timeout=self.cfg.get("timeout", 30))
+                r.raise_for_status()
+                resp = r.json()
+                return resp["choices"][0]["message"]["content"].strip(), resp.get("usage", {})
+            except Exception:
+                if attempt == self.cfg.get("max_retry", 3):
+                    raise
+                time.sleep(2 ** attempt)
+
 # =============== Provider 管理器 ===============
 class ProviderManager:
     def __init__(self, cfg: dict):
@@ -1263,7 +1373,7 @@ PROVIDERS_CFG = {
                 "translate.google.com.hk",
                 "translate.google.com.tw"],  # 可多填备用域名
             "max_retry": MAX_RETRY,
-            "timeout": TIMEOUT
+            "timeout": TIMEOUT_SINGLE
         },
         AZURE_PROVIDER: {
             "class":  "AzureProvider",
@@ -1271,16 +1381,17 @@ PROVIDERS_CFG = {
             "api_key":  AZURE_DEFAULT_KEY,
             "region":   AZURE_DEFAULT_REGION,
             "max_retry": MAX_RETRY,
-            "timeout":  TIMEOUT
+            "timeout":  TIMEOUT_SINGLE
         },
         GLM_PROVIDER: {
+
             "class": "GLMProvider",
             "base_url": GLM_BASE_URL,
             # 默认使用最新可用的 4.5 Flash 型号，兼容 z.ai 与 bigmodel 域名
             "model":    "glm-4-flash",
             "temperature": OPENAI_DEFAULT_TEMPERATURE,
             "max_retry": MAX_RETRY,
-            "timeout":  TIMEOUT,
+            "timeout":  TIMEOUT_SINGLE,
         },
         SILICONFLOW_PROVIDER: {
             "class": "SiliconFlowProvider",
@@ -1288,7 +1399,7 @@ PROVIDERS_CFG = {
             "model":    "THUDM/GLM-4-9B-0414",
             "temperature": OPENAI_DEFAULT_TEMPERATURE,
             "max_retry": MAX_RETRY,
-            "timeout":  TIMEOUT,
+            "timeout":  TIMEOUT_SINGLE,
         },
         OPENAI_FORMAT_PROVIDER: {
             "class": "OpenAIFormatProvider",
@@ -1297,13 +1408,13 @@ PROVIDERS_CFG = {
             "model":    OPENAI_FORMAT_MODEL,
             "temperature":OPENAI_DEFAULT_TEMPERATURE,
             "max_retry": MAX_RETRY,
-            "timeout":  TIMEOUT
+            "timeout":  TIMEOUT_SINGLE
         },
         DEEPL_PROVIDER: {
             "class":   "DeepLProvider",
             "api_key": "",          
             "max_retry": MAX_RETRY,
-            "timeout":  TIMEOUT,
+            "timeout":  TIMEOUT_SINGLE,
         },
 
     }
@@ -1362,7 +1473,8 @@ translator_win = dispatcher.AddWindow(
                                     "Weight": 0,
                                 }
                             ),
-                            ui.ComboBox({"ID": "TranslateModeCombo", "Weight": 0, "MinimumSize": [140, 0]}),
+                            ui.ComboBox({"ID": "TranslateModeCombo", "Weight": 0}),
+                            ui.CheckBox({"ID": "SmartMergeCheck", "Text": "语义增强", "Checked": False, "Weight": 0}),
                         ],
                     ),
                     ui.Tree(
@@ -1708,6 +1820,7 @@ translations = {
         "DeepLConfigLabel":"DeepL",
         "ShowDeepL":"配置",
         "TranslateModeLabel": "模式",
+        "SmartMergeCheck": "语义增强",
         "DeepLLabel":"DeepL API",
         "DeepLApiKeyLabel":"密钥",
         "DeepLConfirm":"确定",
@@ -1746,6 +1859,7 @@ translations = {
         "DeepLConfigLabel":"DeepL",
         "ShowDeepL":"Config",
         "TranslateModeLabel": "Mode",
+        "SmartMergeCheck": "Semantic Boost",
         "DeepLLabel":"DeepL API",
         "DeepLApiKeyLabel":"Key",
         "DeepLConfirm":"OK",
@@ -2919,76 +3033,859 @@ def ensure_translation_rows() -> bool:
     return load_timeline_subtitles()
 
 
-def _translate_single_row(
-    row_index: int,
-    provider: "BaseProvider",
-    target_code: str,
-    prompt_content: str,
-) -> Tuple[str, int]:
-    """Translate a single subtitle row and return the result with token usage.
+# =============== 智能合并翻译辅助函数 ===============
 
-    Args:
-        row_index (int): Zero-based index of the row to translate.
-        provider (BaseProvider): Active translation provider.
-        target_code (str): Translation target language code.
-        prompt_content (str): Additional prompt text for providers支持上下文翻译.
+def _get_llm_response_format(provider_name: str, chunk_count: int) -> Optional[Dict[str, Any]]:
+    """生成 JSON Schema 结构化输出格式。"""
+    if provider_name not in LLM_STRUCTURED_PROVIDERS:
+        return None
+    schema = {
+        "type": "object",
+        "properties": {
+            "translations": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": chunk_count,
+                "maxItems": chunk_count,
+            },
+            "ratios": {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": chunk_count,
+                "maxItems": chunk_count,
+            }
+        },
+        "required": ["translations", "ratios"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": "subtitle_translations", "strict": True, "schema": schema},
+    }
 
-    Returns:
-        Tuple[str, int]: Pair of translated text and消耗的令牌数.
 
-    Raises:
-        ValueError: If the provider does not return a textual translation.
+def _merge_subtitle_chunks(rows: list, row_indices: Sequence[int]) -> list:
+    """将相邻连续字幕行合并为翻译组。"""
+    groups = []
+    current = {"row_indices": [], "sources": []}
+    last_idx = None
+    for idx in sorted(row_indices):
+        row = rows[idx]
+        source = row.get("source", "").strip()
+        if current["row_indices"] and last_idx is not None and idx != last_idx + 1:
+            current["chunk_count"] = len(current["row_indices"])
+            groups.append(current)
+            current = {"row_indices": [], "sources": []}
+        current["row_indices"].append(idx)
+        current["sources"].append(source)
+        last_idx = idx
+        if len(current["row_indices"]) >= MAX_MERGE_CHUNKS or re.search(SENTENCE_END_PUNCT, source):
+            current["chunk_count"] = len(current["row_indices"])
+            groups.append(current)
+            current = {"row_indices": [], "sources": []}
+            last_idx = None
+    if current["row_indices"]:
+        current["chunk_count"] = len(current["row_indices"])
+        groups.append(current)
+    return groups
 
-    Examples:
-        >>> text, tokens = _translate_single_row(0, provider, "en", "")
-        >>> isinstance(text, str)
-        True
+
+def _parse_llm_json_response(response: str, chunk_count: int) -> list:
+    """解析 LLM JSON 输出，依赖 Schema 约束保证数量。"""
+    match = re.search(r'\{[\s\S]*"translations"[\s\S]*\}', response)
+    if not match:
+        raise ValueError(f"No valid JSON: {response[:200]}")
+    data = json.loads(match.group())
+    translations = data.get("translations", [])
+    if len(translations) != chunk_count:
+        logger.debug(f"Translation count mismatch: expected {chunk_count}, got {len(translations)}")
+    return translations
+
+
+def _build_tagged_text(sources: list) -> str:
+    """构建带标签的文本供传统 API 翻译。格式：<s0>Text</s0><s1>Text</s1>"""
+    tagged = []
+    for i, text in enumerate(sources):
+        tagged.append(f"<s{i}>{text}</s{i}>")
+    return "".join(tagged)
+
+
+def _parse_tagged_response(response: str, chunk_count: int) -> list:
+    """解析带标签的翻译响应。"""
+    translations = [""] * chunk_count
+    # 匹配 <sN>content</sN>，允许标签内有空格
+    pattern = re.compile(r"<\s*s(\d+)\s*>(.*?)<\s*/\s*s\1\s*>", re.DOTALL)
+    matches = pattern.findall(response)
+    
+    found_indices = set()
+    for idx_str, content in matches:
+        try:
+            idx = int(idx_str)
+            if 0 <= idx < chunk_count:
+                translations[idx] = content.strip()
+                found_indices.add(idx)
+        except ValueError:
+            continue
+            
+    if len(found_indices) != chunk_count:
+        logger.warning(f"[SmartMerge] Tag mismatch: expected {chunk_count}, got {len(found_indices)}")
+        
+    return translations
+
+
+def _is_cjk_char(char: str) -> bool:
+    """判断字符是否为CJK字符"""
+    code = ord(char) if len(char) == 1 else 0
+    return (0x4E00 <= code <= 0x9FFF or 0x3400 <= code <= 0x4DBF or
+            0x3040 <= code <= 0x30FF or 0xAC00 <= code <= 0xD7AF)
+
+
+def _is_cjk_text(text: str) -> bool:
+    """判断文本是否以CJK为主"""
+    if not text:
+        return False
+    cjk = sum(1 for c in text if _is_cjk_char(c))
+    return cjk > len(text) * 0.3
+
+
+def _split_translation_by_ratio(translation: str, sources: list, target_lang: str = "") -> list:
     """
-    rows = translation_state.get("rows") or []
-    row = rows[row_index]
-    source_text = row.get("source") or ""
-    provider_name = getattr(provider, "name", provider.__class__.__name__)
-    logger.debug(
-        "Translating row",
-        extra={
-            "component": "translation",
-            "row_index": row.get("idx", row_index),
-            "provider": provider_name,
-        },
-    )
-    if isinstance(provider, (OpenAIFormatProvider, GLMProvider)):
-        prefix, suffix = "", ""
-        if CONTEXT_WINDOW > 0:
-            start = max(0, row_index - CONTEXT_WINDOW)
-            prefix = "\n".join(rows[i]["source"] for i in range(start, row_index))
-            suffix = "\n".join(
-                rows[i]["source"]
-                for i in range(row_index + 1, min(len(rows), row_index + 1 + CONTEXT_WINDOW))
-            )
-        if prefix or suffix:
-            result = provider.translate(source_text, target_code, prefix, suffix, prompt_content)
+    按原文比例智能拆分译文。
+    核心策略：先找自然断点，再均匀分配，确保每段都有实际内容。
+    """
+    n = len(sources)
+    if n == 0:
+        return []
+    if n == 1:
+        return [translation.strip()]
+    
+    translation = translation.strip()
+    if not translation:
+        return [""] * n
+    
+    # 根据文本类型选择拆分单元
+    if _is_cjk_text(translation):
+        # CJK: 按字符拆分，但要避免拆分英文单词
+        units = []
+        i = 0
+        while i < len(translation):
+            if translation[i].isascii() and translation[i].isalpha():
+                # 收集连续的英文字符作为一个单元
+                j = i
+                while j < len(translation) and translation[j].isascii() and (translation[j].isalpha() or translation[j] == "'"):
+                    j += 1
+                units.append(translation[i:j])
+                i = j
+            else:
+                units.append(translation[i])
+                i += 1
+    else:
+        # 西文: 按单词拆分
+        units = translation.split()
+    
+    if not units:
+        return [translation] + [""] * (n - 1)
+    
+    # 简单均匀分配：确保每段至少有1个单元
+    total_units = len(units)
+    base_count = max(1, total_units // n)
+    
+    result = []
+    idx = 0
+    for i in range(n):
+        if i == n - 1:
+            # 最后一段取全部剩余
+            segment_units = units[idx:]
         else:
-            result = provider.translate(source_text, target_code, prompt_content=prompt_content)
-    else:
-        result = provider.translate(source_text, target_code)
+            # 分配基础数量，确保不超出
+            count = base_count
+            end_idx = min(idx + count, total_units)
+            if end_idx <= idx:
+                end_idx = idx + 1
+            segment_units = units[idx:end_idx]
+            idx = end_idx
+        
+        # 组合单元
+        if _is_cjk_text(translation):
+            segment = "".join(segment_units)
+        else:
+            segment = " ".join(segment_units)
+        result.append(segment.strip())
+    
+    # 后处理：确保没有空段
+    result = _redistribute_empty_segments(result, _is_cjk_text(translation))
+    return result
 
-    if isinstance(result, tuple):
-        translated_text, usage = result
-        tokens = usage.get("total_tokens", 0) if isinstance(usage, dict) else 0
+
+def _redistribute_empty_segments(segments: list, is_cjk: bool) -> list:
+    """重新分配，确保每段都有实际内容"""
+    if len(segments) <= 1:
+        return segments
+    
+    result = [s.strip() for s in segments]
+    
+    # 找到所有非空段
+    non_empty_indices = [i for i, s in enumerate(result) if s and not _is_punct_only(s)]
+    
+    if not non_empty_indices:
+        # 全是空或标点，合并所有内容到第一段
+        combined = "".join(result) if is_cjk else " ".join(result)
+        return [combined.strip()] + [""] * (len(result) - 1)
+    
+    # 从非空段借内容给空段
+    for i, seg in enumerate(result):
+        if not seg or _is_punct_only(seg):
+            # 找最近的非空段借内容
+            donor_idx = min(non_empty_indices, key=lambda x: abs(x - i))
+            donor = result[donor_idx]
+            
+            # 拆分donor，分一部分给当前空段
+            if is_cjk:
+                chars = list(donor)
+                if len(chars) > 1:
+                    split_pt = max(1, len(chars) // 2)
+                    if i < donor_idx:
+                        result[i] = "".join(chars[:split_pt])
+                        result[donor_idx] = "".join(chars[split_pt:])
+                    else:
+                        result[i] = "".join(chars[split_pt:])
+                        result[donor_idx] = "".join(chars[:split_pt])
+            else:
+                words = donor.split()
+                if len(words) > 1:
+                    split_pt = max(1, len(words) // 2)
+                    if i < donor_idx:
+                        result[i] = " ".join(words[:split_pt])
+                        result[donor_idx] = " ".join(words[split_pt:])
+                    else:
+                        result[i] = " ".join(words[split_pt:])
+                        result[donor_idx] = " ".join(words[:split_pt])
+    
+    return result
+
+
+def _is_punct_only(text: str) -> bool:
+    """判断是否只有标点"""
+    if not text:
+        return True
+    punct = set('.,;:!?，。；：！？、·…—""''\'\"()[]{}')
+    return all(c in punct or c.isspace() for c in text)
+
+
+class AsyncTranslationState:
+    """异步翻译状态管理."""
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.active = False
+        self.artifacts = []
+        self.pending_count = 0
+        self.completed_count = 0
+        self.on_complete = None
+        self.on_progress = None
+        self.parser = None
+        self.poll_timeout = 0
+        self.max_retry = 0
+        self.read_retry = 2
+        self.timeout = None
+        self.headers = []
+
+
+async_translation_state = AsyncTranslationState()
+_translate_polling_timer = None
+
+
+def ensure_translate_timer():
+    """确保翻译轮询 Timer 存在."""
+    global _translate_polling_timer
+    if _translate_polling_timer:
+        return _translate_polling_timer
+    _translate_polling_timer = ui.Timer({
+        "ID": "TranslatePollingTimer",
+        "Interval": TRANSLATE_POLL_INTERVAL,
+        "SingleShot": True,
+        "TimerType": "CoarseTimer",
+    })
+    return _translate_polling_timer
+
+
+def start_polling_timer():
+    """启动轮询 Timer."""
+    timer = ensure_translate_timer()
+    if timer:
+        try:
+            timer.Start()
+        except Exception:
+            pass
+
+
+def stop_polling_timer():
+    """停止轮询 Timer."""
+    if _translate_polling_timer:
+        try:
+            _translate_polling_timer.Stop()
+        except Exception:
+            pass
+
+
+def _get_timer_event_id(ev):
+    for key in ("who", "ID", "id", "Name", "name", "TimerID", "TimerId"):
+        try:
+            if isinstance(ev, dict) and key in ev:
+                value = ev.get(key)
+            else:
+                value = getattr(ev, key, None)
+            if value:
+                return value
+        except Exception:
+            continue
+    if isinstance(ev, dict):
+        sender = ev.get("sender")
     else:
-        translated_text, tokens = result, 0
-    if not isinstance(translated_text, str):
-        raise ValueError("翻译结果无效，未返回字符串")
-    logger.debug(
-        "Row translated",
-        extra={
-            "component": "translation",
-            "row_index": row.get("idx", row_index),
-            "provider": provider_name,
-            "tokens": tokens,
-        },
+        sender = getattr(ev, "sender", None)
+    if sender is not None:
+        for attr in ("ID", "Name"):
+            try:
+                value = getattr(sender, attr, None)
+            except Exception:
+                value = None
+            if value:
+                return value
+    return None
+
+
+def _ensure_temp_dir() -> bool:
+    try:
+        os.makedirs(TEMP_DIR, exist_ok=True)
+        return True
+    except Exception:
+        return False
+
+
+def _cleanup_artifacts(artifacts):
+    for art in artifacts or []:
+        for key in ("output", "payload"):
+            path = art.get(key)
+            if not path:
+                continue
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+
+def _spawn_background_command(command_args) -> bool:
+    try:
+        kwargs = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "stdin": subprocess.DEVNULL,
+            "close_fds": os.name != "nt",
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen(command_args, **kwargs)
+        return True
+    except Exception as exc:
+        logger.error("Async command spawn failed", extra={"error": str(exc)})
+        return False
+
+
+def _build_parallel_curl_command(artifacts, headers, timeout, limit):
+    parts = [
+        "curl",
+        "-sS",
+        "--show-error",
+        "--parallel",
+        "--parallel-immediate",
+        "--parallel-max",
+        str(limit),
+        "-m",
+        str(timeout),
+    ]
+    for idx, art in enumerate(artifacts):
+        method = art.get("method") or "POST"
+        parts.extend(["-X", method])
+        for header in headers or []:
+            parts.extend(["-H", header])
+        payload = art.get("payload")
+        if payload:
+            parts.extend(["--data-binary", f"@{payload}"])
+        parts.extend(["-o", art["output"], art["url"]])
+        if idx < len(artifacts) - 1:
+            parts.append("--next")
+    return parts
+
+
+def _build_single_curl_command(artifact, headers, timeout):
+    parts = [
+        "curl",
+        "-sS",
+        "--show-error",
+        "-m",
+        str(timeout),
+        "-X",
+        artifact.get("method") or "POST",
+    ]
+    for header in headers or []:
+        parts.extend(["-H", header])
+    payload = artifact.get("payload")
+    if payload:
+        parts.extend(["--data-binary", f"@{payload}"])
+    parts.extend(["-o", artifact["output"], artifact["url"]])
+    return parts
+
+
+def _launch_retry(artifact, headers, timeout) -> bool:
+    if artifact.get("output"):
+        try:
+            os.remove(artifact["output"])
+        except Exception:
+            pass
+    artifact["started_at"] = time.time()
+    command = _build_single_curl_command(artifact, headers, timeout)
+    return _spawn_background_command(command)
+
+
+def launch_async_translation(tasks: list, options: dict):
+    """启动后台异步翻译."""
+    if async_translation_state.active:
+        return False, "async_busy"
+    if not tasks:
+        return False, "no_entries"
+    if not shutil.which("curl"):
+        return False, "curl_missing"
+    if not _ensure_temp_dir():
+        return False, "temp_dir_failed"
+
+    headers = options.get("headers") or []
+    timeout = options.get("timeout") or TIMEOUT_SINGLE
+    limit = max(1, min(options.get("parallel_limit") or len(tasks), len(tasks)))
+    payload_prefix = options.get("payload_prefix") or "translate_payload"
+    output_prefix = options.get("output_prefix") or "translate_output"
+    parser = options.get("parser")
+    if not callable(parser):
+        return False, "parser_missing"
+
+    artifacts = []
+    for idx, task in enumerate(tasks, start=1):
+        payload_text = task.get("payload")
+        payload_path = None
+        if payload_text is not None:
+            payload_name = f"{payload_prefix}_{int(time.time())}_{uuid.uuid4().hex[:6]}_{idx}.json"
+            payload_path = os.path.join(TEMP_DIR, payload_name)
+            try:
+                with open(payload_path, "w", encoding="utf-8") as payload_file:
+                    payload_file.write(payload_text)
+            except Exception as exc:
+                _cleanup_artifacts(artifacts)
+                return False, f"payload_write_failed: {exc}"
+
+        output_name = f"{output_prefix}_{int(time.time())}_{uuid.uuid4().hex[:6]}_{idx}.json"
+        output_path = os.path.join(TEMP_DIR, output_name)
+        artifacts.append({
+            "task": task.get("task") or {},
+            "payload": payload_path,
+            "output": output_path,
+            "url": task.get("url"),
+            "method": task.get("method") or "POST",
+            "completed": False,
+            "attempts": 0,
+            "read_attempts": 0,
+            "last_size": None,
+            "started_at": time.time(),
+        })
+
+    command = _build_parallel_curl_command(artifacts, headers, timeout, limit)
+    if not _spawn_background_command(command):
+        _cleanup_artifacts(artifacts)
+        return False, "parallel_execution_failed"
+
+    s = async_translation_state
+    s.active = True
+    s.artifacts = artifacts
+    s.pending_count = len(artifacts)
+    s.completed_count = 0
+    s.on_complete = options.get("on_complete")
+    s.on_progress = options.get("on_progress")
+    s.parser = parser
+    s.poll_timeout = options.get("poll_timeout") or max(5, int(timeout) + 5)
+    s.max_retry = int(options.get("max_retry") or 0)
+    s.read_retry = int(options.get("read_retry") or 2)
+    s.timeout = timeout
+    s.headers = headers
+
+    start_polling_timer()
+    return True, None
+
+
+def _read_output_file(path):
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except Exception:
+        return None, "read_failed"
+    if not data:
+        return "", None
+    try:
+        return data.decode("utf-8"), None
+    except UnicodeDecodeError:
+        return None, "decode_failed"
+
+
+def _finish_async_translation():
+    s = async_translation_state
+    on_complete = s.on_complete
+    artifacts = s.artifacts
+    stop_polling_timer()
+    s.reset()
+    _cleanup_artifacts(artifacts)
+    if callable(on_complete):
+        try:
+            on_complete()
+        except Exception:
+            pass
+
+
+def poll_translation_outputs():
+    """轮询翻译输出文件."""
+    s = async_translation_state
+    if not s.active:
+        return
+    now = time.time()
+    poll_timeout = float(s.poll_timeout or 0)
+
+    def emit_progress(task, result):
+        if not callable(s.on_progress):
+            return
+        try:
+            s.on_progress(task, result)
+        except Exception:
+            pass
+
+    def mark_timeout(art):
+        art["completed"] = True
+        s.completed_count += 1
+        _cleanup_artifacts([art])
+        emit_progress(art.get("task") or {}, {"success": False, "err": "timeout"})
+
+    def handle_parse_result(art, translation, tokens, err_msg):
+        if translation is not None:
+            art["completed"] = True
+            s.completed_count += 1
+            _cleanup_artifacts([art])
+            emit_progress(art.get("task") or {}, {"success": True, "translation": translation, "tokens": tokens or 0})
+            return
+
+        art["read_attempts"] = (art.get("read_attempts") or 0) + 1
+        should_wait = err_msg in ("decode_failed", "invalid_response", "empty_response")
+        if should_wait and art["read_attempts"] <= s.read_retry:
+            return
+
+        art["attempts"] = (art.get("attempts") or 0) + 1
+        if s.max_retry > 0 and art["attempts"] < s.max_retry:
+            art["read_attempts"] = 0
+            art["last_size"] = None
+            ok_retry = _launch_retry(art, s.headers, s.timeout)
+            if not ok_retry:
+                art["completed"] = True
+                s.completed_count += 1
+                _cleanup_artifacts([art])
+                emit_progress(art.get("task") or {}, {"success": False, "err": "parallel_execution_failed"})
+        else:
+            art["completed"] = True
+            s.completed_count += 1
+            _cleanup_artifacts([art])
+            emit_progress(art.get("task") or {}, {"success": False, "err": err_msg or "translation_failed"})
+
+    for art in s.artifacts or []:
+        if art.get("completed"):
+            continue
+        if poll_timeout > 0 and art.get("started_at") and (now - art["started_at"]) >= poll_timeout:
+            mark_timeout(art)
+            continue
+        output_path = art.get("output")
+        if not output_path or not os.path.isfile(output_path):
+            continue
+        size = os.path.getsize(output_path)
+        if size > 0:
+            if art.get("last_size") is not None and art["last_size"] == size:
+                content, read_err = _read_output_file(output_path)
+                if read_err:
+                    handle_parse_result(art, None, 0, read_err)
+                else:
+                    translation, tokens, err_msg = s.parser(content or "", art.get("task") or {})
+                    handle_parse_result(art, translation, tokens, err_msg)
+            else:
+                art["last_size"] = size
+                art["read_attempts"] = 0
+        else:
+            content, read_err = _read_output_file(output_path)
+            if read_err:
+                handle_parse_result(art, None, 0, read_err)
+            elif content:
+                translation, tokens, err_msg = s.parser(content, art.get("task") or {})
+                handle_parse_result(art, translation, tokens, err_msg)
+            else:
+                handle_parse_result(art, None, 0, "empty_response")
+
+    if s.completed_count >= s.pending_count:
+        _finish_async_translation()
+
+
+def on_translate_timer_timeout(ev):
+    """Timer 超时回调."""
+    if not async_translation_state.active:
+        stop_polling_timer()
+        return True
+    try:
+        poll_translation_outputs()
+    except Exception:
+        pass
+    if async_translation_state.active:
+        start_polling_timer()
+    return True
+
+
+def _build_llm_messages_for_row(rows, row_index, prompt_content):
+    messages = [{"role": "system", "content": prompt_content}]
+    if CONTEXT_WINDOW > 0:
+        start = max(0, row_index - CONTEXT_WINDOW)
+        prefix = "\n".join(rows[i]["source"] for i in range(start, row_index))
+        suffix = "\n".join(
+            rows[i]["source"]
+            for i in range(row_index + 1, min(len(rows), row_index + 1 + CONTEXT_WINDOW))
+        )
+        ctx = "\nCONTEXT (do not translate)\n".join(filter(None, [prefix, suffix]))
+        if ctx:
+            messages.append({"role": "assistant", "content": ctx})
+    source_text = rows[row_index].get("source") or ""
+    messages.append({"role": "user", "content": f"<<< Sentence >>>\n{source_text}"})
+    return messages
+
+
+def _build_llm_payload(provider_name, model, temperature, messages, response_format=None):
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if provider_name == GLM_PROVIDER:
+        payload["thinking"] = {"type": "disabled"}
+    if provider_name == SILICONFLOW_PROVIDER:
+        payload["stream"] = False
+    if response_format:
+        payload["response_format"] = response_format
+    return payload
+
+
+def _get_provider_request_info(provider, target_code):
+    provider_name = getattr(provider, "name", "")
+    timeout = provider.cfg.get("timeout", TIMEOUT_SINGLE)
+    max_retry = provider.cfg.get("max_retry", MAX_RETRY)
+    if provider_name in LLM_STRUCTURED_PROVIDERS:
+        api_key = ""
+        if provider_name == OPENAI_FORMAT_PROVIDER:
+            api_key = (provider.cfg.get("api_key") or "").strip()
+            base_url = provider.cfg.get("base_url") or OPENAI_FORMAT_BASE_URL
+            url = base_url.rstrip("/") + "/v1/chat/completions"
+        elif provider_name == GLM_PROVIDER:
+            api_key = provider._ensure_api_key()
+            base_url = provider.cfg.get("base_url") or GLM_BASE_URL
+            url = base_url.rstrip("/") + "/v4/chat/completions"
+        else:
+            api_key = provider._ensure_api_key()
+            base_url = provider.cfg.get("base_url") or "https://api.siliconflow.cn/v1/chat/completions"
+            url = base_url.rstrip("/")
+        headers = [
+            f"Authorization: Bearer {api_key}",
+            "Content-Type: application/json",
+        ]
+        return {
+            "provider_name": provider_name,
+            "headers": headers,
+            "url": url,
+            "timeout": timeout,
+            "model": provider.cfg.get("model"),
+            "temperature": provider.cfg.get("temperature", OPENAI_DEFAULT_TEMPERATURE),
+            "max_retry": max_retry,
+        }
+    if provider_name == AZURE_PROVIDER:
+        user_key = (provider.cfg.get("api_key") or "").strip()
+        user_region = (provider.cfg.get("region") or "").strip()
+        if user_key and user_region:
+            api_key = user_key
+            region = user_region
+        else:
+            api_key = provider._ensure_key()
+            region = "eastus"
+        params = {"api-version": "3.0", "to": target_code}
+        base_url = provider.cfg.get("base_url") or AZURE_DEFAULT_URL
+        url = base_url.rstrip("/") + "/translate?" + urlencode(params)
+        headers = [
+            f"Ocp-Apim-Subscription-Key: {api_key}",
+            "Content-Type: application/json",
+        ]
+        if region:
+            headers.append(f"Ocp-Apim-Subscription-Region: {region}")
+        return {
+            "provider_name": provider_name,
+            "headers": headers,
+            "url": url,
+            "timeout": timeout,
+            "max_retry": max_retry,
+        }
+    if provider_name == DEEPL_PROVIDER:
+        api_key = (provider.cfg.get("api_key") or "").strip()
+        if not api_key:
+            raise ValueError("DeepL missing api key")
+        base_url = provider.cfg.get("base_url") or provider._get_api_base(api_key)
+        url = base_url.rstrip("/") + "/translate"
+        headers = ["Content-Type: application/x-www-form-urlencoded"]
+        return {
+            "provider_name": provider_name,
+            "headers": headers,
+            "url": url,
+            "timeout": timeout,
+            "api_key": api_key,
+            "max_retry": max_retry,
+        }
+    if provider_name == GOOGLE_PROVIDER:
+        service_urls = provider.cfg.get("service_urls") or []
+        host = service_urls[0] if service_urls else "translate.googleapis.com"
+        base_url = f"https://{host}/translate_a/single"
+        return {
+            "provider_name": provider_name,
+            "headers": [],
+            "base_url": base_url,
+            "timeout": timeout,
+            "max_retry": max_retry,
+        }
+    raise ValueError(f"Unsupported provider for async translation: {provider_name}")
+
+
+def _parse_openai_style_response(content):
+    try:
+        data = json.loads(content)
+    except Exception:
+        return None, 0, "decode_failed"
+    if isinstance(data, dict) and data.get("error"):
+        err = data["error"]
+        message = err.get("message") if isinstance(err, dict) else None
+        return None, 0, message or "invalid_response"
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if not isinstance(choices, list) or not choices:
+        return None, 0, "invalid_response"
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    text = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(text, str):
+        return None, 0, "invalid_response"
+    usage = data.get("usage") if isinstance(data, dict) else {}
+    tokens = usage.get("total_tokens", 0) if isinstance(usage, dict) else 0
+    return text.strip(), tokens, None
+
+
+def _parse_azure_response(content):
+    try:
+        data = json.loads(content)
+    except Exception:
+        return None, 0, "decode_failed"
+    if isinstance(data, dict) and data.get("error"):
+        err = data["error"]
+        message = err.get("message") if isinstance(err, dict) else None
+        return None, 0, message or "invalid_response"
+    if not isinstance(data, list) or not data:
+        return None, 0, "invalid_response"
+    translations = data[0].get("translations") if isinstance(data[0], dict) else None
+    if not translations:
+        return None, 0, "invalid_response"
+    text = translations[0].get("text") if isinstance(translations[0], dict) else None
+    if not isinstance(text, str):
+        return None, 0, "invalid_response"
+    return text, 0, None
+
+
+def _parse_deepl_response(content):
+    try:
+        data = json.loads(content)
+    except Exception:
+        return None, 0, "decode_failed"
+    if isinstance(data, dict) and data.get("message"):
+        return None, 0, data.get("message") or "invalid_response"
+    if isinstance(data, dict) and data.get("error"):
+        err = data["error"]
+        message = err.get("message") if isinstance(err, dict) else None
+        return None, 0, message or "invalid_response"
+    translations = data.get("translations") if isinstance(data, dict) else None
+    if not translations:
+        return None, 0, "invalid_response"
+    text = translations[0].get("text") if isinstance(translations[0], dict) else None
+    if not isinstance(text, str):
+        return None, 0, "invalid_response"
+    return text, 0, None
+
+
+def _parse_google_response(content):
+    try:
+        data = json.loads(content)
+    except Exception:
+        return None, 0, "decode_failed"
+    if isinstance(data, dict) and data.get("sentences"):
+        sentences = data.get("sentences") or []
+        translated = "".join(
+            sentence.get("trans") for sentence in sentences
+            if isinstance(sentence, dict) and isinstance(sentence.get("trans"), str)
+        )
+        return translated, 0, None
+    if not isinstance(data, list) or not data:
+        return None, 0, "invalid_response"
+    chunks = data[0]
+    if not isinstance(chunks, list):
+        return None, 0, "invalid_response"
+    translated = "".join(
+        chunk[0] for chunk in chunks
+        if isinstance(chunk, list) and chunk and isinstance(chunk[0], str)
     )
-    return translated_text, tokens
+    return translated, 0, None
+
+
+def _parse_async_response(content, task):
+    provider_name = task.get("provider")
+    smart_merge = bool(task.get("smart_merge"))
+    target_code = task.get("target_code") or ""
+    sources = task.get("sources") or []
+
+    if provider_name in LLM_STRUCTURED_PROVIDERS:
+        text, tokens, err = _parse_openai_style_response(content)
+        if err:
+            return None, tokens, err
+        if smart_merge:
+            chunk_count = int(task.get("chunk_count") or 1)
+            try:
+                translations = _parse_llm_json_response(text, chunk_count)
+            except Exception:
+                return None, tokens, "invalid_response"
+            return translations, tokens, None
+        return text, tokens, None
+
+    if provider_name == AZURE_PROVIDER:
+        text, tokens, err = _parse_azure_response(content)
+    elif provider_name == DEEPL_PROVIDER:
+        text, tokens, err = _parse_deepl_response(content)
+    else:
+        text, tokens, err = _parse_google_response(content)
+
+    if err:
+        return None, tokens, err
+    if smart_merge:
+        if not sources:
+            return None, tokens, "invalid_task"
+        translations = _split_translation_by_ratio(text, sources, target_code)
+        return translations, tokens, None
+    return text, tokens, None
 
 
 def _translate_rows(
@@ -2997,112 +3894,279 @@ def _translate_rows(
     target_code: str,
     prompt_content: str,
     progress_key: str,
-) -> Tuple[int, int, int]:
-    """Translate multiple rows concurrently and collect statistics.
-
-    Args:
-        row_indices (Sequence[int]): Row indexes to translate.
-        provider (BaseProvider): Provider handling translation requests.
-        target_code (str): Target language code.
-        prompt_content (str): Additional prompt content.
-        progress_key (str): Key identifying progress label set.
-
-    Returns:
-        Tuple[int, int, int]: Success count, failure count, total tokens.
-
-    Raises:
-        None.
-
-    Examples:
-        >>> _translate_rows([0], provider, "en", "", "all")  # doctest: +SKIP
-    """
+    use_smart_merge: bool = False,
+) -> bool:
+    """启动异步翻译任务并返回是否成功启动."""
     rows = translation_state.get("rows") or []
     if not row_indices:
-        return 0, 0, 0
+        return False
 
-    concurrency = max(1, min(_get_selected_speed_value(), len(row_indices)))
     labels = TRANSLATE_PROGRESS_LABELS.get(progress_key, TRANSLATE_PROGRESS_LABELS["all"])
-    success_count = 0
-    failed_count = 0
-    total_tokens = 0
+    provider_name = getattr(provider, "name", "")
+    total_rows = len(row_indices)
 
-    futures: Dict[concurrent.futures.Future, int] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+    try:
+        request_info = _get_provider_request_info(provider, target_code)
+    except Exception as exc:
+        for idx in row_indices:
+            rows[idx]["status"] = "failed"
+            rows[idx]["error"] = str(exc)
+            mark_translation_failure(idx, rows[idx].get("error"))
+            update_translation_tree_row(idx)
+        set_translate_status("Translation failed.", "翻译失败。")
+        return False
+
+    tasks = []
+    pre_failed = 0
+
+    if use_smart_merge:
+        groups = _merge_subtitle_chunks(rows, row_indices)
+        for group in groups:
+            for idx in group["row_indices"]:
+                rows[idx]["status"] = "translating"
+                rows[idx]["error"] = ""
+                update_translation_tree_row(idx)
+            sources = group["sources"]
+            meta = {
+                "row_indices": group["row_indices"],
+                "chunk_count": group["chunk_count"],
+                "sources": sources,
+                "provider": provider_name,
+                "smart_merge": True,
+                "target_code": target_code,
+                "process_count": len(group["row_indices"]),
+            }
+            try:
+                if provider_name in LLM_STRUCTURED_PROVIDERS:
+                    translate_rules = prompt_content.strip() if prompt_content else SYSTEM_PROMPT
+                    smart_prompt = SMART_MERGE_PREFIX_PROMPT.format(
+                        target_lang=target_code,
+                        chunk_count=group["chunk_count"],
+                        translate_rules=translate_rules,
+                    )
+                    user_content = json.dumps({"segments": sources}, ensure_ascii=False)
+                    response_format = _get_llm_response_format(provider_name, group["chunk_count"])
+                    messages = [
+                        {"role": "system", "content": smart_prompt},
+                        {"role": "user", "content": user_content},
+                    ]
+                    payload = _build_llm_payload(
+                        provider_name,
+                        request_info.get("model"),
+                        request_info.get("temperature", OPENAI_DEFAULT_TEMPERATURE),
+                        messages,
+                        response_format,
+                    )
+                    payload_text = json.dumps(payload, ensure_ascii=False)
+                    tasks.append({"payload": payload_text, "url": request_info["url"], "method": "POST", "task": meta})
+                elif provider_name == AZURE_PROVIDER:
+                    merged_source = "".join(sources)
+                    payload_text = json.dumps([{"text": merged_source}], ensure_ascii=False)
+                    tasks.append({"payload": payload_text, "url": request_info["url"], "method": "POST", "task": meta})
+                elif provider_name == DEEPL_PROVIDER:
+                    merged_source = "".join(sources)
+                    payload_text = urlencode(
+                        {"auth_key": request_info["api_key"], "text": merged_source, "target_lang": target_code}
+                    )
+                    tasks.append({"payload": payload_text, "url": request_info["url"], "method": "POST", "task": meta})
+                else:
+                    merged_source = "".join(sources)
+                    params = {
+                        "client": "gtx",
+                        "sl": "auto",
+                        "tl": target_code,
+                        "dt": "t",
+                        "q": merged_source,
+                    }
+                    url = request_info["base_url"] + "?" + urlencode(params, doseq=True)
+                    tasks.append({"payload": None, "url": url, "method": "GET", "task": meta})
+            except Exception as exc:
+                for idx in group["row_indices"]:
+                    rows[idx]["status"] = "failed"
+                    rows[idx]["error"] = str(exc)
+                    mark_translation_failure(idx, rows[idx].get("error"))
+                    update_translation_tree_row(idx)
+                pre_failed += len(group["row_indices"])
+                logger.error("Merged group translation failed", extra={"error": str(exc)})
+    else:
         for idx in row_indices:
             row = rows[idx]
             row["status"] = "translating"
             row["error"] = ""
             update_translation_tree_row(idx)
-            futures[pool.submit(
-                _translate_single_row,
-                idx,
-                provider,
-                target_code,
-                prompt_content,
-            )] = idx
-
-        code_map = {
-            400: STATUS_MESSAGES.bad_request,
-            401: STATUS_MESSAGES.unauthorized,
-            403: STATUS_MESSAGES.forbidden,
-            404: STATUS_MESSAGES.not_found,
-            429: STATUS_MESSAGES.too_many_requests,
-            500: STATUS_MESSAGES.internal_server_error,
-            502: STATUS_MESSAGES.bad_gateway,
-            503: STATUS_MESSAGES.service_unavailable,
-            504: STATUS_MESSAGES.gateway_timeout,
-        }
-        total = len(futures)
-        for done, future in enumerate(concurrent.futures.as_completed(futures), start=1):
-            idx = futures[future]
+            meta = {
+                "row_indices": [idx],
+                "chunk_count": 1,
+                "sources": [row.get("source") or ""],
+                "provider": provider_name,
+                "smart_merge": False,
+                "target_code": target_code,
+                "process_count": 1,
+            }
             try:
-                translated_text, tokens = future.result()
-                rows[idx]["target"] = translated_text
-                rows[idx]["status"] = "success"
-                rows[idx].pop("error", None)
-                success_count += 1
-                total_tokens += tokens
-                clear_translation_failure(idx)
-            except requests.exceptions.HTTPError as http_err:
-                failed_count += 1
-                rows[idx]["status"] = "failed"
-                rows[idx]["error"] = str(http_err)
-                code = http_err.response.status_code if http_err.response is not None else None
-                mapped = code_map.get(code)
-                if mapped:
-                    show_warning_message(mapped)
-                logger.warning(
-                    "HTTP error during translation",
-                    extra={
-                        "component": "translation",
-                        "row_index": rows[idx].get("idx", idx),
-                        "status_code": code,
-                        "error": str(http_err),
-                    },
-                )
-                mark_translation_failure(idx, rows[idx].get("error"))
-            except Exception as exc:  # noqa: BLE001
-                failed_count += 1
+                if provider_name in LLM_STRUCTURED_PROVIDERS:
+                    messages = _build_llm_messages_for_row(rows, idx, prompt_content)
+                    payload = _build_llm_payload(
+                        provider_name,
+                        request_info.get("model"),
+                        request_info.get("temperature", OPENAI_DEFAULT_TEMPERATURE),
+                        messages,
+                    )
+                    payload_text = json.dumps(payload, ensure_ascii=False)
+                    tasks.append({"payload": payload_text, "url": request_info["url"], "method": "POST", "task": meta})
+                elif provider_name == AZURE_PROVIDER:
+                    payload_text = json.dumps([{"text": row.get("source") or ""}], ensure_ascii=False)
+                    tasks.append({"payload": payload_text, "url": request_info["url"], "method": "POST", "task": meta})
+                elif provider_name == DEEPL_PROVIDER:
+                    payload_text = urlencode(
+                        {"auth_key": request_info["api_key"], "text": row.get("source") or "", "target_lang": target_code}
+                    )
+                    tasks.append({"payload": payload_text, "url": request_info["url"], "method": "POST", "task": meta})
+                else:
+                    params = {
+                        "client": "gtx",
+                        "sl": "auto",
+                        "tl": target_code,
+                        "dt": "t",
+                        "q": row.get("source") or "",
+                    }
+                    url = request_info["base_url"] + "?" + urlencode(params, doseq=True)
+                    tasks.append({"payload": None, "url": url, "method": "GET", "task": meta})
+            except Exception as exc:
                 rows[idx]["status"] = "failed"
                 rows[idx]["error"] = str(exc)
-                logger.error(
-                    "Translation failed",
-                    extra={
-                        "component": "translation",
-                        "row_index": rows[idx].get("idx", idx),
-                        "error": str(exc),
-                    },
-                )
                 mark_translation_failure(idx, rows[idx].get("error"))
-            update_translation_tree_row(idx)
-            progress_en = f"{labels['en']}... {done}/{total}  Tokens: {total_tokens}"
-            progress_zh = f"{labels['cn']}... {done}/{total}  令牌: {total_tokens}"
-            set_translate_status(progress_en, progress_zh)
+                update_translation_tree_row(idx)
+                pre_failed += 1
+                logger.error("Translation task build failed", extra={"error": str(exc)})
 
-    translation_state["last_tokens"] = total_tokens
-    _update_editor_from_selection()
-    refresh_translation_controls()
-    return success_count, failed_count, total_tokens
+    if not tasks:
+        translation_state["busy"] = False
+        refresh_translation_controls()
+        summary_en = f"Completed: 0/{total_rows} succeeded, {pre_failed} failed. Tokens: 0"
+        summary_zh = f"完成：成功 0/{total_rows} 条，失败 {pre_failed} 条。令牌：0"
+        set_translate_status(summary_en, summary_zh)
+        return False
+
+    concurrency = max(1, min(_get_selected_speed_value(), len(tasks)))
+    timeout = TIMEOUT_MERGE if use_smart_merge else request_info.get("timeout", TIMEOUT_SINGLE)
+    progress = {"success": 0, "failed": pre_failed, "tokens": 0, "processed": pre_failed}
+
+    if _ensure_temp_dir():
+        prefix_output = f"translate_output_{RAND_CODE}_"
+        prefix_payload = f"translate_payload_{RAND_CODE}_"
+        for name in os.listdir(TEMP_DIR):
+            if name.startswith(prefix_output) or name.startswith(prefix_payload):
+                try:
+                    os.remove(os.path.join(TEMP_DIR, name))
+                except Exception:
+                    pass
+
+    def on_progress(task, result):
+        if result.get("success"):
+            progress["tokens"] += int(result.get("tokens") or 0)
+            translations = result.get("translation")
+            indices = task.get("row_indices") or []
+            if isinstance(translations, list):
+                for offset, idx in enumerate(indices):
+                    rows[idx]["target"] = translations[offset] if offset < len(translations) else ""
+                    rows[idx]["status"] = "success"
+                    rows[idx].pop("error", None)
+                    clear_translation_failure(idx)
+                    update_translation_tree_row(idx)
+            else:
+                idx = indices[-1] if indices else None
+                if idx is not None:
+                    rows[idx]["target"] = translations if isinstance(translations, str) else ""
+                    rows[idx]["status"] = "success"
+                    rows[idx].pop("error", None)
+                    clear_translation_failure(idx)
+                    update_translation_tree_row(idx)
+            progress["success"] += int(task.get("process_count") or 1)
+        else:
+            err_msg = result.get("err") or "translation_failed"
+            for idx in task.get("row_indices") or []:
+                rows[idx]["status"] = "failed"
+                rows[idx]["error"] = str(err_msg)
+                mark_translation_failure(idx, rows[idx].get("error"))
+                update_translation_tree_row(idx)
+            progress["failed"] += int(task.get("process_count") or 1)
+        progress["processed"] += int(task.get("process_count") or 1)
+        done = progress["processed"]
+        total = total_rows
+        progress_en = f"{labels['en']}... {done}/{total}  Tokens: {progress['tokens']}"
+        progress_zh = f"{labels['cn']}... {done}/{total}  令牌: {progress['tokens']}"
+        set_translate_status(progress_en, progress_zh)
+
+    def finalize():
+        translation_state["busy"] = False
+        translation_state["last_tokens"] = progress["tokens"]
+        _update_editor_from_selection()
+        refresh_translation_controls()
+        summary_en = f"Completed: {progress['success']}/{total_rows} succeeded, {progress['failed']} failed. Tokens: {progress['tokens']}"
+        summary_zh = f"完成：成功 {progress['success']}/{total_rows} 条，失败 {progress['failed']} 条。令牌：{progress['tokens']}"
+        set_translate_status(summary_en, summary_zh)
+        if progress["failed"]:
+            logger.warning(
+                "Rows failed during translation",
+                extra={
+                    "component": "translation",
+                    "failed": progress["failed"],
+                    "total": total_rows,
+                    "provider": provider_name,
+                },
+            )
+        else:
+            logger.info(
+                "Translation batch completed",
+                extra={
+                    "component": "translation",
+                    "success": progress["success"],
+                    "total": total_rows,
+                    "tokens": progress["tokens"],
+                    "provider": provider_name,
+                },
+            )
+
+    batches = [tasks[i:i + concurrency] for i in range(0, len(tasks), concurrency)]
+    batch_index = 0
+
+    def launch_batch():
+        nonlocal batch_index
+        if batch_index >= len(batches):
+            finalize()
+            return
+        batch = batches[batch_index]
+
+        def on_batch_complete():
+            nonlocal batch_index
+            batch_index += 1
+            launch_batch()
+
+        started, start_err = launch_async_translation(
+            batch,
+            {
+                "headers": request_info.get("headers") or [],
+                "timeout": timeout,
+                "parallel_limit": len(batch),
+                "payload_prefix": f"translate_payload_{RAND_CODE}",
+                "output_prefix": f"translate_output_{RAND_CODE}",
+                "parser": _parse_async_response,
+                "max_retry": request_info.get("max_retry", MAX_RETRY),
+                "on_progress": on_progress,
+                "on_complete": on_batch_complete,
+            },
+        )
+
+        if not started:
+            for item in batch:
+                on_progress(item.get("task") or {}, {"success": False, "err": start_err or "parallel_execution_failed"})
+            batch_index += 1
+            launch_batch()
+
+    launch_batch()
+
+    return True
 
 
 def _start_translation(row_indices: Sequence[int], progress_key: str) -> None:
@@ -3159,36 +4223,14 @@ def _start_translation(row_indices: Sequence[int], progress_key: str) -> None:
     )
 
     try:
-        success, failed, tokens = _translate_rows(row_indices, provider, target_code, system_prompt, progress_key)
-    finally:
+        use_smart_merge = items.get("SmartMergeCheck") and items["SmartMergeCheck"].Checked
+    except Exception:
+        use_smart_merge = False
+
+    started = _translate_rows(row_indices, provider, target_code, system_prompt, progress_key, use_smart_merge)
+    if not started:
         translation_state["busy"] = False
         refresh_translation_controls()
-
-    total = len(row_indices)
-    summary_en = f"Completed: {success}/{total} succeeded, {failed} failed. Tokens: {tokens}"
-    summary_zh = f"完成：成功 {success}/{total} 条，失败 {failed} 条。令牌：{tokens}"
-    set_translate_status(summary_en, summary_zh)
-    if failed:
-        logger.warning(
-            "Rows failed during translation",
-            extra={
-                "component": "translation",
-                "failed": failed,
-                "total": total,
-                "provider": getattr(provider, "name", provider.__class__.__name__),
-            },
-        )
-    else:
-        logger.info(
-            "Translation batch completed",
-            extra={
-                "component": "translation",
-                "success": success,
-                "total": total,
-                "tokens": tokens,
-                "provider": getattr(provider, "name", provider.__class__.__name__),
-            },
-        )
 
 
 # =============== 主按钮逻辑（核心差异处 ★★★） ===============
@@ -3461,6 +4503,16 @@ translator_win.On.StartTranslateButton.Clicked = on_start_translate
 translator_win.On.RetryFailedButton.Clicked = on_retry_failed
 translator_win.On.TranslateSelectedButton.Clicked = on_translate_selected
 translator_win.On.ApplyToTimelineButton.Clicked = on_apply_translations
+
+def on_smart_merge_clicked(ev):
+    smart_merge = items.get("SmartMergeCheck")
+    if smart_merge and smart_merge.Checked:
+        show_dynamic_message(
+            "Merge subtitle fragments into full sentences before translating for better context. Ideal for short vertical-video blocks. Best with sentence-ending punctuation (., !, ?).",
+            "将多个字幕片段先合并为完整句再翻译，确保上下文更准确；适用于竖屏视频的短字幕块翻译。句末遇到“。！？”，效果最佳。",
+        )
+translator_win.On.SmartMergeCheck.Clicked = on_smart_merge_clicked
+
 def _on_provider_changed(ev):
     target_combo = items.get("TargetLangCombo")
     keep_code = None
@@ -3530,6 +4582,32 @@ def _on_translate_editor_text_changed(ev):
     # 如果文本没有变化，什么都不做，保持原状态（包括 "failed" 状态）
 translator_win.On.TranslateSubtitleEditor.TextChanged = _on_translate_editor_text_changed
 
+_previous_timeout_handler = None
+try:
+    candidate = dispatcher["On"]["Timeout"]
+    if callable(candidate):
+        _previous_timeout_handler = candidate
+except Exception:
+    _previous_timeout_handler = None
+
+
+def _dispatcher_timeout(ev):
+    handled = None
+    if callable(_previous_timeout_handler):
+        handled = _previous_timeout_handler(ev)
+    who = _get_timer_event_id(ev)
+    if who == "TranslatePollingTimer":
+        return on_translate_timer_timeout(ev)
+    if async_translation_state.active:
+        return on_translate_timer_timeout(ev)
+    return handled
+
+
+try:
+    dispatcher["On"]["Timeout"] = _dispatcher_timeout
+except Exception:
+    pass
+
 
 def _initial_load_translation_rows():
     def _progress(current, total):
@@ -3563,7 +4641,6 @@ def _initial_load_translation_rows():
     set_translate_status(en_msg, cn_msg)
 # =============== 8  关闭窗口保存设置 ===============
 def on_close(ev):
-    import shutil
     output_dir = os.path.join(SCRIPT_PATH, "srt")
     if os.path.exists(output_dir):
         try:
@@ -3576,6 +4653,21 @@ def on_close(ev):
             logger.warning(
                 "Failed to delete temporary directory",
                 extra={"component": "cleanup", "error": str(e), "path": output_dir},
+            )
+    stop_polling_timer()
+    _cleanup_artifacts(async_translation_state.artifacts)
+    async_translation_state.reset()
+    if os.path.exists(TEMP_DIR):
+        try:
+            shutil.rmtree(TEMP_DIR)
+            logger.info(
+                "Temp directory removed",
+                extra={"component": "cleanup", "path": TEMP_DIR},
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to delete temp directory",
+                extra={"component": "cleanup", "error": str(e), "path": TEMP_DIR},
             )
     close_and_save(settings_file)
     dispatcher.ExitLoop()
