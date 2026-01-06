@@ -1190,11 +1190,22 @@ do
         return working, err
     end
 
-    function Utils.httpGet(url, headers, timeout, opts)
+    function Utils.httpGetAsync(url, headers, timeout, onComplete, opts)
+        if type(onComplete) ~= "function" then
+            return false, "missing_callback"
+        end
         if not url or url == "" then
             return false, "missing_url"
         end
+        local async = App and App.AsyncHttp
+        if not (async and async.start and Utils.runShellCommandAsync) then
+            return false, "async_unavailable"
+        end
+        if async.isActive and async.isActive() then
+            return false, "async_busy"
+        end
         local quiet = type(opts) == "table" and opts.quiet
+
         local headerLines = {}
         local hasAccept = false
         if headers then
@@ -1209,11 +1220,10 @@ do
         if not hasAccept then
             table.insert(headerLines, "Accept: application/json")
         end
-        --table.insert(headerLines, "Connection: close")
 
         local maxTime = tonumber(timeout) or 120
         if not quiet then
-            Utils.debugSection("HTTP GET START")
+            Utils.debugSection("HTTP GET START (ASYNC)")
             Utils.debugKV("URL", url)
             Utils.debugKV("Timeout", string.format("%ss", maxTime))
             if headers then
@@ -1258,6 +1268,7 @@ do
         local sep = Utils.SEP
         local commonFlags = '--http1.1 --no-keepalive -sS -L'
         local curlCommand
+        local redirected
         if sep == "\\" then
             curlCommand = string.format(
                 'curl %s -m %d --config "%s" -w "%%%%{http_code}"',
@@ -1265,6 +1276,7 @@ do
                 maxTime,
                 configPath
             )
+            redirected = string.format('%s > "%s" 2>"%s"', curlCommand, statusPath, errPath)
         else
             curlCommand = string.format(
                 'curl %s -m %d --config %q -w "%%%%{http_code}"',
@@ -1272,212 +1284,51 @@ do
                 maxTime,
                 configPath
             )
-        end
-
-        local redirected
-        if sep == "\\" then
-            redirected = string.format('%s > "%s" 2>"%s"', curlCommand, statusPath, errPath)
-        else
             redirected = string.format('( %s ) > %q 2>%q', curlCommand, statusPath, errPath)
         end
 
-        local ok, exitCode = Utils.runShellCommand(redirected)
+        local spawned = Utils.runShellCommandAsync(redirected)
+        if not spawned then
+            Utils.cleanupDebugPaths(debugPaths)
+            return false, "curl_spawn_failed"
+        end
 
-        local statusData = Utils.readFile(statusPath) or ""
-        local statusCode = tonumber((statusData or ""):match("(%d%d%d)"))
-
-        local body = Utils.readFile(bodyPath) or ""
-
-        local errText = Utils.readFile(errPath) or ""
-
-        if not ok then
-            if not quiet and Config and Config.LOG_HTTP_RESPONSE then
-                print(string.format("[cURL] exit=%s", tostring(exitCode)))
-                if errText ~= "" then
-                    print("[cURL stderr]")
-                    print(Utils.truncate(errText, 800))
+        local margin = (async and async.TIMEOUT_MARGIN) or 20
+        local pollTimeout = math.max(5, maxTime + margin)
+        local task = {
+            kind = "http",
+            bodyPath = bodyPath,
+            statusPath = statusPath,
+            errPath = errPath,
+            debugPaths = debugPaths,
+            pollTimeout = pollTimeout,
+            startedAt = os.time(),
+            onComplete = function(result)
+                local ok = result.ok == true
+                local body = result.body or ""
+                local statusCode = result.statusCode
+                local statusData = result.statusData or ""
+                if not quiet and Config and Config.LOG_HTTP_RESPONSE and statusData ~= "" then
+                    print("[cURL stats] " .. (statusData:gsub("%s+$","")))
+                end
+                if statusCode and (statusCode < 200 or statusCode >= 300) then
+                    ok = false
+                end
+                if body == "" then
+                    ok = false
+                end
+                if type(onComplete) == "function" then
+                    onComplete(ok, body, statusCode, debugPaths)
                 end
             end
-            return false, "curl_failed", statusCode, debugPaths
-        end
-        if not body or body == "" then
-            return false, "empty_response", statusCode, debugPaths
-        end
-        if statusCode and (statusCode < 200 or statusCode >= 300) then
-            return false, body, statusCode, debugPaths
-        end
-        if not quiet and Config and Config.LOG_HTTP_RESPONSE then
-            Utils.debugSection("HTTP RESPONSE START")
-            Utils.debugKV("Response Bytes", tostring(#body))
-            Utils.debugKV("Preview", Utils.truncate(body, 200))
-            Utils.debugSectionEnd()
-        end
-        return true, body, statusCode or 200, debugPaths
-    end
-
-    function Utils.httpPostJson(url, payload, headers, timeout)
-        if not url or url == "" then
-            return false, "missing_url"
-        end
-        local bodyStr
-        if type(payload) == "table" then
-            local ok, encoded = pcall(json.encode, payload)
-            if not ok then
-                return false, "json_encode_failed"
-            end
-            bodyStr = encoded
-        elseif type(payload) == "string" then
-            bodyStr = payload
-        else
-            bodyStr = tostring(payload or "")
-        end
-
-        local headerLines = {}
-        local hasContentType = false
-        local hasAccept = false
-        
-        -- User-Agent 伪装
-        local userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-        if headers then
-            for k, v in pairs(headers) do
-                local name = tostring(k or "")
-                local cleanValue = Utils.sanitizeHeaderValue(v)
-                table.insert(headerLines, string.format("%s: %s", name, cleanValue))
-                local lower = name:lower()
-                if lower == "content-type" then hasContentType = true end
-                if lower == "accept" then hasAccept = true end
-            end
-        end
-        if not hasContentType then
-            table.insert(headerLines, "Content-Type: application/json")
-        end
-        if not hasAccept then
-            table.insert(headerLines, "Accept: application/json")
-        end
-        -- 移除 Expect 头，防止大 payload 发送时卡顿
-        table.insert(headerLines, "Expect:")
-   
-        local maxTime = tonumber(timeout) or 120
-        Utils.debugSection("HTTP REQUEST START")
-        Utils.debugKV("URL", url)
-        
-        local tempPayload, err1 = Utils.makeTempPath("json")
-        if not tempPayload then return false, "tmp_payload_failed" end
-        
-        local okWrite = Utils.writeFile(tempPayload, bodyStr)
-        if not okWrite then return false, "payload_write_failed" end
-
-        local sep = Utils.SEP
-        local bodyPath, err2 = Utils.makeTempPath("out")
-        local statusPath, err3 = Utils.makeTempPath("status")
-        local errPath, err4 = Utils.makeTempPath("err")
-        local configPath, cfgErr = Utils.writeCurlConfig({
-            request = "POST",
-            url = url,
-            output = bodyPath,
-            dataBinary = tempPayload,
-            headers = headerLines
-        })
-        if not configPath then
-            Utils.cleanupDebugPaths({payload = tempPayload, out = bodyPath, status = statusPath, err = errPath})
-            return false, "curl_config_failed:" .. tostring(cfgErr)
-        end
-        local debugPaths = {
-            payload = tempPayload,
-            out = bodyPath,
-            status = statusPath,
-            err = errPath,
-            config = configPath
         }
 
-        -- === Windows 配置 (保持稳定版) ===
-        -- Windows 需要 -N 来防止假死，且 cmd 处理重定向较好
-        local winFlags = string.format('--http1.1 --no-keepalive -sS -L -N -4 -A "%s"', userAgent)
-        
-        -- === Mac/Linux 最终修正版 ===
-        -- 1. --http1.1 : 强制 HTTP/1.1 保证大文件流式传输稳定
-        -- 2. --keepalive-time 5 : 必须的高频心跳，防止路由器切断
-        -- 3. -N : 禁用缓冲，防止数据积压
-        local macFlags = string.format(
-        '--http1.1 -sS -L -g ' ..
-        '--connect-timeout 20 ' ..
-        '--keepalive-time 5 ' ..    -- 保持心跳
-        '--compressed ' ..
-        '--limit-rate 1048576 ' ..
-        --'-N ' ..                    -- 保持无缓冲
-        '-4 ' ..
-        '--no-sessionid ' ..
-        '-A "%s"', userAgent
-        )
-
-
-        local curlCommand
-        local redirected
-
-        if sep == "\\" then
-            -- [Windows 逻辑]
-            curlCommand = string.format(
-                'curl %s -m %d --config "%s" -w "%%%%{http_code}"',
-                winFlags, maxTime, configPath
-            )
-            redirected = string.format('%s > "%s" 2>"%s"', curlCommand, statusPath, errPath)
-        else
-            -- [Mac/Linux 逻辑 - 关键修改]
-            -- 1. URL 用单引号
-            -- 2. 错误日志直接由 curl 写入 (--stderr %q)
-            -- 3. 只有状态码 (-w) 输出到 stdout 并重定向到 statusPath
-            curlCommand = string.format(
-                'curl %s -m %d --config %q --stderr %q -w "%%{http_code} start=%%{time_starttransfer} total=%%{time_total} size=%%{size_download}\n"',
-                macFlags,
-                maxTime,
-                configPath,
-                errPath -- curl 直接写错误日志
-            )
-            -- 这里的重定向只负责极小的状态码，不会阻塞
-            redirected = string.format('%s > %q', curlCommand, statusPath)
+        local started, startErr = async.start(task)
+        if not started then
+            Utils.cleanupDebugPaths(debugPaths)
+            return false, startErr or "async_start_failed"
         end
-
-        -- 执行命令
-        local ok, exitCode = Utils.runShellCommand(redirected)
-
-        -- 读取状态码
-        local statusData = Utils.readFile(statusPath) or ""
-        if Config and Config.LOG_HTTP_RESPONSE and statusData ~= "" then
-            print("[cURL stats] " .. (statusData:gsub("%s+$","")))
-        end
-        local statusCode = tonumber((statusData or ""):match("(%d%d%d)"))
-
-        -- 读取结果
-        local body = Utils.readFile(bodyPath) or ""
-
-        -- 读取错误日志
-        local errText = Utils.readFile(errPath) or ""
-
-        if not ok then
-            print(string.format("[cURL] exit=%s", tostring(exitCode)))
-            if errText ~= "" then print("[cURL stderr] " .. Utils.truncate(errText, 800)) end
-            
-            -- 抢救逻辑：如果 curl 报错但 body 有数据
-            if body and #body > 100 then
-                 print("[WARNING] curl reported error but data received. Continuing.")
-                 return true, body, statusCode or 200, debugPaths
-            end
-            return false, "curl_failed", statusCode, debugPaths
-        end
-
-        if not body or body == "" then
-            -- 状态码 200 但无内容，说明写入磁盘失败
-            if statusCode == 200 then
-                 -- 尝试读取 stderr 看看有没有 Write error
-                 if errText:find("Failed to write") or errText:find("write error") then
-                     return false, "disk_write_failed", statusCode, debugPaths
-                 end
-                 return false, "empty_response_write_failed", statusCode, debugPaths
-            end
-            return false, "empty_response", statusCode, debugPaths
-        end
-        return true, body, statusCode or 200, debugPaths
+        return true
     end
 
     function Utils.httpPostJsonAsync(url, payload, headers, timeout, onComplete)
@@ -1489,9 +1340,7 @@ do
         end
         local async = App and App.AsyncHttp
         if not (async and async.start and Utils.runShellCommandAsync) then
-            local ok, body, statusCode, debugPaths = Utils.httpPostJson(url, payload, headers, timeout)
-            pcall(onComplete, ok, body, statusCode, debugPaths)
-            return ok
+            return false, "async_unavailable"
         end
         if async.isActive and async.isActive() then
             return false, "async_busy"
@@ -1816,67 +1665,6 @@ do
         return destPath, size_or_err
     end
 
-    function Utils.saveImageFromUrl(imageUrl, saveDir, prefix)
-        if type(imageUrl) ~= "string" or imageUrl == "" then
-            return nil, "invalid_url"
-        end
-        saveDir = Utils.trim(saveDir or "")
-        if saveDir == "" then
-            saveDir = Utils.getTempDir()
-        end
-        if not Utils.ensureDir(saveDir) then
-            return nil, "save_dir_unavailable"
-        end
-
-        local ext = imageUrl:match("%.([%w%d]+)(%?.*)?$")
-        if ext then
-            ext = ext:lower()
-            if ext == "jpeg" then ext = "jpg" end
-            if ext == "" then ext = nil end
-        end
-        if not ext or #ext > 6 then
-            ext = "png"
-        end
-
-        local prefixValue = Utils.sanitizeFilename(prefix or "image_edit_")
-        if prefixValue == "" then
-            prefixValue = "image_edit_"
-        end
-        local filename = string.format("%s%d_%04d.%s", prefixValue, os.time(), math.random(0, 9999), ext)
-        local destPath = Utils.joinPath(saveDir, filename)
-
-        local configPath, cfgErr = Utils.writeCurlConfig({
-            url = imageUrl,
-            output = destPath
-        })
-        if not configPath then
-            return nil, "curl_config_failed:" .. tostring(cfgErr)
-        end
-
-        local cmd
-        if Utils.IS_WINDOWS then
-            cmd = string.format('curl -sS -L -f --max-time 300 --config "%s"', configPath)
-        else
-            cmd = string.format('curl -sS -L -f --max-time 300 --config %q', configPath)
-        end
-
-        local ok = Utils.runShellCommand(cmd)
-        os.remove(configPath)
-
-        if not ok or not Utils.fileExists(destPath) then
-            os.remove(destPath)
-            return nil, "download_failed"
-        end
-
-        local size = Utils.getFileSize(destPath)
-        if not size or size <= 0 then
-            os.remove(destPath)
-            return nil, "download_empty"
-        end
-
-        return destPath, size
-    end
-
     function Utils.saveImageFromUrlAsync(imageUrl, saveDir, prefix, onComplete)
         if type(onComplete) ~= "function" then
             return false, "missing_callback"
@@ -1886,9 +1674,7 @@ do
         end
         local async = App and App.AsyncHttp
         if not (async and async.start and Utils.runShellCommandAsync) then
-            local savedPath, savedSize = Utils.saveImageFromUrl(imageUrl, saveDir, prefix)
-            pcall(onComplete, savedPath ~= nil, savedPath, savedSize)
-            return savedPath ~= nil
+            return false, "async_unavailable"
         end
         if async.isActive and async.isActive() then
             return false, "async_busy"
@@ -2264,33 +2050,6 @@ do
     local Config = App.Config
     local json = require("dkjson")
 
-    function Update:_fetch()
-        local url = string.format(
-            "%s/functions/v1/check_update?pid=%s",
-            Config.SUPABASE_URL,
-            Utils.urlEncode(Config.SCRIPT_NAME)
-        )
-        local headers = {
-            Authorization = "Bearer " .. Config.SUPABASE_ANON_KEY,
-            apikey = Config.SUPABASE_ANON_KEY,
-            ["Content-Type"] = "application/json",
-            ["User-Agent"] = string.format("%s/%s", Config.SCRIPT_NAME, Config.SCRIPT_VERSION),
-        }
-        local ok, body, status = Utils.httpGet(url, headers, Config.SUPABASE_TIMEOUT, {quiet = true})
-        if not ok then
-            return nil
-        end
-        if status and status ~= 200 and status ~= 0 then
-            return nil
-        end
-        local decoded, pos, err = json.decode(body)
-        if type(decoded) ~= "table" then
-            print(string.format("[Update] Invalid response: %s (pos=%s, err=%s)", tostring(body), tostring(pos), tostring(err)))
-            return nil
-        end
-        return decoded
-    end
-
     function Update:_build_message(payload, lang, latest, current)
         local key = lang == "zh" and "cn" or "en"
         local info = ""
@@ -2313,25 +2072,57 @@ do
         return line
     end
 
-    function Update:check_for_updates()
-        local ok, payload = pcall(function()
-            return self:_fetch()
-        end)
-        if not ok or type(payload) ~= "table" then
-            return nil, "fetch_failed"
+    function Update:check_for_updates_async(onComplete)
+        if type(onComplete) ~= "function" then
+            return false, "missing_callback"
         end
-        local latest = Utils.trim(tostring(payload.latest or ""))
-        local current = Utils.trim(tostring(Config.SCRIPT_VERSION or ""))
-        if latest == "" or latest == current then
-            return nil, "no_update"
-        end
-        local info = {
-            latest = latest,
-            current = current,
-            en = self:_build_message(payload, "en", latest, current),
-            cn = self:_build_message(payload, "zh", latest, current),
+        local url = string.format(
+            "%s/functions/v1/check_update?pid=%s",
+            Config.SUPABASE_URL,
+            Utils.urlEncode(Config.SCRIPT_NAME)
+        )
+        local headers = {
+            Authorization = "Bearer " .. Config.SUPABASE_ANON_KEY,
+            apikey = Config.SUPABASE_ANON_KEY,
+            ["Content-Type"] = "application/json",
+            ["User-Agent"] = string.format("%s/%s", Config.SCRIPT_NAME, Config.SCRIPT_VERSION),
         }
-        return info, nil
+        local started, err = Utils.httpGetAsync(url, headers, Config.SUPABASE_TIMEOUT, function(ok, body, status, debugPaths)
+            if debugPaths then
+                Utils.cleanupDebugPaths(debugPaths)
+            end
+            if not ok then
+                onComplete(nil, "fetch_failed")
+                return
+            end
+            if status and status ~= 200 and status ~= 0 then
+                onComplete(nil, "bad_status")
+                return
+            end
+            local decoded, pos, decErr = json.decode(body)
+            if type(decoded) ~= "table" then
+                print(string.format("[Update] Invalid response: %s (pos=%s, err=%s)", tostring(body), tostring(pos), tostring(decErr)))
+                onComplete(nil, "invalid_response")
+                return
+            end
+            local latest = Utils.trim(tostring(decoded.latest or ""))
+            local current = Utils.trim(tostring(Config.SCRIPT_VERSION or ""))
+            if latest == "" or latest == current then
+                onComplete(nil, "no_update")
+                return
+            end
+            local info = {
+                latest = latest,
+                current = current,
+                en = self:_build_message(decoded, "en", latest, current),
+                cn = self:_build_message(decoded, "zh", latest, current),
+            }
+            onComplete(info, nil)
+        end, {quiet = true})
+        if not started then
+            return false, err
+        end
+        return true
     end
 
     App.Update = Update
@@ -3526,55 +3317,6 @@ do
         end
     end
 
-    -- 简单的加载提示窗口，用于更新检测
-    function UI.run_with_loading(action)
-        if type(action) ~= "function" then
-            return
-        end
-        local dispatcher = Core.dispatcher
-        local ui = Core.ui
-        if not (dispatcher and ui) then
-            return action()
-        end
-        local title = (UI.currentLang == "en") and "Checking update..." or "正在检查更新..."
-        local win = dispatcher:AddWindow({
-            ID = "ImageEditLoadingWin",
-            WindowTitle = title,
-            Geometry = {Config.LOADING_X_CENTER, Config.LOADING_Y_CENTER, Config.LOADING_WINDOW_WIDTH, Config.LOADING_WINDOW_HEIGHT},
-            Hidden = true
-        }, ui.VGroup{
-            Weight = 1,
-            Alignment = {AlignHCenter = true, AlignVCenter = true},
-            ui.Label{
-                ID = "LoadingLabel",
-                Text = title,
-                Alignment = {AlignHCenter = true, AlignVCenter = true},
-                WordWrap = true,
-                Weight = 1
-            }
-        })
-        if not win then
-            return action()
-        end
-        local items = win:GetItems()
-        if items and items.LoadingLabel then
-            items.LoadingLabel.Text = title
-        end
-        win:Show()
-        local ok, result = pcall(action)
-        if items and items.LoadingLabel then
-            items.LoadingLabel.Text = (UI.currentLang == "en") and "Done" or "完成"
-        end
-        win:Hide()
-        if win.DeleteLater then
-            win:DeleteLater()
-        end
-        if not ok then
-            error(result)
-        end
-        return result
-    end
-
     function UI.switch_language(lang, win)
         local langKey = (lang == "en") and "en" or "cn"
         UI.currentLang = langKey
@@ -4070,28 +3812,19 @@ function App:Run()
         end
 
         local function run_update_check_on_start()
-            local info, reason
-            local ok, res = pcall(function()
-                return UI.run_with_loading(function()
-                    local payload, why = App.Update and App.Update:check_for_updates()
-                    return {info = payload, reason = why}
-                end)
-            end)
-            if ok and type(res) == "table" then
-                info = res.info
-                reason = res.reason
-            else
-                info = nil
-                reason = "failed"
-            end
-            if not info then
+            if not (App.Update and App.Update.check_for_updates_async) then
                 return
             end
-            local msg = {cn = info.cn or info.en, en = info.en or info.cn}
-            if UI.updateStatus then
-                UI.updateStatus(msg)
-            end
-            show_update_dialog(localizedText(msg))
+            App.Update:check_for_updates_async(function(info)
+                if not info then
+                    return
+                end
+                local msg = {cn = info.cn or info.en, en = info.en or info.cn}
+                if UI.updateStatus then
+                    UI.updateStatus(msg)
+                end
+                show_update_dialog(localizedText(msg))
+            end)
         end
         UI.run_update_check_on_start = run_update_check_on_start
 
@@ -4775,7 +4508,7 @@ function App:Run()
             end
 
             -- 5. 发起网络请求
-            -- 注意：对于超大文件，我们尽量让 httpPostJson 只要下载了东西就返回 true
+            -- 注意：对于超大文件，我们尽量让 httpPostJsonAsync 只要下载了东西就返回 true
             local started = Utils.httpPostJsonAsync(request.url, request.payload, request.headers, 600, function(success, responseBody, statusCode, debugPaths)
                 if UI.isClosing then
                     Utils.cleanupDebugPaths(debugPaths)
