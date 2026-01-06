@@ -1,6 +1,6 @@
 # ================= 用户配置 =================
 SCRIPT_NAME = "DaVinci TTS"
-SCRIPT_VERSION = " 3.8"
+SCRIPT_VERSION = " 3.9"
 SCRIPT_AUTHOR = "HEIBA"
 print(f"{SCRIPT_NAME} | {SCRIPT_VERSION.strip()} | {SCRIPT_AUTHOR}")
 SCREEN_WIDTH = 1920
@@ -2452,9 +2452,33 @@ STYLE_LABELS = load_json_file(style_labels_file, {})
 AZURE_FULL_VOICE_LIST = load_json_file(azure_voice_list_file, [])
 
 OPENAI_VOICES = openai_voice_data.get("voices", [])
-MINIMAX_VOICES = minimax_voice_data.get("minimax_system_voice", [])
+# 加载 EN 和 CN 两套语音和克隆语音
 MINIMAX_VOICES_EN = minimax_voice_data.get("minimax_system_voice_en", [])
-MINIMAX_CLONE_VOICES = minimax_voice_data.get("minimax_clone_voices", [])
+MINIMAX_VOICES_CN = minimax_voice_data.get("minimax_system_voice_cn", [])
+MINIMAX_CLONE_VOICES_EN = minimax_voice_data.get("minimax_clone_voices_en", [])
+MINIMAX_CLONE_VOICES_CN = minimax_voice_data.get("minimax_clone_voices_cn", [])
+
+def is_intl_mode() -> bool:
+    """检查是否使用国际版（EN）API"""
+    return minimax_items["intlCheckBox"].Checked
+
+def get_current_minimax_voices() -> list:
+    """根据intlCheckBox状态返回当前使用的系统语音列表"""
+    return MINIMAX_VOICES_EN if is_intl_mode() else MINIMAX_VOICES_CN
+
+def get_current_minimax_clone_voices() -> list:
+    """根据intlCheckBox状态返回当前使用的克隆语音列表"""
+    return MINIMAX_CLONE_VOICES_EN if is_intl_mode() else MINIMAX_CLONE_VOICES_CN
+
+def get_current_minimax_languages() -> list:
+    """根据intlCheckBox状态返回当前使用的语言列表"""
+    voices = get_current_minimax_voices()
+    clones = get_current_minimax_clone_voices()
+    return extract_minimax_languages(voices, clones)
+
+# 初始化时使用CN版本（默认）
+MINIMAX_VOICES = MINIMAX_VOICES_CN
+MINIMAX_CLONE_VOICES = MINIMAX_CLONE_VOICES_CN
 MINIMAX_LANGUAGES = extract_minimax_languages(MINIMAX_VOICES, MINIMAX_CLONE_VOICES)
 
 AZURE_VOICE_SOURCE = build_azure_voice_source(AZURE_FULL_VOICE_LIST, LOCALE_LABELS, STYLE_LABELS)
@@ -2500,23 +2524,75 @@ for model in OPENAI_MODELS:
 
 for voice in OPENAI_VOICES:
     items["OpenAIVoiceCombo"].AddItem(voice)
-  
-if MINIMAX_CLONE_VOICES:
-    for voice in MINIMAX_CLONE_VOICES:
-        items["minimaxVoiceCombo"].AddItem(voice["voice_name"])
 
-for voice  in MINIMAX_VOICES:
-    items["minimaxVoiceCombo"].AddItem(voice["voice_name"])  
+def refresh_minimax_voice_combos():
+    """根据intlCheckBox状态刷新MiniMax语言和语音下拉框"""
+    global MINIMAX_VOICES, MINIMAX_CLONE_VOICES, MINIMAX_LANGUAGES
+    
+    # 获取当前使用的语音列表
+    MINIMAX_VOICES = get_current_minimax_voices()
+    MINIMAX_CLONE_VOICES = get_current_minimax_clone_voices()
+    MINIMAX_LANGUAGES = get_current_minimax_languages()
+    
+    # 保存当前选择
+    current_lang_text = items["minimaxLanguageCombo"].CurrentText
+    current_voice_text = items["minimaxVoiceCombo"].CurrentText
+    
+    # 刷新语言下拉框
+    items["minimaxLanguageCombo"].Clear()
+    for lang_item in MINIMAX_LANGUAGES:
+        items["minimaxLanguageCombo"].AddItem(lang_item)
+    
+    # 尝试恢复之前选择的语言（使用Python列表查找索引）
+    lang_restored = False
+    for idx, lang_item in enumerate(MINIMAX_LANGUAGES):
+        if lang_item == current_lang_text:
+            items["minimaxLanguageCombo"].CurrentIndex = idx
+            lang_restored = True
+            break
+    if not lang_restored and len(MINIMAX_LANGUAGES) > 0:
+        items["minimaxLanguageCombo"].CurrentIndex = 0
+    
+    # 刷新语音下拉框
+    selected_lang = items["minimaxLanguageCombo"].CurrentText
+    items["minimaxVoiceCombo"].Clear()
+    
+    # 构建当前语言的语音列表
+    current_voice_list = []
+    for voice in MINIMAX_CLONE_VOICES + MINIMAX_VOICES:
+        if voice.get("language") == selected_lang:
+            current_voice_list.append(voice["voice_name"])
+            items["minimaxVoiceCombo"].AddItem(voice["voice_name"])
+    
+    # 尝试恢复之前选择的语音（使用Python列表查找索引）
+    voice_restored = False
+    for idx, voice_name in enumerate(current_voice_list):
+        if voice_name == current_voice_text:
+            items["minimaxVoiceCombo"].CurrentIndex = idx
+            voice_restored = True
+            break
+    if not voice_restored and len(current_voice_list) > 0:
+        items["minimaxVoiceCombo"].CurrentIndex = 0
 
-for lang in MINIMAX_LANGUAGES:
-    items["minimaxLanguageCombo"].AddItem(lang)  
+def on_intl_checkbox_clicked(ev):
+    """intlCheckBox状态变化时刷新语音列表"""
+    refresh_minimax_voice_combos()
+    mode = "EN (国际版)" if is_intl_mode() else "CN (国内版)"
+    print(f"MiniMax API 切换到: {mode}")
+minimax_config_window.On.intlCheckBox.Clicked = on_intl_checkbox_clicked
+
+# 初始化时添加语言和语音
+for lang_item in MINIMAX_LANGUAGES:
+    items["minimaxLanguageCombo"].AddItem(lang_item)
 
 def update_voice_list(ev):
     global minimax_voice_index_initialized
     selected_lang = items["minimaxLanguageCombo"].CurrentText
     items["minimaxVoiceCombo"].Clear()  
     # 只添加与 selected_lang 匹配的条目
-    for voice in MINIMAX_CLONE_VOICES + MINIMAX_VOICES:
+    current_voices = get_current_minimax_voices()
+    current_clones = get_current_minimax_clone_voices()
+    for voice in current_clones + current_voices:
         if voice.get("language") == selected_lang:
             items["minimaxVoiceCombo"].AddItem(voice["voice_name"])
     # 只在第一次设置
@@ -2663,6 +2739,8 @@ if saved_settings:
     minimax_items["minimaxApiKey"].Text = saved_settings.get("minimax_API_KEY", DEFAULT_SETTINGS["minimax_API_KEY"])
     minimax_items["minimaxGroupID"].Text = saved_settings.get("minimax_GROUP_ID", DEFAULT_SETTINGS["minimax_GROUP_ID"])
     minimax_items["intlCheckBox"].Checked = saved_settings.get("minimax_intlCheckBox", DEFAULT_SETTINGS["minimax_intlCheckBox"])
+    # 根据intlCheckBox状态刷新语音列表
+    refresh_minimax_voice_combos()
     items["Path"].Text = saved_settings.get("Path", DEFAULT_SETTINGS["Path"])
     items["minimaxModelCombo"].CurrentIndex = saved_settings.get("minimax_Model", DEFAULT_SETTINGS["minimax_Model"])
     items["minimaxLanguageCombo"].CurrentIndex= saved_settings.get("minimax_Language", DEFAULT_SETTINGS["minimax_Language"])

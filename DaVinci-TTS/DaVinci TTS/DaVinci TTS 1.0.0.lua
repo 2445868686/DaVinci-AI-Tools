@@ -1447,9 +1447,19 @@ function Config.load()
         end
     end
 
-    appendVoices(minimaxVoicesData.minimax_clone_voices or {}, { isClone = true })
-    appendVoices(minimaxVoicesData.minimax_system_voice or {})
-    appendVoices(minimaxVoicesData.minimax_system_voice_en or {})
+    -- 根据 intl 设置选择加载 EN 或 CN 语音
+    local isIntl = settings.minimax_intlCheckBox or false
+    if isIntl then
+        -- 国际版：加载 EN 克隆语音和 EN 系统语音
+        appendVoices(minimaxVoicesData.minimax_clone_voices_en or {}, { isClone = true })
+        appendVoices(minimaxVoicesData.minimax_system_voice_en or {})
+    else
+        -- 国内版：加载 CN 克隆语音和 CN 系统语音
+        appendVoices(minimaxVoicesData.minimax_clone_voices_cn or {}, { isClone = true })
+        appendVoices(minimaxVoicesData.minimax_system_voice_cn or {})
+    end
+    -- 保存原始数据引用以便动态切换
+    minimax.rawVoicesData = minimaxVoicesData
 
     if #languageOrder == 0 then
         languageOrder = { "中文（普通话）" }
@@ -6119,6 +6129,90 @@ function App.UI.refreshMiniMaxVoices(options)
     end
 end
 
+-- 根据 intlCheckBox 切换 EN/CN 语音列表
+function App.UI.reloadMiniMaxVoicesForIntl(isIntl)
+    local cfg = App.Config.MiniMax
+    local rawData = cfg.rawVoicesData
+    if not rawData then
+        print("[DaVinci TTS] No raw voices data available for intl reload")
+        return
+    end
+
+    -- 清空现有语音数据
+    cfg.languages = {}
+    cfg.voices = {}
+    cfg.cloneMap = {}
+    cfg.cloneLangCounts = {}
+
+    local languageOrder = {}
+    local languageSeen = {}
+
+    local function buildLabelPair(cn, en)
+        local textCn = cn or en or ""
+        local textEn = en or cn or ""
+        return { cn = textCn, en = textEn }
+    end
+
+    local function ensureLanguageEntry(lang)
+        if not cfg.voices[lang] then
+            cfg.voices[lang] = {}
+        end
+        if not languageSeen[lang] then
+            table.insert(languageOrder, lang)
+            languageSeen[lang] = true
+        end
+        if cfg.cloneLangCounts[lang] == nil then
+            cfg.cloneLangCounts[lang] = 0
+        end
+        return cfg.voices[lang]
+    end
+
+    local function appendVoices(list, options)
+        options = options or {}
+        local isClone = options.isClone
+        for _, voice in ipairs(list or {}) do
+            local lang = voice.language or "Unknown"
+            local voiceList = ensureLanguageEntry(lang)
+            local entry = {
+                id = voice.voice_id,
+                labels = buildLabelPair(voice.voice_name or voice.voice_id, voice.voice_name or voice.voice_id),
+                isClone = isClone and true or nil,
+            }
+            if isClone then
+                local insertAt = (cfg.cloneLangCounts[lang] or 0) + 1
+                table.insert(voiceList, insertAt, entry)
+                cfg.cloneLangCounts[lang] = insertAt
+                if voice.voice_id then
+                    cfg.cloneMap[voice.voice_id] = lang
+                end
+            else
+                table.insert(voiceList, entry)
+            end
+        end
+    end
+
+    -- 根据 isIntl 加载对应的语音
+    if isIntl then
+        appendVoices(rawData.minimax_clone_voices_en or {}, { isClone = true })
+        appendVoices(rawData.minimax_system_voice_en or {})
+    else
+        appendVoices(rawData.minimax_clone_voices_cn or {}, { isClone = true })
+        appendVoices(rawData.minimax_system_voice_cn or {})
+    end
+
+    -- 更新语言列表
+    for _, lang in ipairs(languageOrder) do
+        table.insert(cfg.languages, { id = lang, labels = buildLabelPair(lang, lang) })
+    end
+
+    -- 刷新 combo boxes
+    App.UI.populateMiniMaxCombos()
+
+    local mode = isIntl and "EN (国际版)" or "CN (国内版)"
+    print(string.format("[DaVinci TTS] MiniMax API switched to: %s", mode))
+end
+
+
 function App.UI.populateOpenAICombos()
     local cfg = App.Config.OpenAI
     local selectedModel, modelIndex = App.UI.populateCombo(
@@ -7459,6 +7553,13 @@ end
 
 function minimaxConfigWin.On.MiniMaxConfigWin.Close(ev)
     minimaxConfigWin:Hide()
+end
+
+-- intlCheckBox 切换时刷新 MiniMax 语音列表
+function minimaxConfigWin.On.intlCheckBox.Clicked(ev)
+    local miniItems = App.UI.minimaxItems or {}
+    local isIntl = miniItems.intlCheckBox and miniItems.intlCheckBox.Checked or false
+    App.UI.reloadMiniMaxVoicesForIntl(isIntl)
 end
 
 function minimaxCloneWin.On.MiniMaxCloneConfirm.Clicked(ev)
