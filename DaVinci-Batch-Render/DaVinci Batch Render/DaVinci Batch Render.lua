@@ -3,7 +3,7 @@ math.randomseed(os.time())
 local json = require("dkjson")
 local SEP = package.config:sub(1, 1)
 local IS_WINDOWS = (SEP == "\\")
-local SCRIPT_KOFI_URL = "https://ko-fi.com/s/5e9dcdeae5"
+local SCRIPT_KOFI_URL = "https://ko-fi.com/heiba"
 local SCRIPT_TAOBAO_URL = "https://shop120058726.taobao.com/"
 local FREE_VERION = false
 local function join_path(base, rel)
@@ -37,12 +37,12 @@ do
     local Config = {}
 
     Config.SCRIPT_NAME    = "DaVinci Batch Render"
-    Config.SCRIPT_VERSION = "1.1.2"
+    Config.SCRIPT_VERSION = "1.1.3"
     Config.SCRIPT_AUTHOR  = "HEIBA"
     Config.SCRIPT_DIR     = SCRIPT_DIR
 
     Config.SCREEN_WIDTH, Config.SCREEN_HEIGHT = 1920, 1080
-    Config.WINDOW_WIDTH, Config.WINDOW_HEIGHT = 650, 500
+    Config.WINDOW_WIDTH, Config.WINDOW_HEIGHT = 650, 650
     Config.X_CENTER = math.floor((Config.SCREEN_WIDTH - Config.WINDOW_WIDTH) / 2)
     Config.Y_CENTER = math.floor((Config.SCREEN_HEIGHT - Config.WINDOW_HEIGHT) / 2)
     Config.LOADING_WINDOW_WIDTH, Config.LOADING_WINDOW_HEIGHT = 260, 140
@@ -312,6 +312,11 @@ do
                 tree_header_end = "End",
                 tree_header_name = "Name",
                 tree_header_status = "Status",
+                tree_header_timeline = "Timeline",
+
+                no_timelines_found = "No timelines found in project.",
+                timeline_switch_success = "Switched to timeline: %s",
+                timeline_disabled = "Timeline disabled",
                 language_checkbox = "简体中文",
                 lang_cn_label = "简体中文",
                 lang_en_label = "English",
@@ -384,6 +389,11 @@ do
                 tree_header_end = "结束",
                 tree_header_name = "名称",
                 tree_header_status = "状态",
+                tree_header_timeline = "时间线",
+
+                no_timelines_found = "项目中未找到时间线。",
+                timeline_switch_success = "已切换到时间线：%s",
+                timeline_disabled = "时间线已禁用",
                 language_checkbox = "简体中文",
                 lang_cn_label = "简体中文",
                 lang_en_label = "English",
@@ -1089,6 +1099,8 @@ do
         target_dir = "",
         base_name = "",
         language = App.Locale and App.Locale.current or "en",
+        all_timelines = {},
+        editing_timeline_index = nil,
         tree_rows = {},
         job_ids = {},
         job_rows = {},
@@ -1105,8 +1117,41 @@ do
         self.job_rows = {}
     end
 
-    function State:set_tree_rows(rows)
-        self.tree_rows = rows or {}
+    function State:set_tree_rows(rows, timeline_index)
+        if timeline_index ~= nil then
+            timeline_index = tonumber(timeline_index)
+        end
+        local normalized = {}
+        for _, row in ipairs(rows or {}) do
+            if row then
+                local rowTimelineIndex = tonumber(row.timeline_index) or timeline_index
+                if rowTimelineIndex then
+                    row.timeline_index = rowTimelineIndex
+                end
+                if row.timeline_index and not row.timeline_name then
+                    local entry = self:get_timeline_entry(row.timeline_index)
+                    if entry and entry.name then
+                        row.timeline_name = entry.name
+                    end
+                end
+                table.insert(normalized, row)
+            end
+        end
+        if timeline_index ~= nil then
+            local merged = {}
+            for _, row in ipairs(self.tree_rows or {}) do
+                local rowTimelineIndex = row and tonumber(row.timeline_index)
+                if row and rowTimelineIndex ~= timeline_index then
+                    table.insert(merged, row)
+                end
+            end
+            for _, row in ipairs(normalized) do
+                table.insert(merged, row)
+            end
+            self.tree_rows = merged
+        else
+            self.tree_rows = normalized
+        end
         self:reset_job_tracking()
         for _, row in ipairs(self.tree_rows) do
             if row then
@@ -1116,7 +1161,15 @@ do
                 row.lastLoggedStatus = nil
             end
         end
-        self:apply_base_name_to_rows()
+        if timeline_index ~= nil then
+            self:apply_base_name_to_rows(timeline_index)
+        else
+            for _, entry in ipairs(self.all_timelines or {}) do
+                if entry and entry.index then
+                    self:apply_base_name_to_rows(entry.index)
+                end
+            end
+        end
     end
 
     function State:get_tree_rows()
@@ -1137,6 +1190,232 @@ do
             end
         end
         return nil
+    end
+
+    function State:get_timeline_entry(idx)
+        if not idx then
+            return nil
+        end
+        idx = tonumber(idx)
+        if not idx then
+            return nil
+        end
+        for _, entry in ipairs(self.all_timelines or {}) do
+            if entry and entry.index == idx then
+                return entry
+            end
+        end
+        return nil
+    end
+
+    function State:load_all_timelines()
+        local project = App.Core:getProject()
+        if not (project and project.GetTimelineCount and project.GetTimelineByIndex) then
+            self.all_timelines = {}
+            self.editing_timeline_index = nil
+            return self.all_timelines
+        end
+        local count = project:GetTimelineCount() or 0
+        local list = {}
+        local previous = self.all_timelines or {}
+        local baseById = {}
+        local baseByIndex = {}
+        for _, entry in ipairs(previous) do
+            if entry then
+                if entry.uniqueId then
+                    baseById[entry.uniqueId] = entry.base_name
+                end
+                if entry.index then
+                    baseByIndex[entry.index] = entry.base_name
+                end
+            end
+        end
+        local currentTimeline = project:GetCurrentTimeline()
+        local currentId = nil
+        if currentTimeline and currentTimeline.GetUniqueId then
+            local ok, value = pcall(function()
+                return currentTimeline:GetUniqueId()
+            end)
+            if ok then
+                currentId = value
+            end
+        end
+        local currentIndex = nil
+        for i = 1, count do
+            local timeline = project:GetTimelineByIndex(i)
+            if timeline then
+                local name = "Timeline " .. tostring(i)
+                if timeline.GetName then
+                    local ok, value = pcall(function()
+                        return timeline:GetName()
+                    end)
+                    if ok and value then
+                        name = value
+                    end
+                end
+                local uniqueId = nil
+                if timeline.GetUniqueId then
+                    local ok, value = pcall(function()
+                        return timeline:GetUniqueId()
+                    end)
+                    if ok then
+                        uniqueId = value
+                    end
+                end
+                local baseName = nil
+                if uniqueId and baseById[uniqueId] then
+                    baseName = baseById[uniqueId]
+                elseif baseByIndex[i] then
+                    baseName = baseByIndex[i]
+                end
+                baseName = App.Helpers:trim(baseName or "")
+                if baseName == "" then
+                    baseName = name
+                end
+                table.insert(list, {
+                    index = i,
+                    timeline = timeline,
+                    name = name,
+                    uniqueId = uniqueId,
+                    enabled = false,
+                    base_name = baseName,
+                })
+                if currentId and uniqueId and uniqueId == currentId then
+                    currentIndex = i
+                elseif not currentId and currentTimeline and timeline == currentTimeline then
+                    currentIndex = i
+                end
+            end
+        end
+        self.all_timelines = list
+        if not currentIndex and self.editing_timeline_index then
+            for _, entry in ipairs(list) do
+                if entry and entry.index == self.editing_timeline_index then
+                    currentIndex = entry.index
+                    break
+                end
+            end
+        end
+        if not currentIndex and #list > 0 then
+            currentIndex = list[1].index
+        end
+        self.editing_timeline_index = currentIndex
+        for _, entry in ipairs(list) do
+            entry.enabled = (currentIndex ~= nil and entry.index == currentIndex)
+        end
+        return list
+    end
+
+    function State:get_timeline_by_index(idx)
+        if not idx then
+            return nil
+        end
+        idx = tonumber(idx)
+        if not idx then
+            return nil
+        end
+        local entry = self:get_timeline_entry(idx)
+        if entry and entry.timeline then
+            return entry.timeline
+        end
+        local project = App.Core:getProject()
+        if project and project.GetTimelineByIndex then
+            local ok, timeline = pcall(function()
+                return project:GetTimelineByIndex(idx)
+            end)
+            if ok then
+                if entry then
+                    entry.timeline = timeline
+                end
+                return timeline
+            end
+        end
+        return nil
+    end
+
+    function State:set_editing_timeline(idx, silent)
+        idx = tonumber(idx)
+        if not idx then
+            return false
+        end
+        if not self.all_timelines or #self.all_timelines == 0 then
+            self:load_all_timelines()
+        end
+        local entry = self:get_timeline_entry(idx)
+        local timeline = (entry and entry.timeline) or self:get_timeline_by_index(idx)
+        if not timeline then
+            if App.Logger and App.Logger.append_localized then
+                App.Logger:append_localized("log_active_timeline_missing")
+            end
+            return false
+        end
+        local project = App.Core:getProject()
+        if project and project.SetCurrentTimeline then
+            local current = App.Core:getTimeline()
+            local same = false
+            if current and timeline then
+                if current == timeline then
+                    same = true
+                else
+                    local okCurrent, currentId = pcall(function()
+                        return current:GetUniqueId()
+                    end)
+                    local okTarget, targetId = pcall(function()
+                        return timeline:GetUniqueId()
+                    end)
+                    if okCurrent and okTarget and currentId and targetId and currentId == targetId then
+                        same = true
+                    end
+                end
+            end
+            if not same then
+                local ok, result = pcall(function()
+                    return project:SetCurrentTimeline(timeline)
+                end)
+                if ok and result == false then
+                    return false
+                end
+            end
+        end
+        self.editing_timeline_index = idx
+        for _, item in ipairs(self.all_timelines or {}) do
+            item.enabled = (item.index == idx)
+        end
+        self.base_name = self:get_base_name_for_timeline(idx, entry and entry.name)
+        if timeline and App.Helpers then
+            local fpsFraction = App.Helpers:get_timeline_fps_fraction(timeline)
+            self:set_timeline_fps(fpsFraction)
+            local startFrame = 0
+            if timeline.GetStartFrame then
+                local ok, value = pcall(function()
+                    return timeline:GetStartFrame()
+                end)
+                if ok then
+                    startFrame = tonumber(value) or 0
+                end
+            end
+            self:set_timeline_start_frame(startFrame)
+            if entry then
+                entry.fps_fraction = { num = fpsFraction.num, den = fpsFraction.den }
+                entry.start_frame = startFrame
+            end
+        end
+        if App.Core then
+            App.Core.timeline = timeline
+        end
+        if not silent and App.Logger and App.Logger.append_localized then
+            local name = entry and entry.name
+            if not name and timeline and timeline.GetName then
+                local ok, value = pcall(function()
+                    return timeline:GetName()
+                end)
+                if ok then
+                    name = value
+                end
+            end
+            App.Logger:append_localized("timeline_switch_success", name or tostring(idx))
+        end
+        return true
     end
 
     function State:set_job_ids(jobIds)
@@ -1179,25 +1458,58 @@ do
         self.target_dir = App.Helpers:trim(path or "")
     end
 
-    function State:apply_base_name_to_rows()
-        local prefix = App.Helpers:trim(self.base_name or "")
+    function State:get_base_name_for_timeline(timeline_index, fallback)
+        local entry = self:get_timeline_entry(timeline_index)
+        local prefix = entry and App.Helpers:trim(entry.base_name or "") or ""
+        if prefix == "" and entry then
+            prefix = App.Helpers:trim(entry.name or "")
+            if prefix ~= "" then
+                entry.base_name = prefix
+            end
+        end
         if prefix == "" then
+            prefix = App.Helpers:trim(fallback or "")
+        end
+        if prefix == "" then
+            prefix = App.Helpers:trim(self.base_name or "")
+        end
+        if prefix == "" then
+            prefix = "Batch"
+        end
+        return prefix
+    end
+
+    function State:apply_base_name_to_rows(timeline_index)
+        local idx = tonumber(timeline_index) or tonumber(self.editing_timeline_index)
+        if not idx then
             return
         end
+        local prefix = self:get_base_name_for_timeline(idx)
         for _, row in ipairs(self.tree_rows or {}) do
-            if row.index then
+            local rowIdx = row and tonumber(row.timeline_index)
+            if row and rowIdx == idx and row.index then
+                row.base_name = prefix
                 row.name = string.format("%s_%03d", prefix, row.index)
             end
         end
     end
 
-    function State:set_base_name(name)
+    function State:set_base_name(name, timeline_index)
         local sanitized = App.Helpers:strip_extension(App.Helpers:trim(name or ""))
         if sanitized == "" then
             sanitized = "Batch"
         end
+        local idx = tonumber(timeline_index) or self.editing_timeline_index
+        if idx then
+            local entry = self:get_timeline_entry(idx)
+            if entry then
+                entry.base_name = sanitized
+            end
+        end
         self.base_name = sanitized
-        self:apply_base_name_to_rows()
+        if idx then
+            self:apply_base_name_to_rows(idx)
+        end
     end
 
     function State:remember_marker(frame)
@@ -1675,11 +1987,23 @@ do
         return fallback
     end
 
-    function Timeline:build_segments()
+    function Timeline:build_segments(timeline_index)
+        if timeline_index ~= nil then
+            local ok = App.State:set_editing_timeline(timeline_index, true)
+            if not ok then
+                App.Logger:append_localized("log_active_timeline_missing")
+                return nil
+            end
+        else
+            timeline_index = App.State.editing_timeline_index
+        end
         local timeline = App.Core:getTimeline()
         if not timeline then
             App.Logger:append_localized("log_active_timeline_missing")
             return nil
+        end
+        if not timeline_index then
+            timeline_index = App.State.editing_timeline_index
         end
         local markerDict = timeline:GetMarkers() or {}
         local sorted = App.Helpers:sort_markers(markerDict)
@@ -1708,7 +2032,16 @@ do
         App.State:set_timeline_start_frame(timelineStartFrame)
         local trackCollections = collect_track_items(timeline)
         local timelineName = timeline:GetName() or "Timeline"
-        local basePrefix = App.Helpers:trim(App.State.base_name or "") ~= "" and App.State.base_name or timelineName
+        local timelineUniqueId = nil
+        if timeline.GetUniqueId then
+            local ok, value = pcall(function()
+                return timeline:GetUniqueId()
+            end)
+            if ok then
+                timelineUniqueId = value
+            end
+        end
+        local basePrefix = App.State:get_base_name_for_timeline(timeline_index, timelineName)
         local segments = {}
         local segmentIndex = 0
         for idx, marker in ipairs(targetMarkers) do
@@ -1755,6 +2088,12 @@ do
                         startTimecode = startTc,
                         endTimecode = endTc,
                         name = string.format("%s_%03d", basePrefix, segmentIndex),
+                        base_name = basePrefix,
+                        timeline_index = timeline_index,
+                        timeline_name = timelineName,
+                        timeline_unique_id = timelineUniqueId,
+                        timeline_start_frame = timelineStartFrame,
+                        timeline_fps_fraction = { num = fpsFraction.num, den = fpsFraction.den },
                         statusKey = "pending",
                         statusExtra = nil
                     }
@@ -1768,6 +2107,10 @@ do
         end
         App.Logger:append_localized("log_segments_generated", #segments)
         return segments
+    end
+
+    function Timeline:build_segments_for_timeline(timeline_index)
+        return self:build_segments(timeline_index)
     end
 
     function Timeline:cleanup_script_markers()
@@ -1821,7 +2164,7 @@ do
         return false
     end
 
-    function Timeline:jump_to_frame(frame)
+    function Timeline:jump_to_frame(frame, fpsFraction, startOffset)
         if not frame then
             return false
         end
@@ -1843,8 +2186,10 @@ do
                 resolve:OpenPage("edit")
             end
         end
-        local fpsFrac = App.State:get_timeline_fps_fraction()
-        local startOffset = App.State:get_timeline_start_frame() or 0
+        local fpsFrac = fpsFraction or App.State:get_timeline_fps_fraction()
+        if startOffset == nil then
+            startOffset = App.State:get_timeline_start_frame() or 0
+        end
         local displayFrame = (tonumber(frame) or 0) + startOffset
         local timecode = App.Helpers:frames_to_timecode_precise(displayFrame, fpsFrac)
         local ok = timeline.SetCurrentTimecode and timeline:SetCurrentTimecode(timecode)
@@ -1858,7 +2203,12 @@ do
         if not row then
             return false
         end
-        local jumped = self:jump_to_frame(row.startFrame)
+        if row.timeline_index then
+            App.State:set_editing_timeline(row.timeline_index, true)
+        end
+        local fpsFraction = row.timeline_fps_fraction
+        local startOffset = row.timeline_start_frame
+        local jumped = self:jump_to_frame(row.startFrame, fpsFraction, startOffset)
         if jumped then
             self:apply_mark_range(row)
         end
@@ -1927,22 +2277,35 @@ do
     end
 
 
-    local function to_display_frame(frame)
+    local function to_display_frame(frame, startOffset)
         local base = tonumber(frame) or 0
         local offset = 0
-        if App.State and App.State.get_timeline_start_frame then
+        if startOffset ~= nil then
+            offset = tonumber(startOffset) or 0
+        elseif App.State and App.State.get_timeline_start_frame then
             offset = App.State:get_timeline_start_frame() or 0
         end
         return math.floor(base + offset + 0.5)
     end
 
-    local function build_settings(row, targetDir, baseName)
-        local prefix = App.Helpers:trim(baseName or "")
-        if prefix == "" then prefix = "Render" end
+    local function build_settings(row, targetDir)
+        local prefix = App.Helpers:trim(row.base_name or "")
+        if prefix == "" and row and row.timeline_index then
+            local entry = App.State and App.State.get_timeline_entry and App.State:get_timeline_entry(row.timeline_index) or nil
+            prefix = entry and App.Helpers:trim(entry.base_name or "") or ""
+        end
+        if prefix == "" then
+            prefix = App.Helpers:trim(row.timeline_name or "")
+        end
+        if prefix == "" then
+            prefix = "Render"
+        end
+        row.base_name = prefix
         local customName = string.format("%s_%03d", prefix, row.index or 0)
         row.name = customName
-        local markIn = to_display_frame(row.startFrame)
-        local markOut = to_display_frame(math.max(row.startFrame, row.endFrame - 1))
+        local startOffset = row.timeline_start_frame
+        local markIn = to_display_frame(row.startFrame, startOffset)
+        local markOut = to_display_frame(math.max(row.startFrame, row.endFrame - 1), startOffset)
 
         -- 仅设置范围、目录、文件名；其余参数沿用 Deliver 页当前设置
         return {
@@ -1953,6 +2316,37 @@ do
             CustomName = customName,
             -- 不再设置 ExportVideo/ExportAudio/Format/Codec/Quality...
         } -- 这些键均为官方支持【:contentReference[oaicite:15]{index=15}】
+    end
+
+    local function group_rows_by_timeline(rows)
+        local grouped = {}
+        for _, row in ipairs(rows or {}) do
+            if row then
+                local idx = tonumber(row.timeline_index) or 0
+                grouped[idx] = grouped[idx] or {}
+                table.insert(grouped[idx], row)
+            end
+        end
+        local ordered = {}
+        local used = {}
+        for _, entry in ipairs(App.State.all_timelines or {}) do
+            local idx = entry and entry.index
+            if idx and grouped[idx] then
+                table.insert(ordered, { timeline_index = idx, rows = grouped[idx] })
+                used[idx] = true
+            end
+        end
+        local extra = {}
+        for idx, _ in pairs(grouped) do
+            if not used[idx] then
+                table.insert(extra, idx)
+            end
+        end
+        table.sort(extra, function(a, b) return a < b end)
+        for _, idx in ipairs(extra) do
+            table.insert(ordered, { timeline_index = (idx ~= 0 and idx or nil), rows = grouped[idx] })
+        end
+        return ordered
     end
 
 
@@ -2123,7 +2517,6 @@ do
         end
         local seq = self.sequence
         local targetDir = seq.targetDir
-        local baseName = seq.baseName
         local okEnv, envReason = ensure_render_env(project, targetDir)
         if not okEnv then
             local reasonText = localized_text(envReason or "log_start_render_failed")
@@ -2132,44 +2525,58 @@ do
         end
         App.State:reset_job_tracking()
         local createdJobIds = {}
-        for _, row in ipairs(seq.rows) do
-            row.jobId = nil
-            row.statusExtra = nil
-            local _, waitingChanged = update_row_status(row, "waiting", nil)
-            if waitingChanged then
-                log_row_status(row, "waiting")
+        local timelineGroups = group_rows_by_timeline(seq.rows)
+        for _, group in ipairs(timelineGroups) do
+            local timelineIndex = group.timeline_index
+            if timelineIndex then
+                local ok = App.State:set_editing_timeline(timelineIndex, true)
+                if not ok then
+                    App.Logger:append_localized("log_active_timeline_missing")
+                    delete_job_list(project, createdJobIds)
+                    App.State:set_job_ids({})
+                    App.State:reset_job_tracking()
+                    return nil
+                end
             end
+            for _, row in ipairs(group.rows or {}) do
+                row.jobId = nil
+                row.statusExtra = nil
+                local _, waitingChanged = update_row_status(row, "waiting", nil)
+                if waitingChanged then
+                    log_row_status(row, "waiting")
+                end
 
-            local settings = build_settings(row, targetDir, baseName)
-            local okSettings = project:SetRenderSettings(settings)
-            if not okSettings then
-                App.Logger:append_localized("log_render_settings_failed", row.name or row.index or "?")
-                update_row_status(row, "failed", nil)
-                log_row_status(row, "failed")
-                delete_job_list(project, createdJobIds)
-                App.State:set_job_ids({})
-                App.State:reset_job_tracking()
-                return nil
-            end
+                local settings = build_settings(row, targetDir)
+                local okSettings = project:SetRenderSettings(settings)
+                if not okSettings then
+                    App.Logger:append_localized("log_render_settings_failed", row.name or row.index or "?")
+                    update_row_status(row, "failed", nil)
+                    log_row_status(row, "failed")
+                    delete_job_list(project, createdJobIds)
+                    App.State:set_job_ids({})
+                    App.State:reset_job_tracking()
+                    return nil
+                end
 
-            local jobId = project:AddRenderJob()
-            if not jobId then
-                App.Logger:append_localized("log_add_job_failed", row.name or row.index or "?")
-                update_row_status(row, "failed", nil)
-                log_row_status(row, "failed")
-                delete_job_list(project, createdJobIds)
-                App.State:set_job_ids({})
-                App.State:reset_job_tracking()
-                return nil
-            end
+                local jobId = project:AddRenderJob()
+                if not jobId then
+                    App.Logger:append_localized("log_add_job_failed", row.name or row.index or "?")
+                    update_row_status(row, "failed", nil)
+                    log_row_status(row, "failed")
+                    delete_job_list(project, createdJobIds)
+                    App.State:set_job_ids({})
+                    App.State:reset_job_tracking()
+                    return nil
+                end
 
-            row.jobId = jobId
-            App.State:register_job_row(jobId, row)
-            table.insert(createdJobIds, jobId)
-            App.Logger:append_localized("log_job_added", row.name or jobId)
-            local _, queuedChanged = update_row_status(row, "queued", nil)
-            if queuedChanged then
-                log_row_status(row, "queued")
+                row.jobId = jobId
+                App.State:register_job_row(jobId, row)
+                table.insert(createdJobIds, jobId)
+                App.Logger:append_localized("log_job_added", row.name or jobId)
+                local _, queuedChanged = update_row_status(row, "queued", nil)
+                if queuedChanged then
+                    log_row_status(row, "queued")
+                end
             end
         end
         App.State:set_job_ids(createdJobIds)
@@ -2185,11 +2592,6 @@ do
         local targetDir = App.Helpers:trim(App.State.target_dir or "")
         if targetDir == "" then
             App.Logger:append_localized("log_target_dir_required")
-            return false
-        end
-        local baseName = App.Helpers:trim(App.State.base_name or "")
-        if baseName == "" then
-            App.Logger:append_localized("log_base_name_required")
             return false
         end
         if not rows or #rows == 0 then
@@ -2211,7 +2613,6 @@ do
         self.sequence = {
             rows = rows,
             targetDir = targetDir,
-            baseName = baseName,
             currentIndex = 0,
             active = false
         }
@@ -2363,6 +2764,7 @@ do
         statusTimer = nil,
         _timeoutHooked = false,
         _previousTimeoutHandler = nil,
+        tree_item_map = nil,
         statusLocaleKeys = {
             pending = "status_pending",
             queued = "status_queued",
@@ -2563,20 +2965,21 @@ do
                     ui.Label{ ID = "BaseNameLabel", Text = tr("base_name_label"), Alignment = { AlignHCenter = true, AlignVCenter = true }, },
                     ui.LineEdit{
                         ID = "BaseNameInput",
-                        Text = App.State.base_name or "Batch",
+                        Text = App.State:get_base_name_for_timeline(App.State.editing_timeline_index),
                         Events = { EditingFinished = true },
                         Weight = 1,
                     }
                 },
             },
+
             ui.HGroup{
                 Weight = 0.65,
                 ui.Tree{
                     ID = "RenderTree",
                     Weight = 1,
-                    ColumnCount = 5,
+                    ColumnCount = 6,
                     AlternatingRowColors = true,
-                    RootIsDecorated = false,
+                    RootIsDecorated = true,
                     HeaderHidden = false,
                 }
             },
@@ -2591,7 +2994,7 @@ do
                 ui.Button{ ID = "StartRenderBtn", Text = tr("start_render"),  },
             },
             ui.VGroup{
-                Weight = 0.35,
+                Weight = 0.15,
                 ui.TextEdit{ ID = "LogView", ReadOnly = true, },
             },
             ui.Label{
@@ -2732,7 +3135,7 @@ do
             self.items.TargetDirInput.Text = App.State.target_dir or ""
         end
         if self.items.BaseNameInput then
-            self.items.BaseNameInput.Text = App.State.base_name or ""
+            self.items.BaseNameInput.Text = App.State:get_base_name_for_timeline(App.State.editing_timeline_index)
         end
         if self.items.LangEnCheckBox then
             self.items.LangEnCheckBox.Checked = (App.State.language ~= "zh")
@@ -2749,6 +3152,7 @@ do
         if items.IntervalLabel then items.IntervalLabel.Text = tr("interval_label") end
         if items.CountLabel then items.CountLabel.Text = tr("count_label") end
         if items.BaseNameLabel then items.BaseNameLabel.Text = tr("base_name_label") end
+
 
         if items.AddMarkBtn then items.AddMarkBtn.Text = tr("add_mark") end
         if items.GetQueueBtn then items.GetQueueBtn.Text = tr("get_queue") end
@@ -2783,6 +3187,7 @@ do
 
         if items.RenderTree and items.RenderTree.SetHeaderLabels then
             items.RenderTree:SetHeaderLabels({
+                tr("tree_header_timeline"),
                 tr("tree_header_index"),
                 tr("tree_header_start"),
                 tr("tree_header_end"),
@@ -2792,11 +3197,12 @@ do
         end
 
         if items.RenderTree and items.RenderTree.SetColumnWidth then
-            items.RenderTree:SetColumnWidth(0, 50)   -- 序号
-            items.RenderTree:SetColumnWidth(1, 100)  -- 开始时间
-            items.RenderTree:SetColumnWidth(2, 100)  -- 结束时间
-            items.RenderTree:SetColumnWidth(3, 250)  -- 名称
-            items.RenderTree:SetColumnWidth(4, 100)  -- 状态
+            items.RenderTree:SetColumnWidth(0, 120)  -- 时间线
+            items.RenderTree:SetColumnWidth(1, 50)   -- 序号
+            items.RenderTree:SetColumnWidth(2, 90)   -- 开始时间
+            items.RenderTree:SetColumnWidth(3, 90)   -- 结束时间
+            items.RenderTree:SetColumnWidth(4, 200)  -- 名称
+            items.RenderTree:SetColumnWidth(5, 90)   -- 状态
         end
         if self.win then
             local title = string.format("%s %s", tr("app_title"), App.Config.SCRIPT_VERSION)
@@ -2837,27 +3243,121 @@ do
         if not self.items or not self.items.RenderTree then return end
         local tree = self.items.RenderTree
         if tree.Clear then tree:Clear() end
-        for _, row in ipairs(App.State:get_tree_rows()) do
-            local item = tree.NewItem and tree:NewItem() or (App.Core.ui.TreeItem and App.Core.ui.TreeItem({})) or nil
+        self.tree_item_map = {}
+        local function map_item(item, data)
             if item then
-                item.Text[0] = tostring(row.index)
-                item.Text[1] = row.startTimecode or ""
-                item.Text[2] = row.endTimecode or ""
-                item.Text[3] = row.name or ""
-                item.Text[4] = self:get_row_status_text(row)
+                self.tree_item_map[tostring(item)] = data
+            end
+        end
+        local function new_item()
+            return tree.NewItem and tree:NewItem() or (App.Core.ui.TreeItem and App.Core.ui.TreeItem({})) or nil
+        end
+        local timelines = App.State.all_timelines or {}
+        if #timelines == 0 then
+            local item = new_item()
+            if item then
+                item.Text[0] = tr("no_timelines_found")
+                item.Disabled = true
                 if tree.AddTopLevelItem then
                     tree:AddTopLevelItem(item)
+                end
+            end
+            return
+        end
+        local rowsByTimeline = {}
+        for _, row in ipairs(App.State:get_tree_rows()) do
+            local idx = tonumber(row.timeline_index) or 0
+            rowsByTimeline[idx] = rowsByTimeline[idx] or {}
+            table.insert(rowsByTimeline[idx], row)
+        end
+        local used = {}
+        for _, entry in ipairs(timelines) do
+            local idx = entry.index
+            local name = entry.name or ("Timeline " .. tostring(idx))
+            local isActive = (App.State.editing_timeline_index == idx)
+            local parent = new_item()
+            if parent then
+                parent.Text[0] = name
+                parent.Text[5] = isActive and "" or tr("timeline_disabled")
+                if tree.AddTopLevelItem then
+                    tree:AddTopLevelItem(parent)
+                end
+                if isActive then
+                    parent.Selected = true
+                end
+                parent.Expanded = true
+                map_item(parent, { type = "timeline", timeline_index = idx })
+                local rows = rowsByTimeline[idx] or {}
+                for _, row in ipairs(rows) do
+                    local child = new_item()
+                    if child then
+                        child.Text[0] = ""
+                        child.Text[1] = tostring(row.index or "")
+                        child.Text[2] = row.startTimecode or ""
+                        child.Text[3] = row.endTimecode or ""
+                        child.Text[4] = row.name or ""
+                        child.Text[5] = self:get_row_status_text(row)
+                        if parent.AddChild then
+                            parent:AddChild(child)
+                        end
+                        map_item(child, { type = "segment", row = row })
+                    end
+                end
+            end
+            used[idx] = true
+        end
+        for idx, rows in pairs(rowsByTimeline) do
+            if not used[idx] then
+                local name = "Timeline " .. tostring(idx)
+                local parent = new_item()
+                if parent then
+                    parent.Text[0] = name
+                    parent.Text[5] = tr("timeline_disabled")
+                    if tree.AddTopLevelItem then
+                        tree:AddTopLevelItem(parent)
+                    end
+                    parent.Expanded = true
+                    map_item(parent, { type = "timeline", timeline_index = idx })
+                    for _, row in ipairs(rows) do
+                        local child = new_item()
+                        if child then
+                            child.Text[0] = ""
+                            child.Text[1] = tostring(row.index or "")
+                            child.Text[2] = row.startTimecode or ""
+                            child.Text[3] = row.endTimecode or ""
+                            child.Text[4] = row.name or ""
+                            child.Text[5] = self:get_row_status_text(row)
+                            if parent.AddChild then
+                                parent:AddChild(child)
+                            end
+                            map_item(child, { type = "segment", row = row })
+                        end
+                    end
                 end
             end
         end
     end
 
-    function UI:jump_to_row_index(index)
-        local row = App.State:get_row_by_index(index)
+    function UI:jump_to_row(row)
         if not row then
             return
         end
         App.Timeline:jump_to_row(row)
+    end
+
+    function UI:activate_timeline(index, silent)
+        if not index then
+            return
+        end
+        local ok = App.State:set_editing_timeline(index, silent)
+        if not ok then
+            if App.Logger and App.Logger.append_localized then
+                App.Logger:append_localized("timeline_disabled")
+            end
+            return
+        end
+        self:sync_inputs()
+        self:refresh_tree()
     end
 
     function UI:bind_events()
@@ -2940,10 +3440,17 @@ do
             end
         end
 
+
+
         win.On.GetQueueBtn.Clicked = function()
-            local segments = App.Timeline:build_segments()
+            local timelineIndex = App.State.editing_timeline_index
+            if not timelineIndex then
+                App.Logger:append_localized("no_timelines_found")
+                return
+            end
+            local segments = App.Timeline:build_segments_for_timeline(timelineIndex)
             if segments then
-                App.State:set_tree_rows(segments)
+                App.State:set_tree_rows(segments, timelineIndex)
                 UI:refresh_tree()
             end
         end
@@ -2968,9 +3475,14 @@ do
                 if not current then
                     return
                 end
-                local idx = tonumber(current.Text[0])
-                if idx then
-                    UI:jump_to_row_index(idx)
+                local data = UI.tree_item_map and UI.tree_item_map[tostring(current)]
+                if not data then
+                    return
+                end
+                if data.type == "timeline" then
+                    UI:activate_timeline(data.timeline_index)
+                elseif data.type == "segment" then
+                    UI:jump_to_row(data.row)
                 end
             end
         end
@@ -3067,6 +3579,16 @@ local function main()
     if not win then
         print("无法创建主窗口")
         return
+    end
+
+    if App.State and App.State.load_all_timelines then
+        App.State:load_all_timelines()
+        if App.State.editing_timeline_index then
+            App.State:set_editing_timeline(App.State.editing_timeline_index, true)
+        end
+        if App.UI and App.UI.sync_inputs then
+            App.UI:sync_inputs()
+        end
     end
 
     App.UI:refresh_tree()
