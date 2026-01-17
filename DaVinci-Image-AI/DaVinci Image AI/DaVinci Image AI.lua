@@ -10,7 +10,7 @@ do
     local Config = {}
 
     Config.SCRIPT_NAME    = "DaVinci Image AI"
-    Config.SCRIPT_VERSION = "1.0.5"
+    Config.SCRIPT_VERSION = "1.0.6"
     Config.SCRIPT_AUTHOR  = "HEIBA"
     print(string.format("%s | %s | %s", Config.SCRIPT_NAME, Config.SCRIPT_VERSION, Config.SCRIPT_AUTHOR))
 
@@ -1362,7 +1362,12 @@ do
         local headerLines = {}
         local hasContentType = false
         local hasAccept = false
-        local userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        local userAgent
+        if Utils.IS_WINDOWS then
+            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        else
+            userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        end
 
         if headers then
             for k, v in pairs(headers) do
@@ -1416,14 +1421,16 @@ do
         }
 
         local winFlags = string.format('--http1.1 --no-keepalive -sS -L -N -4 -A "%s"', userAgent)
+        -- 移除 limit-rate 限速，避免服务器因慢速下载超时断开
+        -- 增加 tcp-keepalive 参数保持连接活跃
         local macFlags = string.format(
         '--http1.1 -sS -L -g ' ..
-        '--connect-timeout 20 ' ..
-        '--keepalive-time 5 ' ..
+        '--connect-timeout 30 ' ..           -- 增加连接超时
+        '--keepalive-time 1 ' ..             -- 更频繁的 keepalive
         '--compressed ' ..
-        '--limit-rate 1048576 ' ..
         '-4 ' ..
         '--no-sessionid ' ..
+        '--tcp-nodelay ' ..                  -- 禁用 Nagle 算法，减少延迟
         '-A "%s"', userAgent
         )
 
@@ -1897,6 +1904,7 @@ do
         end
         local data = Utils.readFile(path) or ""
         local code = tonumber((data or ""):match("(%d%d%d)"))
+        if code == 0 then code = nil end   -- 关键：把 000 当作"没拿到状态码"
         return code, data
     end
 
@@ -1956,6 +1964,24 @@ do
                 statusData = statusData,
                 errText = errText,
                 debugPaths = task.debugPaths,
+            })
+            return true
+        end
+        -- 容错：curl 报错(例如 56)导致 -w 没写出 status，但 body 已经写出来了
+        -- 只要 body 文件>0 且大小稳定，就结束任务，把 body 交给上层做"截断检测/提取"
+        if (not statusReady) and errHas and stable and size > 0 and (elapsed or 0) >= 5 then
+            local body = ""
+            if bodyPath and Utils.fileExists(bodyPath) then
+                body = Utils.readFile(bodyPath) or ""
+            end
+            AsyncHttp.finish({
+                ok = (body ~= ""),
+                body = body,
+                statusCode = statusCode,     -- 很可能是 nil（因为 statusPath 没写出来）
+                statusData = statusData,
+                errText = errText,
+                debugPaths = task.debugPaths,
+                partial = true,              -- 可选：标记一下是容错路径
             })
             return true
         end
@@ -2663,68 +2689,51 @@ do
     end
     UI._aspect_ratio_data_by_id = aspect_ratio_data_by_id
 
-    local function get_provider_aspect_id(pid)
-        return (UI.config.google and UI.config.google.aspect_ratio) or Config.DEFAULT_CONFIG.google.aspect_ratio
+    -- Config getter/setter factory for provider configurations
+    -- configKey: "google" for edit tab, "google_gen" for generate tab
+    local function make_config_getter(configKey, propName)
+        local defaultConfig = Config.DEFAULT_CONFIG[configKey] or Config.DEFAULT_CONFIG.google
+        return function(pid)
+            if pid == "google" or pid == "google_pro" then
+                local cfg = UI.config[configKey]
+                return (cfg and cfg[propName]) or defaultConfig[propName]
+            end
+            return defaultConfig[propName]
+        end
     end
+
+    local function make_config_setter(configKey, propName)
+        return function(pid, value)
+            if pid == "google" or pid == "google_pro" then
+                UI.config[configKey] = UI.config[configKey] or {}
+                UI.config[configKey][propName] = value
+            end
+        end
+    end
+
+    -- Edit tab config accessors (using "google" config)
+    local get_provider_aspect_id = make_config_getter("google", "aspect_ratio")
+    local set_provider_aspect_id = make_config_setter("google", "aspect_ratio")
+    local get_provider_resolution_id = make_config_getter("google", "resolution")
+    local set_provider_resolution_id = make_config_setter("google", "resolution")
+
     UI.get_provider_aspect_id = get_provider_aspect_id
-
-    -- 生成页专用：使用独立的 google_gen 配置，避免与编辑页互相影响
-    local function get_generator_aspect_id(pid)
-        if pid == "google" or pid == "google_pro" then
-            return (UI.config.google_gen and UI.config.google_gen.aspect_ratio) or (Config.DEFAULT_CONFIG.google_gen or Config.DEFAULT_CONFIG.google).aspect_ratio
-        end
-        -- 生成页目前只支持 Google，其他返回默认
-        return (Config.DEFAULT_CONFIG.google_gen or Config.DEFAULT_CONFIG.google).aspect_ratio
-    end
-    UI.get_generator_aspect_id = get_generator_aspect_id
-
-    local function set_provider_aspect_id(pid, rid)
-        UI.config.google = UI.config.google or {}
-        UI.config.google.aspect_ratio = rid
-    end
     UI.set_provider_aspect_id = set_provider_aspect_id
-
-    local function set_generator_aspect_id(pid, rid)
-        if pid == "google" or pid == "google_pro" then
-            UI.config.google_gen = UI.config.google_gen or {}
-            UI.config.google_gen.aspect_ratio = rid
-        end
-    end
-    UI.set_generator_aspect_id = set_generator_aspect_id
-
-    local function get_provider_resolution_id(pid)
-        if pid == "google_pro" or pid == "google" then
-            return (UI.config.google and UI.config.google.resolution) or Config.DEFAULT_CONFIG.google.resolution
-        end
-        return Config.DEFAULT_CONFIG.google.resolution
-    end
     UI.get_provider_resolution_id = get_provider_resolution_id
-
-    local function get_generator_resolution_id(pid)
-        if pid == "google_pro" or pid == "google" then
-            return (UI.config.google_gen and UI.config.google_gen.resolution) or (Config.DEFAULT_CONFIG.google_gen or Config.DEFAULT_CONFIG.google).resolution
-        end
-        return (Config.DEFAULT_CONFIG.google_gen or Config.DEFAULT_CONFIG.google).resolution
-    end
-    UI.get_generator_resolution_id = get_generator_resolution_id
-
-    local function set_provider_resolution_id(pid, rid)
-        if pid == "google_pro" or pid == "google" then
-            UI.config.google = UI.config.google or {}
-            UI.config.google.resolution = rid
-        end
-    end
     UI.set_provider_resolution_id = set_provider_resolution_id
 
-    local function set_generator_resolution_id(pid, rid)
-        if pid == "google_pro" or pid == "google" then
-            UI.config.google_gen = UI.config.google_gen or {}
-            UI.config.google_gen.resolution = rid
-        end
-    end
+    -- Generate tab config accessors (using "google_gen" config)
+    local get_generator_aspect_id = make_config_getter("google_gen", "aspect_ratio")
+    local set_generator_aspect_id = make_config_setter("google_gen", "aspect_ratio")
+    local get_generator_resolution_id = make_config_getter("google_gen", "resolution")
+    local set_generator_resolution_id = make_config_setter("google_gen", "resolution")
+
+    UI.get_generator_aspect_id = get_generator_aspect_id
+    UI.set_generator_aspect_id = set_generator_aspect_id
+    UI.get_generator_resolution_id = get_generator_resolution_id
     UI.set_generator_resolution_id = set_generator_resolution_id
 
-    -- 安全函数：获取配置值
+    -- Safe function: get config value
     UI.getConfigValue = function(key)
         return UI.config and UI.config[key] or Config.DEFAULT_CONFIG[key]
     end
@@ -3391,6 +3400,10 @@ function App:Run()
     local set_provider_aspect_id = UI.set_provider_aspect_id
     local get_provider_resolution_id = UI.get_provider_resolution_id
     local set_provider_resolution_id = UI.set_provider_resolution_id
+    local get_generator_aspect_id = UI.get_generator_aspect_id
+    local set_generator_aspect_id = UI.set_generator_aspect_id
+    local get_generator_resolution_id = UI.get_generator_resolution_id
+    local set_generator_resolution_id = UI.set_generator_resolution_id
     local resolution_options_by_provider = UI.resolution_options_by_provider
     local resolution_index_by_id = UI.resolution_index_by_id
     local function resolve_google_model(pid, cfg)
@@ -3506,20 +3519,10 @@ function App:Run()
         UI.providerOptions = providerOptions
     end
 
-    local function gen_provider_index_by_id(pid)
-        for idx, opt in ipairs(UI.providerOptions) do
-            if opt.id == pid then
-                return idx
-            end
-        end
-        return 1
-    end
-
-    local function gen_provider_label_by_id(pid)
-        local idx = gen_provider_index_by_id(pid)
-        local opt = UI.providerOptions[idx]
-        return opt and opt.label or UI.providerOptions[1].label
-    end
+    -- Reuse the existing provider_index_by_id from UI module
+    local provider_index_by_id = UI._provider_index_by_id
+    local provider_label_by_id = UI._provider_label_by_id
+    local aspect_ratio_index_by_id = UI._aspect_ratio_index_by_id
 
     local TAB_INDEX_GENERATE = 0
     local TAB_INDEX_EDIT = 1
@@ -3543,149 +3546,93 @@ function App:Run()
         return UI.config.google or {}
     end
 
-    local function get_current_aspect_id(pid)
-        return (UI.get_provider_aspect_id or get_provider_aspect_id)(pid or (UI.config.provider_choice or "google"))
-    end
-
-    local function get_current_resolution_id(pid)
-        return (UI.get_provider_resolution_id or get_provider_resolution_id)(pid or (UI.config.provider_choice or "google"))
-    end
-
-    local function refresh_provider_combo()
-        if not items.ProviderCombo then
-            return
+    -- Generic combo refresh helper: populates a combo box with options and sets the current index
+    local function populate_combo(combo, optionsList, selectedIndex)
+        if not combo then return end
+        if combo.Clear then combo:Clear() end
+        for _, opt in ipairs(optionsList) do
+            if combo.AddItem then combo:AddItem(opt.label) end
         end
-        if items.ProviderCombo.Clear then
-            items.ProviderCombo:Clear()
-        end
-        for _, opt in ipairs(UI.providerOptions) do
-            if items.ProviderCombo.AddItem then
-                items.ProviderCombo:AddItem(opt.label)
-            end
-        end
-        local idx = (UI._provider_index_by_id or provider_index_by_id)(UI.config.provider_choice or "google")
-        if items.ProviderCombo.CurrentIndex ~= nil then
-            items.ProviderCombo.CurrentIndex = idx - 1
-        end
-    end
-    local function refresh_aspect_ratio_combo(providerId)
-        if not items.AspectRatioCombo then
-            return
-        end
-        if items.AspectRatioCombo.Clear then
-            items.AspectRatioCombo:Clear()
-        end
-        for _, opt in ipairs(UI.aspectRatioOptions) do
-            if items.AspectRatioCombo.AddItem then
-                items.AspectRatioCombo:AddItem(opt.label)
-            end
-        end
-        local pid = providerId or (UI.config.provider_choice or "google")
-        local currentId = get_current_aspect_id(pid) or UI.aspectRatioOptions[1].id
-        local idx = (UI._aspect_ratio_index_by_id or aspect_ratio_index_by_id)(currentId)
-        if items.AspectRatioCombo.CurrentIndex ~= nil then
-            items.AspectRatioCombo.CurrentIndex = idx - 1
+        if combo.CurrentIndex ~= nil then
+            combo.CurrentIndex = selectedIndex - 1
         end
     end
 
-    local function refresh_resolution_combo(providerId)
-        if not items.ResolutionCombo then
-            return
-        end
-        local pid = providerId or (UI.config.provider_choice or "google")
-        local opts = (UI.resolution_options_by_provider or resolution_options_by_provider)(pid)
-        if items.ResolutionCombo.Clear then
-            items.ResolutionCombo:Clear()
-        end
-        for _, opt in ipairs(opts) do
-            if items.ResolutionCombo.AddItem then
-                items.ResolutionCombo:AddItem(opt.label)
+    -- Provider combo refresh factory
+    local function make_provider_combo_refresher(comboId, configKey)
+        return function()
+            local combo = items[comboId]
+            if not combo then return end
+            local optsList = UI.providerOptions or {}
+            if #optsList == 0 then return end
+            local pid = UI.config[configKey] or "google"
+            local idx = provider_index_by_id(pid)
+            if idx > #optsList then
+                idx = 1
+                UI.config[configKey] = optsList[1].id
+                Utils.saveConfig(UI.config)
             end
-        end
-        local resId = get_current_resolution_id(pid)
-        local idx = (UI.resolution_index_by_id or resolution_index_by_id)(pid, resId)
-        if items.ResolutionCombo.CurrentIndex ~= nil then
-            items.ResolutionCombo.CurrentIndex = idx - 1
-        end
-        local enabled = is_google_provider(pid)
-        items.ResolutionCombo.Enabled = enabled
-        if items.ResolutionLabel then
-            items.ResolutionLabel.Enabled = enabled
+            populate_combo(combo, optsList, idx)
         end
     end
 
-    local function refresh_gen_provider_combo()
-        if not items.GenProviderCombo then
-            return
-        end
-        local optsList = UI.providerOptions or {}
-        if #optsList == 0 then
-            return
-        end
-        if items.GenProviderCombo.Clear then
-            items.GenProviderCombo:Clear()
-        end
-        for _, opt in ipairs(optsList) do
-            if items.GenProviderCombo.AddItem then
-                items.GenProviderCombo:AddItem(opt.label)
-            end
-        end
-        local idx = gen_provider_index_by_id(UI.config.generator_provider_choice or "google")
-        if idx > #optsList then
-            idx = 1
-            UI.config.generator_provider_choice = optsList[1].id
-            Utils.saveConfig(UI.config)
-        end
-        if items.GenProviderCombo.CurrentIndex ~= nil then
-            items.GenProviderCombo.CurrentIndex = idx - 1
+    -- Aspect ratio combo refresh factory
+    local function make_aspect_ratio_combo_refresher(comboId, configKey, aspectIdGetter)
+        return function(providerId)
+            local combo = items[comboId]
+            if not combo then return end
+            local pid = providerId or (UI.config[configKey] or "google")
+            local currentId = aspectIdGetter(pid) or UI.aspectRatioOptions[1].id
+            local idx = aspect_ratio_index_by_id(currentId)
+            populate_combo(combo, UI.aspectRatioOptions, idx)
         end
     end
 
-    local function refresh_gen_aspect_ratio_combo(providerId)
-        if not items.GenAspectRatioCombo then
-            return
-        end
-        if items.GenAspectRatioCombo.Clear then
-            items.GenAspectRatioCombo:Clear()
-        end
-        for _, opt in ipairs(UI.aspectRatioOptions) do
-            if items.GenAspectRatioCombo.AddItem then
-                items.GenAspectRatioCombo:AddItem(opt.label)
+    -- Resolution combo refresh factory
+    local function make_resolution_combo_refresher(comboId, labelId, configKey, resolutionIdGetter)
+        return function(providerId)
+            local combo = items[comboId]
+            if not combo then return end
+            local pid = providerId or (UI.config[configKey] or "google")
+            local opts = resolution_options_by_provider(pid)
+            local resId = resolutionIdGetter(pid)
+            local idx = resolution_index_by_id(pid, resId)
+            populate_combo(combo, opts, idx)
+            local enabled = is_google_provider(pid)
+            combo.Enabled = enabled
+            if items[labelId] then
+                items[labelId].Enabled = enabled
             end
-        end
-        local pid = providerId or (UI.config.generator_provider_choice or "google")
-        local currentId = (UI.get_generator_aspect_id or get_provider_aspect_id)(pid) or UI.aspectRatioOptions[1].id
-        local idx = (UI._aspect_ratio_index_by_id or aspect_ratio_index_by_id)(currentId)
-        if items.GenAspectRatioCombo.CurrentIndex ~= nil then
-            items.GenAspectRatioCombo.CurrentIndex = idx - 1
         end
     end
 
-    local function refresh_gen_resolution_combo(providerId)
-        if not items.GenResolutionCombo then
-            return
-        end
-        local pid = providerId or (UI.config.generator_provider_choice or "google")
-        local opts = (UI.resolution_options_by_provider or resolution_options_by_provider)(pid)
-        if items.GenResolutionCombo.Clear then
-            items.GenResolutionCombo:Clear()
-        end
-        for _, opt in ipairs(opts) do
-            if items.GenResolutionCombo.AddItem then
-                items.GenResolutionCombo:AddItem(opt.label)
-            end
-        end
-        local resId = (UI.get_generator_resolution_id or get_provider_resolution_id)(pid)
-        local idx = (UI.resolution_index_by_id or resolution_index_by_id)(pid, resId)
-        if items.GenResolutionCombo.CurrentIndex ~= nil then
-            items.GenResolutionCombo.CurrentIndex = idx - 1
-        end
-        local enabled = is_google_provider(pid)
-        items.GenResolutionCombo.Enabled = enabled
-        if items.GenResolutionLabel then
-            items.GenResolutionLabel.Enabled = enabled
-        end
-    end
+    -- Create refresh functions for Edit tab
+    local refresh_provider_combo = make_provider_combo_refresher("ProviderCombo", "provider_choice")
+    local refresh_aspect_ratio_combo = make_aspect_ratio_combo_refresher(
+        "AspectRatioCombo",
+        "provider_choice",
+        function(pid) return get_provider_aspect_id(pid) end
+    )
+    local refresh_resolution_combo = make_resolution_combo_refresher(
+        "ResolutionCombo",
+        "ResolutionLabel",
+        "provider_choice",
+        function(pid) return get_provider_resolution_id(pid) end
+    )
+
+    -- Create refresh functions for Generate tab
+    local refresh_gen_provider_combo = make_provider_combo_refresher("GenProviderCombo", "generator_provider_choice")
+    local refresh_gen_aspect_ratio_combo = make_aspect_ratio_combo_refresher(
+        "GenAspectRatioCombo",
+        "generator_provider_choice",
+        function(pid) return get_generator_aspect_id(pid) end
+    )
+    local refresh_gen_resolution_combo = make_resolution_combo_refresher(
+        "GenResolutionCombo",
+        "GenResolutionLabel",
+        "generator_provider_choice",
+        function(pid) return get_generator_resolution_id(pid) end
+    )
 
     refresh_provider_combo()
     refresh_aspect_ratio_combo(UI.config.provider_choice)
@@ -3988,9 +3935,9 @@ function App:Run()
             local opt = UI.aspectRatioOptions[idx + 1]
             if not opt then return end
             local providerChoice = UI.config.generator_provider_choice or "google"
-            local currentId = (UI.get_generator_aspect_id or get_provider_aspect_id)(providerChoice)
+            local currentId = get_generator_aspect_id(providerChoice)
             if currentId ~= opt.id then
-                (UI.set_generator_aspect_id or set_provider_aspect_id)(providerChoice, opt.id)
+                set_generator_aspect_id(providerChoice, opt.id)
                 Utils.saveConfig(UI.config)
             end
         end
@@ -4003,9 +3950,9 @@ function App:Run()
             local opts = resolution_options_by_provider(providerChoice)
             local opt = opts[idx + 1]
             if not opt then return end
-            local currentId = (UI.get_generator_resolution_id or get_provider_resolution_id)(providerChoice)
+            local currentId = get_generator_resolution_id(providerChoice)
             if currentId ~= opt.id then
-                (UI.set_generator_resolution_id or set_provider_resolution_id)(providerChoice, opt.id)
+                set_generator_resolution_id(providerChoice, opt.id)
                 Utils.saveConfig(UI.config)
             end
         end
@@ -4109,61 +4056,8 @@ function App:Run()
             end
 
             -----------------------------------------------------------
-            -- 2. 标准通道：Table 结构遍历 (保持原有的兼容性逻辑)
+            -- 2. 标准通道：Table 结构遍历 (使用上面定义的 extractImageSource)
             -----------------------------------------------------------
-            
-            -- 定义内部递归提取函数
-            local function extractImageSource(content)
-                local function accept_candidate(candidate)
-                    if type(candidate) ~= "string" then return nil end
-                    if candidate:find("^data:image/") then return candidate end
-                    if candidate:match("^https?://") then return candidate end
-                    return nil
-                end
-
-                if not content then return nil end
-
-                if type(content) == "string" then
-                    -- 尝试从文本中找 Data URL
-                    local data = Utils.findDataUrlInText(content)
-                    if data then return data end
-                    -- 尝试从文本中找 HTTP URL
-                    return Utils.findHttpImageInText(content)
-                elseif type(content) == "table" then
-                    -- 检查 inline_data (Google Gemini 原生格式)
-                    local inlineData = content.inline_data or content.inlineData
-                    if inlineData and type(inlineData.data) == "string" and inlineData.data ~= "" then
-                        local mime = inlineData.mime_type or inlineData.mimeType or content.mime_type or content.mimeType or "image/png"
-                        return string.format("data:%s;base64,%s", mime, inlineData.data)
-                    end
-                    
-                    -- 检查直接的 data 字段
-                    if content.data and type(content.data) == "string" and (content.mime_type or content.mimeType) then
-                        local mime = content.mime_type or content.mimeType or "image/png"
-                        return string.format("data:%s;base64,%s", mime, content.data)
-                    end
-
-                    -- 检查 image_url (OpenAI 格式)
-                    if content.image_url then
-                        local candidate = content.image_url.url or content.image_url
-                        local picked = accept_candidate(candidate)
-                        if picked then return picked end
-                    end
-                    
-                    -- 递归查找 parts 或 content 数组
-                    if content.parts then
-                        for _, part in ipairs(content.parts) do
-                            local nested = extractImageSource(part)
-                            if nested then return nested end
-                        end
-                    end
-                    if content.content then -- 某些情况下 content 也是数组或对象
-                         local nested = extractImageSource(content.content)
-                         if nested then return nested end
-                    end
-                end
-                return nil
-            end
 
             -- 如果 parsed 为空（可能因为 JSON 解析失败），则直接返回 nil
             if type(parsed) ~= "table" then
