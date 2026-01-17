@@ -8,6 +8,7 @@ local App = {
         HttpClient = {},
         Azure = {},
         DeepL = {},
+        Google = {},
         OpenAIFormat = {},
         GLM = {},
         Parallel = {},
@@ -24,7 +25,7 @@ local App = {
 
 local Config = App.Config
 Config.SCRIPT_NAME = "DaVinci Sub Tool"
-Config.SCRIPT_VERSION = "1.1.6"
+Config.SCRIPT_VERSION = "1.1.7"
 Config.SCRIPT_AUTHOR = "HEIBA"
 Config.SCRIPT_KOFI_URL = "https://ko-fi.com/heiba"
 Config.SCRIPT_TAOBAO_URL = "https://shop120058726.taobao.com/"
@@ -40,13 +41,14 @@ local Translate = App.Translate
 local UI = App.UI
 local Azure = Services.Azure
 local DeepL = Services.DeepL
+local Google = Services.Google
 local OpenAIService = Services.OpenAIFormat
 local GLMService = Services.GLM
 local ParallelServices = Services.Parallel
 local ChatProviders = Services.ChatProviders
 local httpClient = Services.HttpClient
 Config.SCREEN_WIDTH, Config.SCREEN_HEIGHT = 1920, 1080
-Config.WINDOW_WIDTH, Config.WINDOW_HEIGHT = 750, 600
+Config.WINDOW_WIDTH, Config.WINDOW_HEIGHT = 750, 650
 Config.X_CENTER = math.floor((Config.SCREEN_WIDTH - Config.WINDOW_WIDTH) / 2)
 Config.Y_CENTER = math.floor((Config.SCREEN_HEIGHT - Config.WINDOW_HEIGHT) / 2)
 Config.LOADING_WINDOW_WIDTH, Config.LOADING_WINDOW_HEIGHT = 220, 120
@@ -88,12 +90,14 @@ local translatePollingTimer = nil
 local TRANSLATE_POLL_INTERVAL = 200
 
 local TRANSLATE_PROVIDER_AZURE_LABEL = "Microsoft"
+local TRANSLATE_PROVIDER_GOOGLE_LABEL = "Google"
 local TRANSLATE_PROVIDER_DEEPL_LABEL = "DeepL                  ( API Key )"
 local TRANSLATE_PROVIDER_SILICONFLOW_LABEL = "SiliconFlow         ( Free AI  )"
 local TRANSLATE_PROVIDER_GL_LABEL = "GLM-4-Flash       ( Free AI  )"
 local TRANSLATE_PROVIDER_OPENAI_LABEL = "OpenAI Format  ( API Key )"
 local TRANSLATE_PROVIDER_SPECS = {
     { label = TRANSLATE_PROVIDER_AZURE_LABEL, kind = "azure", langKey = "azure", smartMergeMode = "ratio" },
+    { label = TRANSLATE_PROVIDER_GOOGLE_LABEL, kind = "google", langKey = "google", smartMergeMode = "ratio" },
     { label = TRANSLATE_PROVIDER_SILICONFLOW_LABEL, kind = "chat", langKey = "google", smartMergeMode = "llm" },
     { label = TRANSLATE_PROVIDER_GL_LABEL, kind = "chat", langKey = "google", smartMergeMode = "llm" },
     { label = TRANSLATE_PROVIDER_OPENAI_LABEL, kind = "openai", langKey = "google", smartMergeMode = "llm" },
@@ -131,6 +135,9 @@ local DEEPL_FREE_API_URL = "https://api-free.deepl.com/v2/translate"
 local DEEPL_PRO_API_URL = "https://api.deepl.com/v2/translate"
 local DEEPL_TIMEOUT = TRANSLATE_TIMEOUT
 local DEEPL_REGISTER_URL = "https://www.deepl.com/pro-api"
+local GOOGLE_TRANSLATE_API_URL = "https://translation.googleapis.com/language/translate/v2"
+local GOOGLE_TIMEOUT = TRANSLATE_TIMEOUT
+local GOOGLE_REGISTER_URL = "https://cloud.google.com/translate"
 local GLM_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 local GLM_MODEL = "GLM-4-Flash"
 local GLM_MAX_RETRY = 1
@@ -139,6 +146,7 @@ local SILICONFLOUW_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
 local SILICONFLOUW_MODEL = "THUDM/GLM-4-9B-0414"
 local SILICONFLOUW_SUPABASE_PROVIDER = "SILICONFLOUW"
 local AZURE_SUPABASE_PROVIDER = "AZURE"
+local GOOGLE_SUPABASE_PROVIDER = "GOOGLE"
 local GLM_SUPABASE_PROVIDER = "BIGMODEL"
 local OPENAI_FORMAT_DEFAULT_BASE_URL = "https://api.openai.com"
 local OPENAI_FORMAT_DEFAULT_TEMPERATURE = 0.3
@@ -275,6 +283,9 @@ state.azure = {
     region = AZURE_DEFAULT_REGION,
     baseUrl = AZURE_DEFAULT_BASE_URL,
 }
+state.google = {
+    apiKey = "",
+}
 state.deepl = {
     apiKey = "",
 }
@@ -331,6 +342,13 @@ local uiText = {
         azure_api_key_label = "密钥",
         azure_confirm_button = "确定",
         azure_register_button = "注册",
+        google_config_label = "Google API",
+        google_config_button = "配置",
+        google_config_window_title = "Google API",
+        google_config_header = "填写 Google API 信息",
+        google_api_key_label = "密钥",
+        google_confirm_button = "确定",
+        google_register_button = "注册",
         deepl_config_label = "DeepL API",
         deepl_config_button = "配置",
         deepl_config_window_title = "DeepL API",
@@ -405,6 +423,13 @@ local uiText = {
         azure_api_key_label = "Key",
         azure_confirm_button = "OK",
         azure_register_button = "Register",
+        google_config_label = "Google API",
+        google_config_button = "Config",
+        google_config_window_title = "Google API",
+        google_config_header = "Google API",
+        google_api_key_label = "Key",
+        google_confirm_button = "OK",
+        google_register_button = "Register",
         deepl_config_label = "DeepL API",
         deepl_config_button = "Config",
         deepl_config_window_title = "DeepL API",
@@ -1824,6 +1849,21 @@ function Utils.createImageFromBase64(base64Data, destinationPath)
     return true
 end
 
+-- ==============================================================
+-- Utils.safeJsonDecode: Safe JSON decoding with error handling
+-- Returns decoded table or nil, and error message if failed
+-- ==============================================================
+function Utils.safeJsonDecode(content)
+    if not content or content == "" then
+        return nil, "empty_content"
+    end
+    local ok, decoded = pcall(json.decode, content)
+    if not ok or type(decoded) ~= "table" then
+        return nil, "decode_failed"
+    end
+    return decoded, nil
+end
+
 -- ========= Fraction & FPS helpers =========
 Subtitle.Fraction = {}
 
@@ -2458,6 +2498,7 @@ Storage.settingsKeyOrder = {
     "TranslateSmartMergeCheck",
     "AzureRegion",
     "AzureApiKey",
+    "GoogleApiKey",
     "DeepLApiKey",
     "OpenAIFormatModelCombo",
     "OpenAIFormatBaseURL",
@@ -2528,22 +2569,14 @@ end
 
 function Storage.loadSettings(path)
     local content = Utils.readFile(path)
-    if not content then
-        return nil
-    end
     if not content or content == "" then
         return nil
     end
-    
-    -- 使用 pcall 安全地调用 JSON 解码函数
-    local ok, settings_table = pcall(json.decode, content)
-    
-    -- 如果解码失败或返回的不是一个表，则认为配置无效
-    if not ok or type(settings_table) ~= "table" then
+    local settings_table, err = Utils.safeJsonDecode(content)
+    if not settings_table then
         print("JSON settings decode failed. Using default.")
         return nil
     end
-
     return settings_table
 end
 
@@ -2555,8 +2588,8 @@ function Storage.loadLangCodeMaps(path)
     if not content or content == "" then
         error(string.format("Language code map file is empty: %s", tostring(path)))
     end
-    local ok, data = pcall(json.decode, content)
-    if not ok or type(data) ~= "table" then
+    local data, err = Utils.safeJsonDecode(content)
+    if not data then
         error(string.format("Language code map decode failed: %s", tostring(path)))
     end
 
@@ -2819,6 +2852,11 @@ if storedSettings then
         state.azure.region = Utils.trim(azureRegion)
     end
 
+    local googleKey = storedSettings.GoogleApiKey
+    if type(googleKey) == "string" and Utils.trim(googleKey) ~= "" then
+        state.google.apiKey = Utils.trim(googleKey)
+    end
+
     local deeplKey = storedSettings.DeepLApiKey
     if type(deeplKey) == "string" and Utils.trim(deeplKey) ~= "" then
         state.deepl.apiKey = Utils.trim(deeplKey)
@@ -3052,6 +3090,7 @@ local win = disp:AddWindow(
         ui:VGap(20),
 
         ui:HGroup{ Weight = 0, ui:Label{ ID = "AzureConfigLabel",    Text = UI.uiString("azure_config_label"),    Alignment = { AlignVCenter = true }, Weight = 1 }, ui:Button{ ID = "AzureConfigButton",    Text = UI.uiString("azure_config_button"),    Weight = 0 } },
+        ui:HGroup{ Weight = 0, ui:Label{ ID = "GoogleConfigLabel",   Text = UI.uiString("google_config_label"),   Alignment = { AlignVCenter = true }, Weight = 1 }, ui:Button{ ID = "GoogleConfigButton",   Text = UI.uiString("google_config_button"),   Weight = 0 } },
         ui:HGroup{ Weight = 0, ui:Label{ ID = "DeepLConfigLabel",    Text = UI.uiString("deepl_config_label"),    Alignment = { AlignVCenter = true }, Weight = 1 }, ui:Button{ ID = "DeepLConfigButton",    Text = UI.uiString("deepl_config_button"),    Weight = 0 } },
         ui:HGroup{ Weight = 0, ui:Label{ ID = "OpenAIFormatConfigLabel", Text = UI.uiString("openai_config_label"), Alignment = { AlignVCenter = true }, Weight = 1 }, ui:Button{ ID = "OpenAIFormatConfigButton", Text = UI.uiString("openai_config_button"), Weight = 0 } },
 
@@ -3116,6 +3155,23 @@ local azureConfigWin = disp:AddWindow(
     ui:HGroup{ Weight = 0, ui:Label{ ID = "AzureApiKeyLabel", Text = UI.uiString("azure_api_key_label"), Alignment = { AlignVCenter = true }, Weight = 0.3 }, ui:LineEdit{ ID = "AzureApiKey", Text = state.azure.apiKey or "", EchoMode = "Password", Weight = 0.7 } },
 
     ui:HGroup{ Weight = 0, ui:Button{ ID = "AzureConfirm", Text = UI.uiString("azure_confirm_button"), Weight = 1 }, ui:Button{ ID = "AzureRegisterButton", Text = UI.uiString("azure_register_button"), Weight = 1 } },
+  }
+)
+
+local googleConfigWin = disp:AddWindow(
+  {
+    ID = "GoogleConfigWin",
+    WindowTitle = UI.uiString("google_config_window_title"),
+    Geometry = { Config.X_CENTER + 33, Config.Y_CENTER + 33, 300, 130 },
+    Hidden = true,
+    StyleSheet = "*{font-size:14px;}",
+  },
+  ui:VGroup{
+    ui:Label{ ID = "GoogleLabel", Text = UI.uiString("google_config_header"), Alignment = { AlignHCenter = true, AlignVCenter = true }, Weight = 0 },
+
+    ui:HGroup{ Weight = 0, ui:Label{ ID = "GoogleApiKeyLabel", Text = UI.uiString("google_api_key_label"), Alignment = { AlignVCenter = true }, Weight = 0.3 }, ui:LineEdit{ ID = "GoogleApiKey", Text = state.google.apiKey or "", EchoMode = "Password", Weight = 0.7 } },
+
+    ui:HGroup{ Weight = 0, ui:Button{ ID = "GoogleConfirm", Text = UI.uiString("google_confirm_button"), Weight = 1 }, ui:Button{ ID = "GoogleRegisterButton", Text = UI.uiString("google_register_button"), Weight = 1 } },
   }
 )
 
@@ -3209,6 +3265,7 @@ local messageWin = disp:AddWindow(
 
 local it = win:GetItems()
 local azureConfigItems = azureConfigWin:GetItems() or {}
+local googleConfigItems = googleConfigWin:GetItems() or {}
 local deeplConfigItems = deeplConfigWin:GetItems() or {}
 local openAIConfigItems = openAIConfigWin:GetItems() or {}
 local addModelItems = addModelWin:GetItems() or {}
@@ -3432,125 +3489,157 @@ end
 
 UI.updatePlayheadTimerState(true)
 
+-- ==============================================================
+-- ConfigWindow: Unified helper for provider config windows
+-- Reduces duplication across Azure, DeepL, and OpenAI config handling
+-- ==============================================================
+local ConfigWindow = {}
 
-function Azure.refreshConfigTexts()
-    if not azureConfigItems then
-        return
+function ConfigWindow.refreshTexts(configWin, configItems, windowTitleKey, textMap)
+    if not configItems then return end
+    if configWin and windowTitleKey then
+        configWin.WindowTitle = UI.uiString(windowTitleKey)
     end
-    if azureConfigWin then
-        azureConfigWin.WindowTitle = UI.uiString("azure_config_window_title")
-    end
-    local textMap = {
-        AzureLabel = "azure_config_header",
-        AzureRegionLabel = "azure_region_label",
-        AzureApiKeyLabel = "azure_api_key_label",
-        AzureConfirm = "azure_confirm_button",
-        AzureRegisterButton = "azure_register_button",
-    }
     for id, key in pairs(textMap) do
-        local widget = azureConfigItems[id]
+        local widget = configItems[id]
         if widget and widget.Text ~= nil then
             widget.Text = UI.uiString(key)
         end
     end
-    
+end
+
+function ConfigWindow.syncControls(configItems, fieldMap)
+    if not configItems then return end
+    for widgetId, getValue in pairs(fieldMap) do
+        local widget = configItems[widgetId]
+        if widget then
+            widget.Text = getValue() or ""
+        end
+    end
+end
+
+function ConfigWindow.applyFromControls(configItems, fieldMap)
+    if not configItems then return end
+    for widgetId, setValue in pairs(fieldMap) do
+        local widget = configItems[widgetId]
+        if widget then
+            setValue(Utils.trim(widget.Text or ""))
+        end
+    end
+end
+
+function ConfigWindow.open(configWin, refreshFn, syncFn)
+    if not configWin then return end
+    if refreshFn then refreshFn() end
+    if syncFn then syncFn() end
+    configWin:Show()
+end
+
+function ConfigWindow.close(configWin, applyFn)
+    if not configWin then return end
+    if applyFn then applyFn() end
+    configWin:Hide()
+end
+
+
+
+-- Azure config: text labels to localization keys
+local AZURE_TEXT_MAP = {
+    AzureLabel = "azure_config_header",
+    AzureRegionLabel = "azure_region_label",
+    AzureApiKeyLabel = "azure_api_key_label",
+    AzureConfirm = "azure_confirm_button",
+    AzureRegisterButton = "azure_register_button",
+}
+
+function Azure.refreshConfigTexts()
+    ConfigWindow.refreshTexts(azureConfigWin, azureConfigItems, "azure_config_window_title", AZURE_TEXT_MAP)
 end
 
 function Azure.syncConfigControls()
-    if not azureConfigItems then
-        return
-    end
-    if azureConfigItems.AzureRegion then
-        azureConfigItems.AzureRegion.Text = state.azure.region or ""
-    end
-    if azureConfigItems.AzureApiKey then
-        azureConfigItems.AzureApiKey.Text = state.azure.apiKey or ""
-    end
+    ConfigWindow.syncControls(azureConfigItems, {
+        AzureRegion = function() return state.azure.region end,
+        AzureApiKey = function() return state.azure.apiKey end,
+    })
 end
 
 function Azure.applyConfigFromControls()
-    if not azureConfigItems then
-        return
-    end
-    if azureConfigItems.AzureRegion then
-        state.azure.region = Utils.trim(azureConfigItems.AzureRegion.Text or "")
-    end
-    if azureConfigItems.AzureApiKey then
-        state.azure.apiKey = Utils.trim(azureConfigItems.AzureApiKey.Text or "")
-    end
+    ConfigWindow.applyFromControls(azureConfigItems, {
+        AzureRegion = function(v) state.azure.region = v end,
+        AzureApiKey = function(v) state.azure.apiKey = v end,
+    })
 end
 
 function Azure.openConfigWindow()
-    if not azureConfigWin then
-        return
-    end
-    Azure.refreshConfigTexts()
-    Azure.syncConfigControls()
-    azureConfigWin:Show()
+    ConfigWindow.open(azureConfigWin, Azure.refreshConfigTexts, Azure.syncConfigControls)
 end
 
 function Azure.closeConfigWindow()
-    if not azureConfigWin then
-        return
-    end
-    Azure.applyConfigFromControls()
-    azureConfigWin:Hide()
+    ConfigWindow.close(azureConfigWin, Azure.applyConfigFromControls)
 end
 
+-- Google config: text labels to localization keys
+local GOOGLE_TEXT_MAP = {
+    GoogleLabel = "google_config_header",
+    GoogleApiKeyLabel = "google_api_key_label",
+    GoogleConfirm = "google_confirm_button",
+    GoogleRegisterButton = "google_register_button",
+}
+
+function Google.refreshConfigTexts()
+    ConfigWindow.refreshTexts(googleConfigWin, googleConfigItems, "google_config_window_title", GOOGLE_TEXT_MAP)
+end
+
+function Google.syncConfigControls()
+    ConfigWindow.syncControls(googleConfigItems, {
+        GoogleApiKey = function() return state.google.apiKey end,
+    })
+end
+
+function Google.applyConfigFromControls()
+    ConfigWindow.applyFromControls(googleConfigItems, {
+        GoogleApiKey = function(v) state.google.apiKey = v end,
+    })
+end
+
+function Google.openConfigWindow()
+    ConfigWindow.open(googleConfigWin, Google.refreshConfigTexts, Google.syncConfigControls)
+end
+
+function Google.closeConfigWindow()
+    ConfigWindow.close(googleConfigWin, Google.applyConfigFromControls)
+end
+
+-- DeepL config: text labels to localization keys
+local DEEPL_TEXT_MAP = {
+    DeepLLabel = "deepl_config_header",
+    DeepLApiKeyLabel = "deepl_api_key_label",
+    DeepLConfirm = "deepl_confirm_button",
+    DeepLRegisterButton = "deepl_register_button",
+}
+
 function DeepL.refreshConfigTexts()
-    if not deeplConfigItems then
-        return
-    end
-    if deeplConfigWin then
-        deeplConfigWin.WindowTitle = UI.uiString("deepl_config_window_title")
-    end
-    local textMap = {
-        DeepLLabel = "deepl_config_header",
-        DeepLApiKeyLabel = "deepl_api_key_label",
-        DeepLConfirm = "deepl_confirm_button",
-        DeepLRegisterButton = "deepl_register_button",
-    }
-    for id, key in pairs(textMap) do
-        local widget = deeplConfigItems[id]
-        if widget and widget.Text ~= nil then
-            widget.Text = UI.uiString(key)
-        end
-    end
+    ConfigWindow.refreshTexts(deeplConfigWin, deeplConfigItems, "deepl_config_window_title", DEEPL_TEXT_MAP)
 end
 
 function DeepL.syncConfigControls()
-    if not deeplConfigItems then
-        return
-    end
-    if deeplConfigItems.DeepLApiKey then
-        deeplConfigItems.DeepLApiKey.Text = state.deepl.apiKey or ""
-    end
+    ConfigWindow.syncControls(deeplConfigItems, {
+        DeepLApiKey = function() return state.deepl.apiKey end,
+    })
 end
 
 function DeepL.applyConfigFromControls()
-    if not deeplConfigItems then
-        return
-    end
-    if deeplConfigItems.DeepLApiKey then
-        state.deepl.apiKey = Utils.trim(deeplConfigItems.DeepLApiKey.Text or "")
-    end
+    ConfigWindow.applyFromControls(deeplConfigItems, {
+        DeepLApiKey = function(v) state.deepl.apiKey = v end,
+    })
 end
 
 function DeepL.openConfigWindow()
-    if not deeplConfigWin then
-        return
-    end
-    DeepL.refreshConfigTexts()
-    DeepL.syncConfigControls()
-    deeplConfigWin:Show()
+    ConfigWindow.open(deeplConfigWin, DeepL.refreshConfigTexts, DeepL.syncConfigControls)
 end
 
 function DeepL.closeConfigWindow()
-    if not deeplConfigWin then
-        return
-    end
-    DeepL.applyConfigFromControls()
-    deeplConfigWin:Hide()
+    ConfigWindow.close(deeplConfigWin, DeepL.applyConfigFromControls)
 end
 
 
@@ -3823,8 +3912,8 @@ function OpenAIService.verifyModel(baseUrl, apiKey, model)
     end
 
     local code = tonumber(status)
-    local ok, decoded = pcall(json.decode, body)
-    if ok and type(decoded) == "table" then
+    local decoded = Utils.safeJsonDecode(body)
+    if decoded then
         if decoded.error and decoded.error.message then
             return false, decoded.error.message
         end
@@ -4507,15 +4596,39 @@ function Translate.initTab()
         return
     end
     translateTabInitialized = true
-    if it.TranslateProviderLabel then
-        it.TranslateProviderLabel.Text = UI.uiString("translate_provider_label")
+
+    -- Apply text labels for translate tab widgets
+    local textWidgets = {
+        TranslateProviderLabel = "translate_provider_label",
+        TranslateTargetLabel = "translate_target_label",
+        TranslateTransButton = "translate_trans_button",
+        TranslateSmartMergeCheck = "translate_smart_merge",
+        TranslateSelectedButton = "translate_selected_button",
+        TranslateRetryFailedButton = "translate_retry_failed_button",
+        TranslateUpdateSubtitleButton = "translate_update_button",
+    }
+    for widgetId, key in pairs(textWidgets) do
+        local widget = it[widgetId]
+        if widget and widget.Text ~= nil then
+            widget.Text = UI.uiString(key)
+        end
     end
-    if it.TranslateTargetLabel then
-        it.TranslateTargetLabel.Text = UI.uiString("translate_target_label")
+
+    -- Apply placeholder texts
+    local placeholderWidgets = {
+        TranslateProviderCombo = "translate_provider_placeholder",
+        TranslateSubtitleEditor = "translate_editor_placeholder",
+    }
+    for widgetId, key in pairs(placeholderWidgets) do
+        local widget = it[widgetId]
+        if widget then
+            widget.PlaceholderText = UI.uiString(key)
+        end
     end
+
+    -- Initialize provider combo
     if it.TranslateProviderCombo then
         it.TranslateProviderCombo:Clear()
-        it.TranslateProviderCombo.PlaceholderText = UI.uiString("translate_provider_placeholder")
         local selectedIndex = 0
         for idx, label in ipairs(TRANSLATE_PROVIDER_LIST) do
             it.TranslateProviderCombo:AddItem(label)
@@ -4526,32 +4639,18 @@ function Translate.initTab()
         it.TranslateProviderCombo.CurrentIndex = selectedIndex
         state.translate.provider = it.TranslateProviderCombo.CurrentText or TRANSLATE_PROVIDER_AZURE_LABEL
     end
+
     Translate.refreshTranslateTargetCombo(state.translate.provider, state.translate.targetLabel, state.translate.targetCode)
-    if it.TranslateTransButton then
-        it.TranslateTransButton.Text = UI.uiString("translate_trans_button")
-    end
+
+    -- Apply widget-specific state
     if it.TranslateSmartMergeCheck then
-        it.TranslateSmartMergeCheck.Text = UI.uiString("translate_smart_merge")
         it.TranslateSmartMergeCheck.Checked = state.translate.smartMerge and true or false
     end
     if it.TranslateSelectedButton then
-        it.TranslateSelectedButton.Text = UI.uiString("translate_selected_button")
         it.TranslateSelectedButton.Enabled = state.translate.selectedIndex ~= nil and not state.translate.busy
     end
-    if it.TranslateRetryFailedButton then
-        it.TranslateRetryFailedButton.Text = UI.uiString("translate_retry_failed_button")
-        Translate.updateRetryButtonState()
-    end
-    if it.TranslateSmartMergeCheck then
-        it.TranslateSmartMergeCheck.Text = UI.uiString("translate_smart_merge")
-        it.TranslateSmartMergeCheck.Checked = state.translate.smartMerge and true or false
-    end
-    if it.TranslateUpdateSubtitleButton then
-        it.TranslateUpdateSubtitleButton.Text = UI.uiString("translate_update_button")
-    end
-    if it.TranslateSubtitleEditor then
-        it.TranslateSubtitleEditor.PlaceholderText = UI.uiString("translate_editor_placeholder")
-    end
+
+    Translate.updateRetryButtonState()
     Translate.normalizeTranslateTree()
     Translate.setStatus("idle")
 end
@@ -4637,8 +4736,8 @@ function Translate.fetch_provider_secret(provider)
     if not body then
         return nil, status or "request_failed"
     end
-    local ok, decoded = pcall(json.decode, body)
-    if not ok or type(decoded) ~= "table" then
+    local decoded, err = Utils.safeJsonDecode(body)
+    if not decoded then
         return nil, "decode_failed"
     end
     local apiKey = decoded.api_key or decoded.apiKey or decoded.key
@@ -5085,8 +5184,8 @@ function ChatProviders.parseResponseBody(body)
         return nil, 0, "empty_response"
     end
 
-    local ok, decoded = pcall(json.decode, body)
-    if not ok or type(decoded) ~= "table" then
+    local decoded, err = Utils.safeJsonDecode(body)
+    if not decoded then
         return nil, 0, "decode_failed"
     end
 
@@ -5141,43 +5240,6 @@ function ChatProviders.resolveApiKey(config)
     return nil, "missing_key"
 end
 
-function ChatProviders.performRequest(config, sentence, prefixText, suffixText, targetLabel, apiKey)
-    local payload = ChatProviders.buildRequestPayload(config, sentence, prefixText, suffixText, targetLabel)
-    if not payload then
-        return nil, 0, "payload_build_failed"
-    end
-    local headers = ChatProviders.buildHeaderTable(config, apiKey)
-    local body, status = Services.httpPostJson(config.apiUrl, payload, headers, config.timeout or GLM_TIMEOUT)
-    if not body then
-        return nil, 0, status or "request_failed"
-    end
-    local parser = config.parseResponse or ChatProviders.parseResponseBody
-    return parser(body)
-end
-
-function ChatProviders.requestWithApiKey(configOrId, sentence, prefixText, suffixText, targetLabel, apiKey)
-    local config = ChatProviders.getConfig(configOrId)
-    if not config then
-        return nil, 0, "provider_not_supported"
-    end
-    if not apiKey or apiKey == "" then
-        return nil, 0, "missing_key"
-    end
-    return ChatProviders.performRequest(config, sentence, prefixText, suffixText, targetLabel, apiKey)
-end
-
-function ChatProviders.requestTranslation(configOrId, sentence, prefixText, suffixText, targetLabel)
-    local config = ChatProviders.getConfig(configOrId)
-    if not config then
-        return nil, 0, "provider_not_supported"
-    end
-    local apiKey, err = ChatProviders.resolveApiKey(config)
-    if not apiKey then
-        return nil, 0, err or "missing_key"
-    end
-    return ChatProviders.performRequest(config, sentence, prefixText, suffixText, targetLabel, apiKey)
-end
-
 function ChatProviders.buildSmartMergePayload(configOrId, sources, targetLabel)
     local config = ChatProviders.getConfig(configOrId)
     if not config then
@@ -5202,25 +5264,20 @@ function ChatProviders.buildSmartMergePayload(configOrId, sources, targetLabel)
     return json.encode(payload)
 end
 
-function ChatProviders.requestSmartMergeWithApiKey(configOrId, sources, targetLabel, apiKey, timeout)
-    local config = ChatProviders.getConfig(configOrId)
-    if not config then
-        return nil, 0, "provider_not_supported"
+-- Helper to create default onTaskResult handler for translation providers
+function Translate.makeTaskResultHandler(providerLabel)
+    return function(task, result)
+        Translate.applyEntryResult(task, result, providerLabel)
     end
-    if not apiKey or apiKey == "" then
-        return nil, 0, "missing_key"
+end
+
+-- Helper to normalize base URL (remove trailing slashes)
+function Utils.normalizeBaseUrl(url, defaultUrl)
+    local cleanUrl = Utils.trim(url or "")
+    if cleanUrl == "" then
+        cleanUrl = defaultUrl or ""
     end
-    local payload = ChatProviders.buildSmartMergePayload(config, sources, targetLabel)
-    if not payload then
-        return nil, 0, "payload_build_failed"
-    end
-    local headers = ChatProviders.buildHeaderTable(config, apiKey)
-    local body, status = Services.httpPostJson(config.apiUrl, payload, headers, timeout or config.timeout or GLM_TIMEOUT)
-    if not body then
-        return nil, 0, status or "request_failed"
-    end
-    local parser = config.parseResponse or ChatProviders.parseResponseBody
-    return parser(body)
+    return cleanUrl:gsub("/+$", "")
 end
 
 function Translate.buildIndexList(entries, indices)
@@ -5473,16 +5530,111 @@ local SILICONFLOUW_CHAT_PROVIDER = {
 ChatProviders.register(GLM_CHAT_PROVIDER)
 ChatProviders.register(SILICONFLOUW_CHAT_PROVIDER)
 
+function Google.resolveCredential()
+    local key = Utils.trim(state.google and state.google.apiKey or "")
+    if key ~= "" then
+        return key
+    end
+    local apiKey, err = Translate.fetch_provider_secret(GOOGLE_SUPABASE_PROVIDER)
+    if not apiKey then
+        return nil, err
+    end
+    return apiKey
+end
+
+function Google.buildApiUrl(apiKey)
+    local key = Utils.trim(apiKey or "")
+    if key == "" then
+        return nil
+    end
+    return GOOGLE_TRANSLATE_API_URL .. "?key=" .. Utils.urlEncode(key)
+end
+
+function Google.parseResponseBody(body)
+    local decoded, err = Utils.safeJsonDecode(body or "")
+    if not decoded then
+        return nil, 0, "decode_failed"
+    end
+    if type(decoded.error) == "table" then
+        local message = decoded.error.message or decoded.error.status or decoded.error.code
+        if message and tostring(message) ~= "" then
+            return nil, 0, tostring(message)
+        end
+        return nil, 0, "translation_failed"
+    end
+    local data = decoded.data
+    local translations = data and data.translations
+    if type(translations) ~= "table" or type(translations[1]) ~= "table" then
+        return nil, 0, "invalid_response"
+    end
+    local translated = translations[1].translatedText or translations[1].translated_text
+    if not translated or Utils.trim(translated) == "" then
+        return nil, 0, "empty_translation"
+    end
+    return translated, 0, nil
+end
+
+function Google.translateEntries(entries, targetLabel, options)
+    if not entries or #entries == 0 then
+        return nil, "no_entries"
+    end
+    local apiKey, fetchErr = Google.resolveCredential()
+    if not apiKey then
+        return nil, fetchErr or "missing_key"
+    end
+    local _, targetCode, targetErr = Translate.resolveTargetSelection(TRANSLATE_PROVIDER_GOOGLE_LABEL, targetLabel)
+    if not targetCode then
+        return nil, targetErr or "missing_target_lang"
+    end
+
+    options = options or {}
+    local apiUrl = Google.buildApiUrl(apiKey)
+    if not apiUrl then
+        return nil, "missing_key"
+    end
+    local headers = {
+        "Content-Type: application/json",
+        string.format("User-Agent: %s/%s", Config.SCRIPT_NAME, Config.SCRIPT_VERSION),
+    }
+
+    return Translate.runBatchRequests({
+        entries = entries,
+        indices = options.indices,
+        apiUrl = apiUrl,
+        timeout = GOOGLE_TIMEOUT,
+        headers = headers,
+        payloadPrefix = "google_payload",
+        outputPrefix = "google_output",
+        parseResponse = Google.parseResponseBody,
+        maxRetry = 0,
+        tokenBase = options.tokenBase,
+        onComplete = options.onComplete,
+        summaryEntries = options.summaryEntries or entries,
+        providerLabel = TRANSLATE_PROVIDER_GOOGLE_LABEL,
+        buildTask = function(idx)
+            local entry = entries[idx]
+            return {
+                index = idx,
+                rowIndex = entry and entry.index or idx,
+                entry = entry,
+                payload = json.encode({
+                    q = entry and entry.original or "",
+                    target = targetCode,
+                    format = "text",
+                }),
+                url = apiUrl,
+            }
+        end,
+        onTaskResult = Translate.makeTaskResultHandler(TRANSLATE_PROVIDER_GOOGLE_LABEL),
+    })
+end
+
 function GLMService.buildRequestPayload(sentence, prefixText, suffixText, targetLabel)
     return ChatProviders.buildRequestPayload(GLM_CHAT_PROVIDER, sentence, prefixText, suffixText, targetLabel)
 end
 
 function GLMService.parseResponseBody(body)
     return ChatProviders.parseResponseBody(body)
-end
-
-function GLMService.requestTranslation(sentence, prefixText, suffixText, targetLabel, apiKey)
-    return ChatProviders.requestWithApiKey(GLM_CHAT_PROVIDER, sentence, prefixText, suffixText, targetLabel, apiKey)
 end
 
 function GLMService.translateEntries(entries, targetLabel)
@@ -5498,8 +5650,8 @@ function DeepL.resolveApiUrl(apiKey)
 end
 
 function DeepL.parseResponseBody(body)
-    local ok, decoded = pcall(json.decode, body or "")
-    if not ok or type(decoded) ~= "table" then
+    local decoded, err = Utils.safeJsonDecode(body or "")
+    if not decoded then
         return nil, 0, "decode_failed"
     end
     local translations = decoded.translations
@@ -5514,38 +5666,6 @@ function DeepL.parseResponseBody(body)
         return nil, 0, "empty_translation"
     end
     return translated, 0, nil
-end
-
-function DeepL.requestTranslation(text, targetCode, apiKey, timeout)
-    local key = Utils.trim(apiKey or "")
-    if key == "" then
-        return nil, 0, "deepl_missing_key"
-    end
-    if not targetCode or targetCode == "" then
-        return nil, 0, "missing_target_lang"
-    end
-    local payload = json.encode({
-        text = { text or "" },
-        target_lang = targetCode,
-    })
-    local headers = {
-        Authorization = "DeepL-Auth-Key " .. key,
-        ["Content-Type"] = "application/json",
-        ["User-Agent"] = string.format("%s/%s", Config.SCRIPT_NAME, Config.SCRIPT_VERSION),
-    }
-    local apiUrl = DeepL.resolveApiUrl(key)
-    local body, status = Services.httpPostJson(apiUrl, payload, headers, timeout or DEEPL_TIMEOUT)
-    if not body then
-        return nil, 0, status or "request_failed"
-    end
-    local translation, _, err = DeepL.parseResponseBody(body)
-    if not translation then
-        local ok, decoded = pcall(json.decode, body)
-        if ok and type(decoded) == "table" and decoded.message then
-            return nil, 0, tostring(decoded.message)
-        end
-    end
-    return translation, 0, err
 end
 
 function DeepL.translateEntries(entries, targetLabel, options)
@@ -5596,9 +5716,7 @@ function DeepL.translateEntries(entries, targetLabel, options)
                 url = apiUrl,
             }
         end,
-        onTaskResult = function(task, result)
-            Translate.applyEntryResult(task, result, TRANSLATE_PROVIDER_DEEPL_LABEL)
-        end,
+        onTaskResult = Translate.makeTaskResultHandler(TRANSLATE_PROVIDER_DEEPL_LABEL),
     })
 end
 
@@ -5616,8 +5734,8 @@ function Azure.resolveCredential()
 end
 
 function Azure.parseResponseBody(body)
-    local ok, decoded = pcall(json.decode, body or "")
-    if not ok or type(decoded) ~= "table" then
+    local decoded, err = Utils.safeJsonDecode(body or "")
+    if not decoded then
         return nil, 0, "decode_failed"
     end
     local first = decoded[1]
@@ -5633,33 +5751,6 @@ function Azure.parseResponseBody(body)
         return nil, 0, "empty_translation"
     end
     return translated, 0, nil
-end
-
-function Azure.requestTranslation(text, targetCode, baseUrl, apiKey, region, timeout)
-    if not targetCode or targetCode == "" then
-        return nil, 0, "missing_target_lang"
-    end
-    local cleanBase = Utils.trim(baseUrl or "")
-    if cleanBase == "" then
-        cleanBase = AZURE_DEFAULT_BASE_URL
-    end
-    cleanBase = cleanBase:gsub("/+$", "")
-    local query = string.format("?api-version=3.0&to=%s", Utils.urlEncode(targetCode))
-    local url = cleanBase .. "/translate" .. query
-    local payload = json.encode({
-        { Text = text or "" },
-    })
-    local headers = {
-        ["Ocp-Apim-Subscription-Key"] = apiKey,
-        ["Ocp-Apim-Subscription-Region"] = region,
-        ["Content-Type"] = "application/json",
-        ["User-Agent"] = string.format("%s/%s", Config.SCRIPT_NAME, Config.SCRIPT_VERSION),
-    }
-    local body, status = Services.httpPostJson(url, payload, headers, timeout or AZURE_TIMEOUT)
-    if not body then
-        return nil, 0, status or "request_failed"
-    end
-    return Azure.parseResponseBody(body)
 end
 
 function OpenAIService.buildRequestPayload(sentence, prefixText, suffixText, targetLabel, model, temperature)
@@ -5691,93 +5782,6 @@ function OpenAIService.parseResponseBody(body)
     return GLMService.parseResponseBody(body)
 end
 
-function OpenAIService.requestTranslation(sentence, prefixText, suffixText, targetLabel, config)
-        local model = config and config.model
-        if not model or Utils.trim(model) == "" then
-            return nil, 0, "openai_missing_model"
-        end
-        local baseUrl = Utils.trim(config.baseUrl or "")
-        if baseUrl == "" then
-            baseUrl = OPENAI_FORMAT_DEFAULT_BASE_URL
-        end
-        local apiKey = Utils.trim(config.apiKey or "")
-        if apiKey == "" then
-            return nil, 0, "openai_missing_key"
-        end
-        local temperature = tonumber(config.temperature) or OPENAI_FORMAT_DEFAULT_TEMPERATURE
-        if temperature < 0 then
-            temperature = 0
-        elseif temperature > 1 then
-            temperature = 1
-        end
-
-        local payload = OpenAIService.buildRequestPayload(sentence, prefixText, suffixText, targetLabel, model, temperature)
-        local headers = {
-            Authorization = "Bearer " .. apiKey,
-            ["Content-Type"] = "application/json",
-            ["User-Agent"] = string.format("%s/%s", Config.SCRIPT_NAME, Config.SCRIPT_VERSION),
-        }
-        local apiUrl = baseUrl:gsub("/+$", "") .. "/v1/chat/completions"
-        local body, status = Services.httpPostJson(apiUrl, payload, headers, OPENAI_FORMAT_TIMEOUT)
-        if not body then
-            return nil, 0, status or "request_failed"
-        end
-    local translation, tokens, err = OpenAIService.parseResponseBody(body)
-        if not translation then
-            local ok, decoded = pcall(json.decode, body)
-            if ok and type(decoded) == "table" and decoded.error and decoded.error.message then
-                return nil, 0, decoded.error.message
-            end
-        end
-        return translation, tokens, err
-    end
-
-function OpenAIService.requestSmartMerge(sources, targetLabel, config, timeout)
-        local model = config and config.model
-        if not model or Utils.trim(model) == "" then
-            return nil, 0, "openai_missing_model"
-        end
-        local baseUrl = Utils.trim(config.baseUrl or "")
-        if baseUrl == "" then
-            baseUrl = OPENAI_FORMAT_DEFAULT_BASE_URL
-        end
-        local apiKey = Utils.trim(config.apiKey or "")
-        if apiKey == "" then
-            return nil, 0, "openai_missing_key"
-        end
-        local temperature = tonumber(config.temperature) or OPENAI_FORMAT_DEFAULT_TEMPERATURE
-        if temperature < 0 then
-            temperature = 0
-        elseif temperature > 1 then
-            temperature = 1
-        end
-
-        local payloadTable = {
-            model = model,
-            messages = Translate.buildSmartMergeMessages(targetLabel, sources or {}),
-            temperature = temperature,
-        }
-        local payload = json.encode(payloadTable)
-        local headers = {
-            Authorization = "Bearer " .. apiKey,
-            ["Content-Type"] = "application/json",
-            ["User-Agent"] = string.format("%s/%s", Config.SCRIPT_NAME, Config.SCRIPT_VERSION),
-        }
-        local apiUrl = baseUrl:gsub("/+$", "") .. "/v1/chat/completions"
-        local body, status = Services.httpPostJson(apiUrl, payload, headers, timeout or OPENAI_FORMAT_TIMEOUT)
-        if not body then
-            return nil, 0, status or "request_failed"
-        end
-        local translation, tokens, err = OpenAIService.parseResponseBody(body)
-        if not translation then
-            local ok, decoded = pcall(json.decode, body)
-            if ok and type(decoded) == "table" and decoded.error and decoded.error.message then
-                return nil, 0, decoded.error.message
-            end
-        end
-        return translation, tokens, err
-    end
-
     function Azure.translateEntries(entries, targetLabel, options)
         if not entries or #entries == 0 then
             return nil, "no_entries"
@@ -5788,11 +5792,6 @@ function OpenAIService.requestSmartMerge(sources, targetLabel, config, timeout)
             return nil, targetErr or "missing_target_lang"
         end
 
-        local userKey = Utils.trim(state.azure and state.azure.apiKey or "")
-        local userRegion = Utils.trim(state.azure and state.azure.region or "")
-        if userKey == "" or userRegion == "" then
-            --Translate.setStatus("fetching_key")
-        end
         local apiKey, region, fetchErr = Azure.resolveCredential()
         if not apiKey then
             return nil, fetchErr or "missing_key"
@@ -5800,15 +5799,9 @@ function OpenAIService.requestSmartMerge(sources, targetLabel, config, timeout)
         if not region or region == "" then
             region = AZURE_FALLBACK_REGION
         end
-        local baseUrl = state.azure and state.azure.baseUrl or AZURE_DEFAULT_BASE_URL
 
         options = options or {}
-        local cleanBase = Utils.trim(baseUrl or "")
-        if cleanBase == "" then
-            cleanBase = AZURE_DEFAULT_BASE_URL
-        end
-        cleanBase = cleanBase:gsub("/+$", "")
-        baseUrl = cleanBase
+        local cleanBase = Utils.normalizeBaseUrl(state.azure and state.azure.baseUrl, AZURE_DEFAULT_BASE_URL)
         local translateUrl = cleanBase .. "/translate" .. string.format("?api-version=3.0&to=%s", Utils.urlEncode(targetCode))
         local headers = {
             string.format("Ocp-Apim-Subscription-Key: %s", apiKey),
@@ -5843,9 +5836,7 @@ function OpenAIService.requestSmartMerge(sources, targetLabel, config, timeout)
                     url = translateUrl,
                 }
             end,
-            onTaskResult = function(task, result)
-                Translate.applyEntryResult(task, result, TRANSLATE_PROVIDER_AZURE_LABEL)
-            end,
+            onTaskResult = Translate.makeTaskResultHandler(TRANSLATE_PROVIDER_AZURE_LABEL),
         })
     end
 
@@ -5864,19 +5855,11 @@ function OpenAIService.requestSmartMerge(sources, targetLabel, config, timeout)
         if apiKey == "" then
             return nil, "openai_missing_key"
         end
-        local baseUrl = Utils.trim(state.openaiFormat.baseUrl or "")
-        if baseUrl == "" then
-            baseUrl = OPENAI_FORMAT_DEFAULT_BASE_URL
-        end
-        local temperature = tonumber(state.openaiFormat.temperature) or OPENAI_FORMAT_DEFAULT_TEMPERATURE
-        if temperature < 0 then
-            temperature = 0
-        elseif temperature > 1 then
-            temperature = 1
-        end
+        local baseUrl = Utils.normalizeBaseUrl(state.openaiFormat.baseUrl, OPENAI_FORMAT_DEFAULT_BASE_URL)
+        local temperature = math.max(0, math.min(1, tonumber(state.openaiFormat.temperature) or OPENAI_FORMAT_DEFAULT_TEMPERATURE))
 
         options = options or {}
-        local apiUrl = baseUrl:gsub("/*$", "") .. "/v1/chat/completions"
+        local apiUrl = baseUrl .. "/v1/chat/completions"
         local headers = {
             string.format("Authorization: Bearer %s", apiKey),
             "Content-Type: application/json",
@@ -5906,9 +5889,7 @@ function OpenAIService.requestSmartMerge(sources, targetLabel, config, timeout)
                     payload = OpenAIService.buildRequestPayload(entry and entry.original or "", prefixText, suffixText, targetLabel, selected.name, temperature),
                 }
             end,
-            onTaskResult = function(task, result)
-                Translate.applyEntryResult(task, result, TRANSLATE_PROVIDER_OPENAI_LABEL)
-            end,
+            onTaskResult = Translate.makeTaskResultHandler(TRANSLATE_PROVIDER_OPENAI_LABEL),
         })
 end
 
@@ -5960,6 +5941,46 @@ function Translate.resolveProviderAdapter(provider)
                 end,
                 payloadPrefix = "smartmerge_azure_payload",
                 outputPrefix = "smartmerge_azure_output",
+                splitMode = "ratio",
+            }
+        end
+        return adapter
+    elseif spec.kind == "google" then
+        local adapter = {
+            label = spec.label,
+            langKey = spec.langKey,
+            smartMergeMode = spec.smartMergeMode,
+            allowParallel = true,
+            translateEntries = Google.translateEntries,
+        }
+        adapter.buildSmartMergeContext = function(targetLabel, targetCode)
+            if spec.smartMergeMode ~= "ratio" then
+                return nil, "provider_not_supported"
+            end
+            local apiKey, fetchErr = Google.resolveCredential()
+            if not apiKey then
+                return nil, fetchErr or "missing_key"
+            end
+            local apiUrl = Google.buildApiUrl(apiKey)
+            if not apiUrl then
+                return nil, "missing_key"
+            end
+            return {
+                apiUrl = apiUrl,
+                headers = {
+                    "Content-Type: application/json",
+                    string.format("User-Agent: %s/%s", Config.SCRIPT_NAME, Config.SCRIPT_VERSION),
+                },
+                parser = Google.parseResponseBody,
+                buildPayload = function(group)
+                    return json.encode({
+                        q = table.concat(group.sources, ""),
+                        target = targetCode,
+                        format = "text",
+                    })
+                end,
+                payloadPrefix = "smartmerge_google_payload",
+                outputPrefix = "smartmerge_google_output",
                 splitMode = "ratio",
             }
         end
@@ -7153,131 +7174,108 @@ function UI.updateTabBarTexts()
     end
 end
 
+-- UI text refresh mappings: widget ID -> localization key
+local UI_TEXT_MAP = {
+    FindNextButton = "find_next_button",
+    FindPreviousButton = "find_previous_button",
+    AllReplaceButton = "all_replace_button",
+    SingleReplaceButton = "single_replace_button",
+    AutoFollowCheck = "auto_follow_check",
+    RefreshButton = "refresh_button",
+    UpdateSubtitleButton = "update_button",
+    CopyrightButton = "copyright",
+    DonationButton = "donation",
+    SponsorLabel = "sponsor_label",
+    TranslateConcurrencyLabel = "concurrency_label",
+    AzureConfigLabel = "azure_config_label",
+    AzureConfigButton = "azure_config_button",
+    GoogleConfigLabel = "google_config_label",
+    GoogleConfigButton = "google_config_button",
+    DeepLConfigLabel = "deepl_config_label",
+    DeepLConfigButton = "deepl_config_button",
+    OpenAIFormatConfigLabel = "openai_config_label",
+    OpenAIFormatConfigButton = "openai_config_button",
+    TranslateProviderLabel = "translate_provider_label",
+    TranslateTargetLabel = "translate_target_label",
+    TranslateTransButton = "translate_trans_button",
+    TranslateSmartMergeCheck = "translate_smart_merge",
+    TranslateSelectedButton = "translate_selected_button",
+    TranslateRetryFailedButton = "translate_retry_failed_button",
+    TranslateUpdateSubtitleButton = "translate_update_button",
+    LangCnCheckBox = "lang_cn",
+    LangEnCheckBox = "lang_en",
+}
+
+local UI_PLACEHOLDER_MAP = {
+    FindInput = "find_placeholder",
+    ReplaceInput = "replace_placeholder",
+    SubtitleEditor = "editor_placeholder",
+    TranslateProviderCombo = "translate_provider_placeholder",
+    TranslateTargetCombo = "translate_target_placeholder",
+    TranslateSubtitleEditor = "translate_editor_placeholder",
+}
+
 function UI.applyLanguage(lang)
     if lang ~= "en" then
         lang = "cn"
     end
     state.language = lang
 
+    -- Update language checkboxes
     languageProgrammatic = true
     if it.LangCnCheckBox then
         it.LangCnCheckBox.Checked = (lang == "cn")
-        it.LangCnCheckBox.Text = UI.uiString("lang_cn")
     end
     if it.LangEnCheckBox then
         it.LangEnCheckBox.Checked = (lang == "en")
-        it.LangEnCheckBox.Text = UI.uiString("lang_en")
     end
     languageProgrammatic = false
 
     UI.updateTabBarTexts()
 
-    if it.FindNextButton then
-        it.FindNextButton.Text = UI.uiString("find_next_button")
-    end
-    if it.FindPreviousButton then
-        it.FindPreviousButton.Text = UI.uiString("find_previous_button")
-    end
-    if it.AllReplaceButton then
-        it.AllReplaceButton.Text = UI.uiString("all_replace_button")
-    end
-    if it.SingleReplaceButton then
-        it.SingleReplaceButton.Text = UI.uiString("single_replace_button")
-    end
-    if it.AutoFollowCheck then
-        it.AutoFollowCheck.Text = UI.uiString("auto_follow_check")
-        it.AutoFollowCheck.Checked = state.autoFollow and true or false
-    end
-    if it.RefreshButton then
-        it.RefreshButton.Text = UI.uiString("refresh_button")
-    end
-    if it.UpdateSubtitleButton then
-        it.UpdateSubtitleButton.Text = UI.uiString("update_button")
-    end
-    if it.FindInput then
-        it.FindInput.PlaceholderText = UI.uiString("find_placeholder")
-    end
-    if it.ReplaceInput then
-        it.ReplaceInput.PlaceholderText = UI.uiString("replace_placeholder")
-    end
-    if it.SubtitleEditor then
-        it.SubtitleEditor.PlaceholderText = UI.uiString("editor_placeholder")
-    end
-    if it.CopyrightButton then
-        it.CopyrightButton.Text = UI.uiString("copyright")
-    end
-    if it.DonationButton then
-        it.DonationButton.Text = UI.uiString("donation")
-    end
-    if it.SponsorLabel then
-        it.SponsorLabel.Text = UI.uiString("sponsor_label")
-    end
-    if it.TranslateConcurrencyLabel then
-        it.TranslateConcurrencyLabel.Text = UI.uiString("concurrency_label")
-    end
-    Translate.populateConcurrencyCombo(state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY)
-    if it.AzureConfigLabel then
-        it.AzureConfigLabel.Text = UI.uiString("azure_config_label")
-    end
-    if it.AzureConfigButton then
-        it.AzureConfigButton.Text = UI.uiString("azure_config_button")
-    end
-    if it.DeepLConfigLabel then
-        it.DeepLConfigLabel.Text = UI.uiString("deepl_config_label")
-    end
-    if it.DeepLConfigButton then
-        it.DeepLConfigButton.Text = UI.uiString("deepl_config_button")
-    end
-    if it.OpenAIFormatConfigLabel then
-        it.OpenAIFormatConfigLabel.Text = UI.uiString("openai_config_label")
-    end
-    if it.OpenAIFormatConfigButton then
-        it.OpenAIFormatConfigButton.Text = UI.uiString("openai_config_button")
+    -- Apply text labels using data-driven mapping
+    for widgetId, key in pairs(UI_TEXT_MAP) do
+        local widget = it[widgetId]
+        if widget and widget.Text ~= nil then
+            widget.Text = UI.uiString(key)
+        end
     end
 
-    if it.TranslateProviderLabel then
-        it.TranslateProviderLabel.Text = UI.uiString("translate_provider_label")
+    -- Apply placeholder texts using data-driven mapping
+    for widgetId, key in pairs(UI_PLACEHOLDER_MAP) do
+        local widget = it[widgetId]
+        if widget then
+            widget.PlaceholderText = UI.uiString(key)
+        end
     end
-    if it.TranslateTargetLabel then
-        it.TranslateTargetLabel.Text = UI.uiString("translate_target_label")
-    end
-    if it.TranslateProviderCombo then
-        it.TranslateProviderCombo.PlaceholderText = UI.uiString("translate_provider_placeholder")
-    end
-    if it.TranslateTargetCombo then
-        it.TranslateTargetCombo.PlaceholderText = UI.uiString("translate_target_placeholder")
-    end
-    Translate.refreshTranslateTargetCombo(state.translate.provider, state.translate.targetLabel, state.translate.targetCode)
-    if it.TranslateTransButton then
-        it.TranslateTransButton.Text = UI.uiString("translate_trans_button")
+
+    -- Apply widget-specific state
+    if it.AutoFollowCheck then
+        it.AutoFollowCheck.Checked = state.autoFollow and true or false
     end
     if it.TranslateSmartMergeCheck then
-        it.TranslateSmartMergeCheck.Text = UI.uiString("translate_smart_merge")
         it.TranslateSmartMergeCheck.Checked = state.translate.smartMerge and true or false
     end
     if it.TranslateSelectedButton then
-        it.TranslateSelectedButton.Text = UI.uiString("translate_selected_button")
         it.TranslateSelectedButton.Enabled = state.translate.selectedIndex ~= nil and not state.translate.busy
     end
-    if it.TranslateRetryFailedButton then
-        it.TranslateRetryFailedButton.Text = UI.uiString("translate_retry_failed_button")
-        Translate.updateRetryButtonState()
-    end
-    if it.TranslateUpdateSubtitleButton then
-        it.TranslateUpdateSubtitleButton.Text = UI.uiString("translate_update_button")
-    end
-    if it.TranslateSubtitleEditor then
-        it.TranslateSubtitleEditor.PlaceholderText = UI.uiString("translate_editor_placeholder")
-    end
+
+    -- Refresh combos and dependent UI
+    Translate.populateConcurrencyCombo(state.translate.concurrency or DEFAULT_TRANSLATE_CONCURRENCY)
+    Translate.refreshTranslateTargetCombo(state.translate.provider, state.translate.targetLabel, state.translate.targetCode)
+    Translate.updateRetryButtonState()
     Translate.normalizeTranslateTree()
     Translate.refreshTranslateStatus()
 
     UI.refreshUpdateNotice()
 
+    -- Refresh config window texts
     Azure.refreshConfigTexts()
+    Google.refreshConfigTexts()
     DeepL.refreshConfigTexts()
     OpenAIService.refreshConfigTexts()
 
+    -- Update subtitle tree headers
     if it.SubtitleTree then
         it.SubtitleTree:SetHeaderLabels(UI.currentHeaders())
         it.SubtitleTree.ColumnWidth[0] = 50
@@ -7638,6 +7636,10 @@ function win.On.AzureConfigButton.Clicked(ev)
     Azure.openConfigWindow()
 end
 
+function win.On.GoogleConfigButton.Clicked(ev)
+    Google.openConfigWindow()
+end
+
 function win.On.DeepLConfigButton.Clicked(ev)
     DeepL.openConfigWindow()
 end
@@ -7648,6 +7650,8 @@ end
 
 Azure.refreshConfigTexts()
 Azure.syncConfigControls()
+Google.refreshConfigTexts()
+Google.syncConfigControls()
 DeepL.refreshConfigTexts()
 DeepL.syncConfigControls()
 OpenAIService.refreshConfigTexts()
@@ -7662,6 +7666,18 @@ if azureConfigWin then
     end
     function azureConfigWin.On.AzureRegisterButton.Clicked(ev)
         Utils.openExternalUrl(AZURE_REGISTER_URL)
+    end
+end
+
+if googleConfigWin then
+    function googleConfigWin.On.GoogleConfirm.Clicked(ev)
+        Google.closeConfigWindow()
+    end
+    function googleConfigWin.On.GoogleConfigWin.Close(ev)
+        Google.closeConfigWindow()
+    end
+    function googleConfigWin.On.GoogleRegisterButton.Clicked(ev)
+        Utils.openExternalUrl(GOOGLE_REGISTER_URL)
     end
 end
 
@@ -7898,6 +7914,7 @@ function win.On.SubtitleUtilityWin.Close(ev)
     end
     OpenAIService.applyConfigFromControls()
     Azure.applyConfigFromControls()
+    Google.applyConfigFromControls()
     DeepL.applyConfigFromControls()
     Storage.ensureOpenAIModelList(state.openaiFormat)
     local selectedModel = Storage.getOpenAISelectedModel(state.openaiFormat)
@@ -7908,6 +7925,7 @@ function win.On.SubtitleUtilityWin.Close(ev)
         TranslateSmartMergeCheck = it.TranslateSmartMergeCheck and it.TranslateSmartMergeCheck.Checked or false,
         AzureRegion = state.azure and state.azure.region or "",
         AzureApiKey = state.azure and state.azure.apiKey or "",
+        GoogleApiKey = state.google and state.google.apiKey or "",
         DeepLApiKey = state.deepl and state.deepl.apiKey or "",
         OpenAIFormatModelCombo = selectedModel and (selectedModel.display or selectedModel.name) or "",
         OpenAIFormatBaseURL = state.openaiFormat and state.openaiFormat.baseUrl or OPENAI_FORMAT_DEFAULT_BASE_URL,
