@@ -1,6 +1,6 @@
 # ================= 用户配置 =================
 SCRIPT_NAME = "DaVinci TTS"
-SCRIPT_VERSION = " 3.9"
+SCRIPT_VERSION = " 4.0.0"
 SCRIPT_AUTHOR = "HEIBA"
 print(f"{SCRIPT_NAME} | {SCRIPT_VERSION.strip()} | {SCRIPT_AUTHOR}")
 SCREEN_WIDTH = 1920
@@ -1305,12 +1305,24 @@ def import_srt_to_timeline(srt_path):
         print("错误：未找到当前时间线")
         return False
 
-    # 2. 删除所有“subtitle”轨道中的片段
-    sub_count = timeline.GetTrackCount("subtitle")
-    for ti in range(1, sub_count + 1):
-        items = timeline.GetItemListInTrack("subtitle", ti)
-        if items:
-            timeline.DeleteClips(items)  
+    # 2. 选择目标字幕轨道：若当前字幕轨道已有字幕块，则新增一条字幕轨道
+    sub_count = timeline.GetTrackCount("subtitle") or 0
+    if sub_count < 1:
+        if not timeline.AddTrack("subtitle"):
+            print("错误：创建字幕轨道失败")
+            return False
+        sub_count = 1
+        target_track = 1
+    else:
+        current_items = timeline.GetItemListInTrack("subtitle", sub_count) or []
+        if current_items:
+            if not timeline.AddTrack("subtitle"):
+                print("错误：创建字幕轨道失败")
+                return False
+            sub_count += 1
+            target_track = sub_count
+        else:
+            target_track = sub_count
 
     # 3. 导入 .srt 到媒体池
     media_pool = current_project.GetMediaPool()
@@ -1331,7 +1343,15 @@ def import_srt_to_timeline(srt_path):
 
     # 4. 将导入的字幕追加到时间线
     new_clip = imported[0]
-    success = media_pool.AppendToTimeline([new_clip])  
+    track_enabled_states = {}
+    for ti in range(1, sub_count + 1):
+        track_enabled_states[ti] = timeline.GetIsTrackEnabled("subtitle", ti)
+        timeline.SetTrackEnable("subtitle", ti, ti == target_track)
+    try:
+        success = media_pool.AppendToTimeline([new_clip])
+    finally:
+        for ti, enabled in track_enabled_states.items():
+            timeline.SetTrackEnable("subtitle", ti, enabled)
     if not success:
         print("错误：将字幕添加到时间线失败")
         return False
@@ -3299,19 +3319,21 @@ def get_current_subtitle(current_timeline):
     current_frame = timecode_to_frames(current_timecode, frame_rate)
 
     track_count = current_timeline.GetTrackCount("subtitle")
+    if not track_count or track_count < 1:
+        return None, current_frame, current_frame
 
-    selected_subtitles = []
-    for track_index in range(1, track_count + 1):
-        items = current_timeline.GetItemListInTrack("subtitle", track_index)
+    # Resolve subtitle track index grows from bottom to top; scan from topmost track first.
+    for track_index in range(track_count, 0, -1):
+        if not current_timeline.GetIsTrackEnabled("subtitle", track_index):
+            continue
+        items = current_timeline.GetItemListInTrack("subtitle", track_index) or []
         for item in items:
             start_frame = item.GetStart()
             end_frame = item.GetEnd()
             if start_frame is not None and end_frame is not None and start_frame <= current_frame <= end_frame:
-                selected_subtitles.append(item)
-    if selected_subtitles:
-        return selected_subtitles[0].GetName(), selected_subtitles[0].GetStart(), selected_subtitles[0].GetEnd()
-    else:
-        return None, current_frame, current_frame
+                return item.GetName(), start_frame, end_frame
+
+    return None, current_frame, current_frame
 
 def generate_filename(base_path, subtitle, extension):
     if not os.path.exists(base_path):
@@ -3492,20 +3514,21 @@ def on_play_button_clicked(ev):
     items["PlayButton"].Enabled = True
 win.On.PlayButton.Clicked = on_play_button_clicked
 #============== MINIMAX ====================#
-def json_to_srt(json_data, srt_path):
+def json_to_srt(json_data, srt_path, start_offset_seconds=0.0):
     """
     将JSON格式的字幕信息转换为 .srt 文件并保存。
     """
     srt_output = []
     subtitle_id = 1
-    frame_rate = float(current_timeline.GetSetting("timelineFrameRate"))
     for item in json_data:
         text = item["text"]
         # 移除可能出现的 BOM
         if text.startswith("\ufeff"):
             text = text[1:]
-        start_time = frame_to_timecode(item["time_begin"] / 1000,1)
-        end_time = frame_to_timecode(item["time_end"] / 1000,1)
+        start_seconds = item["time_begin"] / 1000 + start_offset_seconds
+        end_seconds = item["time_end"] / 1000 + start_offset_seconds
+        start_time = frame_to_timecode(start_seconds, 1)
+        end_time = frame_to_timecode(end_seconds, 1)
         srt_output.append(f"{subtitle_id}")
         srt_output.append(f"{start_time} --> {end_time}")
         srt_output.append(text)
@@ -3795,6 +3818,7 @@ minimax_voice_modify_window.On.MiniMaxVoiceModifyCancel.Clicked = on_voice_modif
 minimax_voice_modify_window.On.MiniMaxVoiceModifyWin.Close = on_voice_modify_cancel
 
 def process_minimax_request(text_func, timeline_func):
+    resolve, current_project, current_timeline = connect_resolve()
     # 1. Validate inputs
     save_path = items["Path"].Text
     api_key = minimax_items["minimaxApiKey"].Text
@@ -3864,20 +3888,10 @@ def process_minimax_request(text_func, timeline_func):
         show_warning_message(status_tuple)
         return
 
-    # Save audio
     filename = generate_filename(save_path, text, f".{selected_format}")
-    try:
-        with open(filename, "wb") as f:
-            f.write(result["audio_content"])
-        start_frame, end_frame = timeline_func()
-        add_to_media_pool_and_timeline(start_frame, end_frame, filename)
-    except IOError as e:
-        print(f"Failed to write audio file: {e}")
-        show_warning_message(STATUS_MESSAGES.audio_save_failed)
-        return
-
-    # Handle subtitles
-    if result["subtitle_url"]:
+    start_frame, end_frame = timeline_func()
+    srt_path = None
+    if items["minimaxSubtitleCheckBox"].Checked and result["subtitle_url"]:
         subtitle_content = provider.download_media(result["subtitle_url"])
         if subtitle_content:
             subtitle_json_path = os.path.splitext(filename)[0] + ".json"
@@ -3889,11 +3903,36 @@ def process_minimax_request(text_func, timeline_func):
                 with open(subtitle_json_path, 'r', encoding='utf-8') as f:
                     json_data = json.load(f)
                 
-                json_to_srt(json_data, srt_path)
-                import_srt_to_timeline(srt_path)
+                frame_rate = float(current_timeline.GetSetting("timelineFrameRate"))
+                start_offset_seconds = 0.0
+                if start_frame is not None and frame_rate:
+                    timeline_start_frame = current_timeline.GetStartFrame()
+                    relative_start = start_frame - timeline_start_frame
+                    if relative_start < 0:
+                        relative_start = 0
+                    start_offset_seconds = relative_start / frame_rate
+                json_to_srt(json_data, srt_path, start_offset_seconds)
                 os.remove(subtitle_json_path) # Clean up temp json
             except (IOError, json.JSONDecodeError) as e:
                 print(f"Failed to process subtitle file: {e}")
+                srt_path = None
+
+    # Save audio
+    try:
+        with open(filename, "wb") as f:
+            f.write(result["audio_content"])
+        add_to_media_pool_and_timeline(start_frame, end_frame, filename)
+    except IOError as e:
+        print(f"Failed to write audio file: {e}")
+        show_warning_message(STATUS_MESSAGES.audio_save_failed)
+        return
+
+    if srt_path:
+        if import_srt_to_timeline(srt_path):
+            try:
+                os.remove(srt_path)
+            except OSError as e:
+                print(f"Failed to remove srt file: {e}")
     
     show_warning_message(STATUS_MESSAGES.loaded_to_timeline)
 
@@ -3909,7 +3948,6 @@ def on_minimax_fromsub_button_clicked(ev):
     if subtitle_text is None:
         show_warning_message(STATUS_MESSAGES.no_subtitle_at_playhead)
         return
-    items["minimaxSubtitleCheckBox"].Checked = False
     process_minimax_request(
         text_func=lambda: subtitle_text,
         timeline_func=lambda: (start_frame, end_frame)
